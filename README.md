@@ -18,6 +18,17 @@ export OPENAI_API_KEY=your_key
 python demo_conversational.py
 ```
 
+### [Tool Learning Demo](./hindsight-tool-learning-demo)
+
+An interactive Streamlit demo showing how Hindsight helps LLMs learn which tool to use when tool names are ambiguous. Demonstrates:
+- Side-by-side comparison: routing with and without memory
+- Learning from feedback to improve tool selection accuracy
+- Customer service routing scenario with vague tool names
+
+```bash
+cd hindsight-tool-learning-demo
+./run.sh
+```
 
 ## Notebooks
 
