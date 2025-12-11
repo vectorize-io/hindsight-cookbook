@@ -249,7 +249,6 @@ def send_with_hindsight(
         "user_query": user_message,
         "full_prompt": None,
         "response": None,
-        "entity_id": config.get("entity_id"),
         "context_used": "Semantic memory retrieval from Hindsight",
         "pre_processing": {
             "memories_retrieved": None,
@@ -267,11 +266,10 @@ def send_with_hindsight(
         import hindsight_litellm
         from hindsight_litellm import configure, enable, disable, recall, cleanup
 
-        # Configure with entity_id for multi-user support
+        # Configure Hindsight - for multi-user support, use different bank_ids per user
         configure(
             hindsight_api_url=api_url,
             bank_id=bank_id,
-            entity_id=config.get("entity_id"),
             store_conversations=False,  # We store manually after
             inject_memories=config.get("inject_memories", True),
             max_memories=config.get("max_memories", 10),
@@ -328,10 +326,9 @@ def send_with_hindsight(
             try:
                 from hindsight_client import Hindsight
                 client = Hindsight(base_url=api_url, timeout=60.0)
-                scoped_bank_id = f"{bank_id}:{config.get('entity_id')}" if config.get('entity_id') else bank_id
                 conversation_text = f"USER: {user_message}\n\nASSISTANT: {content}"
                 client.retain(
-                    bank_id=scoped_bank_id,
+                    bank_id=bank_id,
                     content=conversation_text,
                     context=f"conversation:litellm:{model}",
                 )
@@ -432,11 +429,7 @@ def render_sidebar():
     hindsight_bank_id = st.sidebar.text_input(
         "Bank ID",
         value="demo-comparison",
-    )
-    hindsight_entity_id = st.sidebar.text_input(
-        "Entity ID",
-        value="demo-user",
-        help="User identifier for multi-user memory isolation",
+        help="Memory bank ID. For multi-user support, use different bank_ids per user (e.g., 'user-123')",
     )
     hindsight_max_memories = st.sidebar.slider("Max Memories", 1, 20, 10, key="hindsight_max_memories")
     hindsight_budget = st.sidebar.selectbox("Recall Budget", ["low", "mid", "high"], index=1)
@@ -444,7 +437,6 @@ def render_sidebar():
     hindsight_config = {
         "api_url": hindsight_api_url,
         "bank_id": hindsight_bank_id,
-        "entity_id": hindsight_entity_id,
         "store_conversations": True,
         "inject_memories": True,
         "max_memories": hindsight_max_memories,
@@ -475,7 +467,7 @@ def render_sidebar():
     if st.sidebar.button("Clear Hindsight Memories", use_container_width=True, type="secondary"):
         try:
             import requests
-            bank_id = f"{hindsight_config['bank_id']}:{hindsight_config['entity_id']}"
+            bank_id = hindsight_config['bank_id']
             api_url = hindsight_config["api_url"]
             response = requests.delete(f"{api_url}/v1/default/banks/{bank_id}/memories")
             if response.status_code == 200:
@@ -551,9 +543,6 @@ def render_chat_column(title: str, messages: List[Dict], color: str, debug_info:
             tab_prompt, tab_pre, tab_post = st.tabs(["Full Prompt", "Pre-Processing", "Post-Processing"])
 
             with tab_prompt:
-                if debug_info.get("entity_id"):
-                    st.markdown(f"**Entity ID:** `{debug_info['entity_id']}`")
-
                 if debug_info.get("context_used"):
                     st.markdown(f"**Context Strategy:** {debug_info['context_used']}")
 
@@ -813,7 +802,6 @@ def main():
                 configure(
                     hindsight_api_url=config["hindsight"]["api_url"],
                     bank_id=config["hindsight"]["bank_id"],
-                    entity_id=config["hindsight"]["entity_id"],
                 )
 
                 with st.spinner("Searching memories..."):
