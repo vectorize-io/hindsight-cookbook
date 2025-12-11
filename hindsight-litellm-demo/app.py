@@ -284,7 +284,6 @@ def send_with_hindsight(
         try:
             memories = recall(
                 query=user_message,
-                limit=config.get("max_memories", 10),
             )
             if memories:
                 debug["pre_processing"]["memories_retrieved"] = [
@@ -818,7 +817,7 @@ def main():
                 )
 
                 with st.spinner("Searching memories..."):
-                    memories = recall(memory_query, limit=10)
+                    memories = recall(memory_query)
 
                 if memories:
                     st.success(f"Found {len(memories)} memories")
