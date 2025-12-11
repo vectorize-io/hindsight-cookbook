@@ -15,7 +15,19 @@ Each example is self-contained in its own directory with its own README and setu
 
 ## Examples
 
-*Coming soon*
+### [OpenAI Fitness Coach](./openai-fitness-coach)
+
+A fitness coach example demonstrating how to use **OpenAI Agents** with **Hindsight as a memory backend**. Shows:
+- OpenAI Assistants handling conversation logic
+- Hindsight providing memory storage & retrieval via function calling
+- Streaming responses and preference learning
+- Real-world integration pattern for adding memory to AI agents
+
+```bash
+cd openai-fitness-coach
+export OPENAI_API_KEY=your_key
+python demo_conversational.py
+```
 
 ## Contributing
 
