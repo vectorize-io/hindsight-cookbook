@@ -2,14 +2,27 @@
 
 A collection of example applications demonstrating how to integrate and use [Hindsight](https://github.com/vectorize-io/hindsight).
 
-## Table of Contents
+## Examples
 
-- [Getting Started](#getting-started)
-- [Examples](#examples)
-- [Contributing](#contributing)
-- [License](#license)
+### [OpenAI Fitness Coach](./openai-fitness-coach)
 
-## Getting Started
+A fitness coach example demonstrating how to use **OpenAI Agents** with **Hindsight as a memory backend**. Shows:
+- OpenAI Assistants handling conversation logic
+- Hindsight providing memory storage & retrieval via function calling
+- Streaming responses and preference learning
+- Real-world integration pattern for adding memory to AI agents
+
+```bash
+cd openai-fitness-coach
+export OPENAI_API_KEY=your_key
+python demo_conversational.py
+```
+
+
+## Notebooks
+
+Interactive Jupyter notebooks demonstrating Hindsight features:
+
 
 ### Prerequisites
 
@@ -28,25 +41,7 @@ docker run --rm -it --pull always -p 8888:8888 -p 9999:9999 \
 - API: http://localhost:8888
 - UI: http://localhost:9999
 
-2. **Install the Python client**:
-
-```bash
-pip install hindsight-client -U
-```
-
-Or for Node.js:
-
-```bash
-npm install @vectorize-io/hindsight-client
-```
-
-Each example is self-contained with its own setup instructions.
-
-## Examples
-
-### Notebooks
-
-Interactive Jupyter notebooks demonstrating Hindsight features:
+2. Run the notebooks
 
 | Notebook | Description |
 |----------|-------------|
@@ -55,12 +50,6 @@ Interactive Jupyter notebooks demonstrating Hindsight features:
 | [03-support-agent-shared-knowledge.ipynb](notebooks/03-support-agent-shared-knowledge.ipynb) | Multi-bank architecture for support agents with shared docs |
 | [04-typescript-client.md](notebooks/04-typescript-client.md) | TypeScript/Node.js client examples |
 | [05-openai-integration.ipynb](notebooks/05-openai-integration.ipynb) | Drop-in OpenAI wrapper with automatic memory |
-
-### Demos
-
-| Demo | Description |
-|------|-------------|
-| [hindsight-tool-learning-demo](hindsight-tool-learning-demo/) | Interactive demo comparing memory approaches |
 
 ## Contributing
 
