@@ -18,6 +18,18 @@ export OPENAI_API_KEY=your_key
 python demo_conversational.py
 ```
 
+### [LiteLLM Memory Demo](./hindsight-litellm-demo)
+
+An interactive side-by-side comparison of three memory approaches:
+- No Memory (baseline)
+- Full Conversation History (truncated)
+- Hindsight Memory (semantic recall)
+
+```bash
+cd hindsight-litellm-demo
+./run.sh
+```
+
 ### [Tool Learning Demo](./hindsight-tool-learning-demo)
 
 An interactive Streamlit demo showing how Hindsight helps LLMs learn which tool to use when tool names are ambiguous. Demonstrates:
@@ -59,8 +71,8 @@ docker run --rm -it --pull always -p 8888:8888 -p 9999:9999 \
 | [01-quickstart.ipynb](notebooks/01-quickstart.ipynb) | Basic operations: retain, recall, and reflect |
 | [02-per-user-memory.ipynb](notebooks/02-per-user-memory.ipynb) | Pattern for giving each user their own memory bank |
 | [03-support-agent-shared-knowledge.ipynb](notebooks/03-support-agent-shared-knowledge.ipynb) | Multi-bank architecture for support agents with shared docs |
-| [04-typescript-client.md](notebooks/04-typescript-client.md) | TypeScript/Node.js client examples |
-| [05-openai-integration.ipynb](notebooks/05-openai-integration.ipynb) | Drop-in OpenAI wrapper with automatic memory |
+| [04-litellm-memory-demo.ipynb](notebooks/04-litellm-memory-demo.ipynb) | Automatic memory with LiteLLM callbacks |
+| [05-tool-learning-demo.ipynb](notebooks/05-tool-learning-demo.ipynb) | Learning correct tool selection through memory |
 
 ## Contributing
 
