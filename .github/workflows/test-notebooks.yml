@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+defaults:
+  run:
+    working-directory: tests-notebooks
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Start Hindsight
+        working-directory: .
         run: |
           docker run -d --name hindsight \
             -p 8888:8888 -p 9999:9999 \
@@ -21,6 +26,7 @@ jobs:
             ghcr.io/vectorize-io/hindsight:latest
 
       - name: Wait for Hindsight to be ready
+        working-directory: .
         run: |
           echo "Waiting for Hindsight API..."
           for i in {1..30}; do
@@ -42,10 +48,10 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: uv sync --extra test
+        run: uv sync
 
       - name: Run notebook tests
-        run: uv run pytest --nbmake notebooks/ -v
+        run: uv run pytest -v
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HINDSIGHT_API_URL: http://localhost:8888
@@ -53,4 +59,5 @@ jobs:
 
       - name: Show Hindsight logs on failure
         if: failure()
+        working-directory: .
         run: docker logs hindsight
