@@ -1,0 +1,16 @@
+# Memory System Comparison UI Requirements
+
+# Web UI
+streamlit>=1.28.0
+
+# LLM Integration
+litellm>=1.40.0
+openai>=1.0.0
+
+# Memory Systems (both required for comparison)
+memori>=0.1.0
+
+# Hindsight packages - install from GitHub
+# These are installed via subdirectory from the main hindsight repo
+hindsight-client @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-clients/python
+hindsight-litellm @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-integrations/litellm
