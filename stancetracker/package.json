@@ -1,0 +1,41 @@
+{
+  "name": "stancetracker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:pipeline": "jest tests/pipeline-creation.test.ts"
+  },
+  "dependencies": {
+    "@vectorize-io/hindsight-client": "^0.1.7",
+    "@vectorize-io/vectorize-client": "^0.4.0",
+    "autoprefixer": "^10.4.22",
+    "date-fns": "^3.6.0",
+    "lucide-react": "^0.445.0",
+    "next": "^16.0.10",
+    "node-cron": "^3.0.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.8.4",
+    "@types/node-cron": "^3.0.11",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "eslint": "^9.39.2",
+    "eslint-config-next": "^16.0.10",
+    "jest": "^29.7.0",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "ts-jest": "^29.4.5",
+    "typescript": "^5.6.3"
+  }
+}
