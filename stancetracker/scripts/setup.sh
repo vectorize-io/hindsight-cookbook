@@ -19,10 +19,6 @@ if ! command -v npm &> /dev/null; then
     exit 1
 fi
 
-if ! command -v psql &> /dev/null; then
-    echo "⚠️  PostgreSQL client (psql) not found. You may need to install PostgreSQL."
-fi
-
 echo "✅ Prerequisites check passed"
 echo ""
 
@@ -41,38 +37,6 @@ if [ ! -f .env ]; then
 else
     echo "✅ .env file already exists"
     echo ""
-fi
-
-# Database setup
-echo "🗄️  Database Setup"
-read -p "Do you want to set up the database now? (y/n) " -n 1 -r
-echo ""
-
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    read -p "Enter database name (default: stancetracker): " DB_NAME
-    DB_NAME=${DB_NAME:-stancetracker}
-
-    # Check if database exists
-    if psql -lqt | cut -d \| -f 1 | grep -qw $DB_NAME; then
-        echo "⚠️  Database '$DB_NAME' already exists"
-        read -p "Do you want to recreate it? This will DELETE all data! (y/n) " -n 1 -r
-        echo ""
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "Dropping database..."
-            dropdb $DB_NAME
-            echo "Creating database..."
-            createdb $DB_NAME
-        fi
-    else
-        echo "Creating database..."
-        createdb $DB_NAME
-    fi
-
-    echo "Running schema..."
-    psql -d $DB_NAME -f lib/db/schema.sql
-    echo "✅ Database setup complete"
-else
-    echo "⏭️  Skipping database setup"
 fi
 
 echo ""
