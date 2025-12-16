@@ -1,0 +1,30 @@
+[project]
+name = "hindsight-cookbook"
+version = "0.1.0"
+description = "Cookbook examples for Hindsight"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "hindsight-client",
+    "nest-asyncio",
+    "openai",
+    "python-dotenv",
+    "requests",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "nbmake>=1.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["notebooks"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests-notebooks"]
+addopts = "--nbmake notebooks/"
