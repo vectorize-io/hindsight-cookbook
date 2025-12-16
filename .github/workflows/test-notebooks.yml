@@ -1,0 +1,63 @@
+name: Test Notebooks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+defaults:
+  run:
+    working-directory: tests-notebooks
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Hindsight
+        working-directory: .
+        run: |
+          docker run -d --name hindsight \
+            -p 8888:8888 -p 9999:9999 \
+            -e HINDSIGHT_API_LLM_API_KEY=${{ secrets.OPENAI_API_KEY }} \
+            -e HINDSIGHT_API_LLM_MODEL=gpt-4o-mini \
+            ghcr.io/vectorize-io/hindsight:latest
+
+      - name: Wait for Hindsight to be ready
+        working-directory: .
+        run: |
+          echo "Waiting for Hindsight API..."
+          for i in {1..30}; do
+            if curl -s http://localhost:8888/health > /dev/null 2>&1; then
+              echo "Hindsight is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30 - waiting..."
+            sleep 2
+          done
+          echo "Hindsight failed to start"
+          docker logs hindsight
+          exit 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run notebook tests
+        run: uv run pytest -v
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HINDSIGHT_API_URL: http://localhost:8888
+          HINDSIGHT_UI_URL: http://localhost:9999
+
+      - name: Show Hindsight logs on failure
+        if: failure()
+        working-directory: .
+        run: docker logs hindsight
