@@ -42,6 +42,20 @@ cd hindsight-tool-learning-demo
 ./run.sh
 ```
 
+### [Stance Tracker](./stancetracker)
+
+A web application for tracking political stances and positions using AI-powered memory. Features:
+- Track and recall political positions from conversations
+- File-based memory storage
+- Real-time stance extraction and organization
+- Integration with Hindsight for semantic memory
+
+```bash
+cd stancetracker
+./scripts/setup.sh
+npm run dev
+```
+
 ## Notebooks
 
 Interactive Jupyter notebooks demonstrating Hindsight features:
