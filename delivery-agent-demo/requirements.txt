@@ -1,0 +1,4 @@
+# Delivery Agent Demo Dependencies
+streamlit>=1.28.0
+hindsight-litellm>=0.1.0
+python-dotenv>=1.0.0
