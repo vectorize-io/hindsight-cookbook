@@ -39,8 +39,7 @@ class DeliveryAgent:
 
     Uses hindsight_litellm for:
     - Automatic memory recall and injection into prompts
-    - Automatic conversation storage
-    - Manual observation storage via retain()
+    - Automatic conversation storage (full conversation stored per LLM call)
     """
 
     def __init__(
@@ -56,7 +55,7 @@ class DeliveryAgent:
             model: LLM model to use
         """
         self.building = building or get_building()
-        self.model = model or os.environ.get("LLM_MODEL", "groq/llama-3.3-70b-versatile")
+        self.model = model or os.environ.get("LLM_MODEL", "openai/gpt-4o-mini")
 
         # Agent state
         self.state = AgentState()
@@ -69,7 +68,7 @@ class DeliveryAgent:
 
     def _build_system_prompt(self, package: Package) -> str:
         """Build the system prompt for the agent."""
-        return "You are a delivery agent."
+        return "You are a delivery agent. Use the tools provided to complete the current delivery. Any memories provided are from past deliveries - use them to learn about the building layout and employee locations, but always focus on the current package being delivered."
 
     def _record_action(self, action: str, result: str):
         """Record an action for display."""
@@ -117,7 +116,7 @@ class DeliveryAgent:
         # Initial messages
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Please deliver this package: {package}. You are currently at Floor 1, front side."}
+            {"role": "user", "content": f"Please deliver this package: {package}"}
         ]
 
         # Agent loop
@@ -144,7 +143,7 @@ class DeliveryAgent:
                         tool_name = tool_call.function.name
                         arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
 
-                        # Execute the tool (observations are auto-stored to memory)
+                        # Execute the tool
                         result = execute_tool(tools, tool_name, arguments)
                         tool_results.append({
                             "tool_call_id": tool_call.id,

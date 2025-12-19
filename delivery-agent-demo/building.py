@@ -75,64 +75,64 @@ class Building:
     def _setup_building(self):
         """Initialize the building with businesses and employees."""
 
-        # Building layout: 5 floors, 2 businesses per floor
+        # Building layout: 5 floors, 2 businesses per floor (matching themed building sprite)
         building_data = [
-            # Floor 1 (Ground floor)
+            # Floor 1 (Ground floor) - Lobby and Mail Room
             (1, Side.FRONT, "Lobby & Reception", [
                 ("Maria Santos", "Receptionist"),
                 ("Tom Wilson", "Security Guard"),
             ]),
-            (1, Side.BACK, "BuildingOps Inc", [
-                ("Jake Morrison", "Facilities Manager"),
-                ("Lisa Park", "Maintenance Tech"),
+            (1, Side.BACK, "Mail Room", [
+                ("Jake Morrison", "Mail Clerk"),
+                ("Lisa Park", "Package Handler"),
             ]),
 
-            # Floor 2
-            (2, Side.FRONT, "TechStart Labs", [
-                ("Alex Chen", "Software Engineer"),
-                ("Sarah Kim", "Product Manager"),
-                ("Dev Patel", "Data Scientist"),
+            # Floor 2 - Accounting and Gaming
+            (2, Side.FRONT, "Acme Accounting", [
+                ("Jennifer Walsh", "Senior Accountant"),
+                ("Marcus Brown", "Tax Specialist"),
+                ("Emily Davis", "Bookkeeper"),
             ]),
-            (2, Side.BACK, "Legal Eagles LLP", [
-                ("Jennifer Walsh", "Partner"),
-                ("Marcus Brown", "Associate"),
-                ("Emily Davis", "Paralegal"),
-            ]),
-
-            # Floor 3
-            (3, Side.FRONT, "Acme Corporation", [
-                ("John Smith", "CEO"),
-                ("Rachel Green", "CFO"),
-                ("Mike Ross", "Sales Director"),
-            ]),
-            (3, Side.BACK, "Creative Designs Co", [
-                ("Nina Rodriguez", "Art Director"),
-                ("Chris Taylor", "Graphic Designer"),
-                ("Sam Johnson", "UX Designer"),
+            (2, Side.BACK, "Byte Size Games", [
+                ("Alex Chen", "Game Developer"),
+                ("Sarah Kim", "Level Designer"),
+                ("Dev Patel", "QA Tester"),
             ]),
 
-            # Floor 4
-            (4, Side.FRONT, "FinanceHub Capital", [
-                ("David Lee", "Portfolio Manager"),
-                ("Amanda Foster", "Financial Analyst"),
-                ("Robert King", "Trader"),
+            # Floor 3 - Tech and Wellness
+            (3, Side.FRONT, "TechStart Labs", [
+                ("John Smith", "CTO"),
+                ("Rachel Green", "Software Engineer"),
+                ("Mike Ross", "DevOps Lead"),
             ]),
-            (4, Side.BACK, "MedTech Solutions", [
-                ("Dr. Sarah Palmer", "Research Director"),
-                ("James Wilson", "Lab Technician"),
-                ("Karen White", "Clinical Manager"),
+            (3, Side.BACK, "Wellness Center", [
+                ("Nina Rodriguez", "Yoga Instructor"),
+                ("Chris Taylor", "Massage Therapist"),
+                ("Sam Johnson", "Nutritionist"),
             ]),
 
-            # Floor 5 (Top floor)
-            (5, Side.FRONT, "SkyView Marketing", [
-                ("Michelle Adams", "Marketing Director"),
-                ("Brian Cooper", "Brand Strategist"),
-                ("Jessica Lee", "Social Media Manager"),
+            # Floor 4 - Legal and Design
+            (4, Side.FRONT, "Legal Eagles Law", [
+                ("David Lee", "Partner"),
+                ("Amanda Foster", "Associate"),
+                ("Robert King", "Paralegal"),
             ]),
-            (5, Side.BACK, "CloudNine Consulting", [
-                ("Peter Zhang", "Managing Consultant"),
-                ("Laura Martinez", "Senior Consultant"),
-                ("Kevin O'Brien", "Business Analyst"),
+            (4, Side.BACK, "Pixel Perfect Design", [
+                ("Dr. Sarah Palmer", "Creative Director"),
+                ("James Wilson", "UI Designer"),
+                ("Karen White", "Illustrator"),
+            ]),
+
+            # Floor 5 (Top floor) - Executive and Cafe
+            (5, Side.FRONT, "Executive Suite", [
+                ("Michelle Adams", "CEO"),
+                ("Brian Cooper", "CFO"),
+                ("Jessica Lee", "Executive Assistant"),
+            ]),
+            (5, Side.BACK, "Cloud Nine Cafe", [
+                ("Peter Zhang", "Barista"),
+                ("Laura Martinez", "Pastry Chef"),
+                ("Kevin O'Brien", "Cafe Manager"),
             ]),
         ]
 
