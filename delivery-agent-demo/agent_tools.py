@@ -2,19 +2,17 @@
 Agent Tools Module
 
 Defines the tools available to the delivery agent for navigating
-the building and gathering information. Stores observations to memory.
+the building and gathering information.
 """
 
 from typing import Callable
 from building import Building, Side, AgentState, get_building
-import memory
 
 
 class AgentTools:
     """
     Tools available to the delivery agent.
     Each tool returns a string describing the result.
-    Observations are automatically stored to Hindsight memory.
     """
 
     def __init__(self, building: Building, state: AgentState, on_action: Callable[[str, str], None] = None):
@@ -77,26 +75,17 @@ class AgentTools:
         return self._record_action("go_to_back", result)
 
     def look_at_business(self) -> str:
-        """Look at the business sign at the current location. Stores observation to memory."""
+        """Look at the business sign at the current location."""
         business = self.building.get_business(self.state.floor, self.state.side)
         if business:
             result = f"The business here is: {business.name}"
-
-            # Store this observation in memory
-            observation = memory.format_business_observation(
-                floor=self.state.floor,
-                side=self.state.side.value,
-                business_name=business.name
-            )
-            success, _ = memory.retain(observation, context="Observed while exploring building")
-
             return self._record_action("look_at_business", result)
         else:
             result = "No business at this location."
             return self._record_action("look_at_business", result)
 
     def get_employee_list(self) -> str:
-        """Get the list of employees at the current business. Stores observations to memory."""
+        """Get the list of employees at the current business."""
         business = self.building.get_business(self.state.floor, self.state.side)
         if not business:
             result = "No business at this location."
@@ -111,16 +100,6 @@ class AgentTools:
             for emp in business.employees
         ])
         result = f"Employees at {business.name}:\n{employee_list}"
-
-        # Store each employee observation in memory
-        for emp in business.employees:
-            observation = memory.format_employee_observation(
-                business_name=business.name,
-                employee_name=emp.name,
-                role=emp.role
-            )
-            success, _ = memory.retain(observation, context=f"Employee list at {business.name}")
-
         return self._record_action("get_employee_list", result)
 
     def deliver_package(self, recipient_name: str) -> str:
@@ -150,17 +129,6 @@ class AgentTools:
             self.state.packages_delivered += 1
             self.state.current_package = None
             result = f"SUCCESS! Package #{pkg.id} delivered to {recipient_name} at {business.name}!"
-
-            # Store successful delivery in memory
-            observation = memory.format_delivery_success(
-                recipient=recipient_name,
-                business=business.name,
-                floor=self.state.floor,
-                side=self.state.side.value,
-                steps=self.state.steps_taken
-            )
-            success, _ = memory.retain(observation, context="Successful delivery")
-
             return self._record_action("deliver_package", result)
         else:
             result = f"FAILED: {recipient_name} does not work at {business.name}. Try another location."
@@ -168,9 +136,7 @@ class AgentTools:
 
     def check_current_location(self) -> str:
         """Check the agent's current location in the building."""
-        business = self.building.get_business(self.state.floor, self.state.side)
-        business_info = f" ({business.name})" if business else ""
-        result = f"Current location: Floor {self.state.floor}, {self.state.side.value} side{business_info}"
+        result = f"Current location: Floor {self.state.floor}, {self.state.side.value} side"
         return self._record_action("check_current_location", result)
 
 
@@ -180,7 +146,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "go_up",
-            "description": "Move up one floor in the building. Cannot go above the top floor.",
+            "description": "Move up one floor in the building.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -192,7 +158,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "go_down",
-            "description": "Move down one floor in the building. Cannot go below the ground floor.",
+            "description": "Move down one floor in the building.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -204,7 +170,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "go_to_front",
-            "description": "Go to the front side of the current floor. Each floor has two businesses - one on the front side and one on the back side.",
+            "description": "Go to the front side of the current floor.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -216,7 +182,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "go_to_back",
-            "description": "Go to the back side of the current floor. Each floor has two businesses - one on the front side and one on the back side.",
+            "description": "Go to the back side of the current floor.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -228,7 +194,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "look_at_business",
-            "description": "Look at the business sign at your current location to see which business is here.",
+            "description": "Look at the business sign at your current location.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -240,7 +206,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_employee_list",
-            "description": "Get the list of employees who work at the business at your current location.",
+            "description": "Get the list of employees at your current location.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -252,7 +218,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "deliver_package",
-            "description": "Attempt to deliver the package to the specified recipient at your current location. This will succeed only if the recipient works at the business at your current location.",
+            "description": "Attempt to deliver the package to the specified recipient at your current location.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -269,7 +235,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "check_current_location",
-            "description": "Check your current location in the building (floor number and which side you're on).",
+            "description": "Check your current location in the building.",
             "parameters": {
                 "type": "object",
                 "properties": {},
