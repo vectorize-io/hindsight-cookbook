@@ -56,6 +56,32 @@ cd stancetracker
 npm run dev
 ```
 
+### [Conversational AI with Per-User Memory](./chat-memory)
+Simple chatbot that remembers past conversations on a per user basis:
+- Track and recall memories from past conversations
+- Creates a memory bank per user
+- Integration with Hindsight for semantic memory
+
+Start Hindsight using docker with OpenAI or your [preferred LLM provider](https://hindsight.vectorize.io/developer/models):
+
+```bash
+export OPENAI_API_KEY=your-key
+
+docker run --rm -it --pull always -p 8888:8888 -p 9999:9999 \
+  -e HINDSIGHT_API_LLM_API_KEY=$OPENAI_API_KEY \
+  -e HINDSIGHT_API_LLM_MODEL=o3-mini \
+  -v $HOME/.hindsight-docker:/home/hindsight/.pg0 \
+  ghcr.io/vectorize-io/hindsight:latest
+```
+
+
+Then: 
+```bash
+cd chat-memory
+npm i
+npm run dev
+```
+
 ## Notebooks
 
 Interactive Jupyter notebooks demonstrating Hindsight features:
