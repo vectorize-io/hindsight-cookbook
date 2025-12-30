@@ -9,8 +9,8 @@ import requests
 from typing import List, Dict, Optional
 from datetime import datetime
 
-API_URL = "http://localhost:8888/api/v1"
-AGENT_ID = "fitness-coach"
+API_URL = "http://localhost:8888"
+BANK_ID = "fitness-coach"
 
 
 def retrieve_memories(
@@ -23,23 +23,33 @@ def retrieve_memories(
 
     Args:
         query: Search query describing what memories to retrieve
-        fact_types: Types of facts to search (world, agent, opinion)
+        fact_types: Types of facts to search (world, experience, opinion)
         top_k: Number of results to return
 
     Returns:
         Dictionary with search results
     """
+    # Map old fact_type names to new ones (agent -> experience)
+    types = None
+    if fact_types:
+        types = []
+        for ft in fact_types:
+            if ft == "agent":
+                types.append("experience")
+            else:
+                types.append(ft)
+
     payload = {
-        "agent_id": AGENT_ID,
         "query": query,
-        "fact_type": fact_types or ["world", "agent", "opinion"],
-        "thinking_budget": 100,
-        "top_k": top_k
+        "budget": "mid",
+        "max_tokens": top_k * 200,  # Approximate tokens based on result count
     }
+    if types:
+        payload["types"] = types
 
     try:
         response = requests.post(
-            f"{API_URL}/agents/{AGENT_ID}/memories/search",
+            f"{API_URL}/v1/default/banks/{BANK_ID}/memories/recall",
             json=payload,
             timeout=30
         )
@@ -47,7 +57,7 @@ def retrieve_memories(
         if response.status_code == 200:
             return response.json()
         else:
-            return {"error": f"Failed to retrieve memories: {response.status_code}"}
+            return {"error": f"Failed to retrieve memories: {response.status_code}", "detail": response.text}
 
     except Exception as e:
         return {"error": str(e)}
@@ -163,7 +173,7 @@ def get_coach_opinions(about: Optional[str] = None) -> Dict:
 
 def store_memory(
     content: str,
-    memory_type: str = "world",
+    memory_type: str = "world",  # Kept for API compatibility; Hindsight auto-infers types
     context: Optional[str] = None,
     event_date: Optional[str] = None
 ) -> Dict:
@@ -172,26 +182,27 @@ def store_memory(
 
     Args:
         content: The memory content/description
-        memory_type: Type of memory (world, agent, opinion)
+        memory_type: Unused - Hindsight auto-infers fact types (world, experience, opinion)
         context: Optional context/category
         event_date: Optional event date (ISO format)
 
     Returns:
         Dictionary with storage result
     """
+    _ = memory_type  # Hindsight infers fact types automatically
+    item = {
+        "content": content,
+        "context": context or "general",
+        "timestamp": event_date or datetime.now().isoformat(),
+    }
+
     payload = {
-        "agent_id": AGENT_ID,
-        "items": [{
-            "content": content,
-            "context": context or "general",
-            "event_date": event_date or datetime.now().isoformat(),
-            "memory_type": memory_type
-        }]
+        "items": [item]
     }
 
     try:
         response = requests.post(
-            f"{API_URL}/agents/{AGENT_ID}/memories",
+            f"{API_URL}/v1/default/banks/{BANK_ID}/memories",
             json=payload,
             timeout=30
         )
@@ -199,7 +210,7 @@ def store_memory(
         if response.status_code == 200:
             return {"success": True, "message": "Memory stored successfully"}
         else:
-            return {"success": False, "error": f"Failed to store memory: {response.status_code}"}
+            return {"success": False, "error": f"Failed to store memory: {response.status_code}", "detail": response.text}
 
     except Exception as e:
         return {"success": False, "error": str(e)}
