@@ -23,31 +23,28 @@ import os
 import sys
 import requests
 
-# Demo-specific agent
-DEMO_AGENT_ID = "fitness-coach-demo"
-API_URL = "http://localhost:8888/api/v1"
+# Demo-specific memory bank
+DEMO_BANK_ID = "fitness-coach-demo"
+API_URL = "http://localhost:8888"
 
 
 def setup_demo_agent():
-    """Create demo agent."""
-    personality = {
-        "openness": 0.7,
-        "conscientiousness": 0.85,
-        "extraversion": 0.75,
-        "agreeableness": 0.9,
-        "neuroticism": 0.2,
-        "bias_strength": 0.6
+    """Create demo memory bank."""
+    disposition = {
+        "skepticism": 3,
+        "literalism": 3,
+        "empathy": 4
     }
 
     payload = {
-        "name": DEMO_AGENT_ID,
-        "personality": personality,
+        "name": DEMO_BANK_ID,
+        "disposition": disposition,
         "background": "You are an experienced fitness coach specializing in running."
     }
 
     try:
-        requests.put(f"{API_URL}/agents/{DEMO_AGENT_ID}", json=payload, timeout=30)
-        print(f"Demo agent '{DEMO_AGENT_ID}' ready")
+        requests.put(f"{API_URL}/v1/default/banks/{DEMO_BANK_ID}", json=payload, timeout=30)
+        print(f"Demo agent '{DEMO_BANK_ID}' ready")
     except:
         pass
 
@@ -55,7 +52,7 @@ def setup_demo_agent():
 def clear_demo_data():
     """Clear old demo data."""
     try:
-        requests.delete(f"{API_URL}/agents/{DEMO_AGENT_ID}/memories", timeout=30)
+        requests.delete(f"{API_URL}/v1/default/banks/{DEMO_BANK_ID}/memories", timeout=30)
         print("Cleared old demo data")
     except:
         pass
@@ -102,10 +99,10 @@ def main():
     setup_demo_agent()
     clear_demo_data()
 
-    # Override agent ID for demo
+    # Override bank ID for demo
     import memory_tools
-    original_agent_id = memory_tools.AGENT_ID
-    memory_tools.AGENT_ID = DEMO_AGENT_ID
+    original_bank_id = memory_tools.BANK_ID
+    memory_tools.BANK_ID = DEMO_BANK_ID
 
     try:
         from openai_coach import get_or_create_assistant, create_thread
@@ -193,7 +190,7 @@ Finally broke through 25 minutes!""",
         print("DEMO COMPLETE!")
 
     finally:
-        memory_tools.AGENT_ID = original_agent_id
+        memory_tools.BANK_ID = original_bank_id
 
 
 if __name__ == "__main__":
