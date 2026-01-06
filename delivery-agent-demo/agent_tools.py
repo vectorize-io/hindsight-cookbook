@@ -113,19 +113,25 @@ class AgentTools:
             result = "No package to deliver."
             return self._record_action("deliver_package", result)
 
+        pkg = self.state.current_package
+
+        # Verify the agent is delivering to the correct recipient (the one on the package)
+        if recipient_name.lower() != pkg.recipient_name.lower():
+            result = f"FAILED: Package is addressed to {pkg.recipient_name}, not {recipient_name}. Check the package details."
+            return self._record_action("deliver_package", result)
+
         business = self.building.get_business(self.state.floor, self.state.side)
         if not business:
             result = "No business at this location to deliver to."
             return self._record_action("deliver_package", result)
 
-        # Check if recipient works here
+        # Check if the correct recipient works here
         recipient_found = any(
             emp.name.lower() == recipient_name.lower()
             for emp in business.employees
         )
 
         if recipient_found:
-            pkg = self.state.current_package
             self.state.packages_delivered += 1
             self.state.current_package = None
             result = f"SUCCESS! Package #{pkg.id} delivered to {recipient_name} at {business.name}!"

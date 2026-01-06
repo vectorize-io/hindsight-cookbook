@@ -33,15 +33,20 @@ def configure_memory(api_url: str = None, verbose: bool = True, session_id: str 
     else:
         _current_bank_id = f"delivery-agent-{uuid.uuid4().hex[:8]}"
 
+    # Configure static settings
     hindsight_litellm.configure(
         hindsight_api_url=url,
-        bank_id=_current_bank_id,
-        bank_name="Delivery Agent Memory",
-        store_conversations=True,  # Auto-store conversation after each LLM call
-        inject_memories=True,      # Auto-inject relevant memories before each LLM call
-        use_reflect=False,         # Use raw facts, not synthesized responses
+        store_conversations=False,  # Disabled - we explicitly retain at delivery success
+        inject_memories=True,       # Auto-inject relevant memories before each LLM call
         verbose=verbose,
     )
+
+    # Set per-call defaults
+    hindsight_litellm.set_defaults(
+        bank_id=_current_bank_id,
+        use_reflect=False,         # Use raw facts, not synthesized responses
+    )
+
     hindsight_litellm.enable()
 
     return _current_bank_id
@@ -63,19 +68,8 @@ def set_document_id(document_id: str):
     Args:
         document_id: Unique ID for this delivery (e.g., "delivery-1")
     """
-    config = hindsight_litellm.get_config()
-    if config:
-        # Reconfigure with the new document_id
-        hindsight_litellm.configure(
-            hindsight_api_url=config.hindsight_api_url,
-            bank_id=config.bank_id,
-            bank_name=config.bank_name,
-            store_conversations=config.store_conversations,
-            inject_memories=config.inject_memories,
-            use_reflect=config.use_reflect,
-            verbose=config.verbose,
-            document_id=document_id,
-        )
+    # Use the new clean API from hindsight_litellm
+    hindsight_litellm.set_document_id(document_id)
 
 
 def completion(**kwargs):
@@ -88,4 +82,44 @@ def completion(**kwargs):
     - Storing the conversation after the response (with document_id grouping)
     - Deduplicating facts automatically
     """
-    return hindsight_litellm.completion(**kwargs)
+    # DEBUG: Log that we're using hindsight_litellm
+    with open("/tmp/demo.log", "a") as f:
+        f.write(f"\n[HINDSIGHT] Calling hindsight_litellm.completion()\n")
+        f.write(f"[HINDSIGHT] Bank ID: {_current_bank_id}\n")
+        f.write(f"[HINDSIGHT] Model: {kwargs.get('model', 'N/A')}\n")
+        f.write(f"[HINDSIGHT] Tools passed: {len(kwargs.get('tools', []))} tools\n")
+
+    try:
+        result = hindsight_litellm.completion(**kwargs)
+        # DEBUG: Log after completion
+        with open("/tmp/demo.log", "a") as f:
+            f.write(f"[HINDSIGHT] Completion returned successfully\n")
+        return result
+    except Exception as e:
+        with open("/tmp/demo.log", "a") as f:
+            f.write(f"[HINDSIGHT] ERROR: {e}\n")
+        raise
+
+
+def retain(content: str):
+    """
+    Explicitly store content to Hindsight memory.
+
+    Use this for storing information that won't be captured by automatic
+    conversation storage (e.g., final tool results when conversation ends).
+    """
+    return hindsight_litellm.retain(content)
+
+
+def get_pending_storage_errors():
+    """
+    Get any pending storage errors from async background storage.
+
+    Storage runs asynchronously by default for performance. Call this
+    at delivery completion to check if any storage operations failed.
+
+    Returns:
+        List of HindsightError exceptions from failed storage operations.
+        Returns empty list if no errors.
+    """
+    return hindsight_litellm.get_pending_storage_errors()

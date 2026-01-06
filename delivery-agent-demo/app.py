@@ -8,12 +8,51 @@ to navigate using Hindsight memory.
 import streamlit as st
 import streamlit.components.v1 as components
 import time
+import json
 import os
 import uuid
+import random
+import traceback
+import threading
+import queue
+import pandas as pd
 from dotenv import load_dotenv
 
-from building import get_building, Side, reset_building
+# Queue storage using st.cache_resource to survive Streamlit reruns
+# Regular module-level dicts get reset when Streamlit reimports the module
+@st.cache_resource
+def _get_queue_storage() -> dict:
+    """Get the persistent queue storage dict. Survives Streamlit reruns."""
+    return {}
+
+
+def _get_or_create_queue(session_id: str) -> queue.Queue:
+    """Get the queue for this session, creating if needed."""
+    storage = _get_queue_storage()
+    if session_id not in storage:
+        storage[session_id] = queue.Queue()
+    return storage[session_id]
+
+
+def _clear_queue(session_id: str):
+    """Clear and remove the queue for this session."""
+    storage = _get_queue_storage()
+    if session_id in storage:
+        # Drain any remaining items
+        q = storage[session_id]
+        while True:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                break
+        del storage[session_id]
+
+
+import hindsight_litellm
+from building import get_building, Side, reset_building, Package
 from agent import DeliveryAgent, ActionEvent
+from agent_tools import AgentTools, TOOL_DEFINITIONS, execute_tool
+from game_renderer import generate_game_html
 import memory
 
 # Load environment variables
@@ -27,301 +66,346 @@ st.set_page_config(
 )
 
 
-def render_building_html(building, agent_floor: int, agent_side: str, has_package: bool = False, current_action: str = None):
-    """Render the building as a retro sprite-based visualization using HTML."""
-    floors_data = building.get_floor_display()
+def _format_messages_for_retain(messages: list) -> str:
+    """Format conversation messages for explicit retain to Hindsight.
 
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            background: #0f0f23;
-            font-family: 'Press Start 2P', monospace;
-            padding: 10px;
-        }
-
-        .building {
-            background: #f5f5dc;
-            border: 4px solid #000000;
-            border-radius: 8px;
-            padding: 15px;
-            box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
-        }
-
-        .floor {
-            display: flex;
-            align-items: stretch;
-            margin-bottom: 4px;
-            position: relative;
-        }
-
-        .business {
-            flex: 1;
-            background: #add8e6;
-            border: 3px solid #4a90a4;
-            padding: 12px 8px;
-            text-align: center;
-            min-height: 90px;
-            position: relative;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-        }
-
-        .business.active {
-            border-color: #00aa00;
-            box-shadow: 0 0 20px rgba(0, 200, 0, 0.6);
-            background: #90ee90;
-        }
-
-        .business-name {
-            font-size: 7px;
-            color: #333333;
-            margin-bottom: 8px;
-            line-height: 1.4;
-            font-weight: bold;
-        }
-
-        .sprites {
-            font-size: 48px;
-            min-height: 50px;
-        }
-
-        .agent {
-            display: inline-block;
-            animation: bounce 0.5s ease infinite;
-            font-size: 56px;
-        }
-
-        .agent.facing-right {
-            animation: bounce-right 0.5s ease infinite;
-        }
-
-        .package {
-            font-size: 40px;
-        }
-
-        .magnifying-glass {
-            font-size: 36px;
-            animation: pulse 0.5s ease infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.2); }
-        }
-
-        @keyframes bounce {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-5px); }
-        }
-
-        @keyframes bounce-right {
-            0%, 100% { transform: scaleX(-1) translateY(0); }
-            50% { transform: scaleX(-1) translateY(-5px); }
-        }
-
-        .floor-center {
-            width: 80px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            background: #d4c4a8;
-            position: relative;
-        }
-
-        .floor-num {
-            color: #8b4513;
-            font-size: 12px;
-            font-weight: bold;
-            z-index: 2;
-            position: absolute;
-        }
-
-        /* F1, F3, F5: top right quadrant */
-        .floor-1 .floor-num { top: 5px; right: 5px; }
-        .floor-3 .floor-num { top: 5px; right: 5px; }
-        .floor-5 .floor-num { top: 5px; right: 5px; }
-
-        /* F2, F4: top left quadrant */
-        .floor-2 .floor-num { top: 5px; left: 5px; }
-        .floor-4 .floor-num { top: 5px; left: 5px; }
-
-        .staircase-container {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-        }
-
-        .stair-segment {
-            position: absolute;
-            background: #1a1a1a;
-        }
-
-        /* Each floor has 4 steps: h1,v1,h2,v2,h3,v3,h4,v4 */
-        /* Horizontal segments are 25% width, vertical segments are 25% height */
-
-        /* ===== FLOOR 1: Right to Left (bottom-right of front to top-left of back) ===== */
-        .floor-1 .h1 { bottom: 0; right: 0; width: 25%; height: 5px; }
-        .floor-1 .v1 { bottom: 0; right: 25%; width: 5px; height: 25%; }
-        .floor-1 .h2 { bottom: 25%; right: 25%; width: 25%; height: 5px; }
-        .floor-1 .v2 { bottom: 25%; right: 50%; width: 5px; height: 25%; }
-        .floor-1 .h3 { bottom: 50%; right: 50%; width: 25%; height: 5px; }
-        .floor-1 .v3 { bottom: 50%; right: 75%; width: 5px; height: 25%; }
-        .floor-1 .h4 { bottom: 75%; right: 75%; width: 25%; height: 5px; }
-        .floor-1 .v4 { bottom: 75%; left: 0; width: 5px; height: 25%; }
-
-        /* ===== FLOOR 2: Left to Right ===== */
-        .floor-2 .h1 { bottom: 0; left: 0; width: 25%; height: 5px; }
-        .floor-2 .v1 { bottom: 0; left: 25%; width: 5px; height: 25%; }
-        .floor-2 .h2 { bottom: 25%; left: 25%; width: 25%; height: 5px; }
-        .floor-2 .v2 { bottom: 25%; left: 50%; width: 5px; height: 25%; }
-        .floor-2 .h3 { bottom: 50%; left: 50%; width: 25%; height: 5px; }
-        .floor-2 .v3 { bottom: 50%; left: 75%; width: 5px; height: 25%; }
-        .floor-2 .h4 { bottom: 75%; left: 75%; width: 25%; height: 5px; }
-        .floor-2 .v4 { bottom: 75%; right: 0; width: 5px; height: 25%; }
-
-        /* ===== FLOOR 3: Right to Left ===== */
-        .floor-3 .h1 { bottom: 0; right: 0; width: 25%; height: 5px; }
-        .floor-3 .v1 { bottom: 0; right: 25%; width: 5px; height: 25%; }
-        .floor-3 .h2 { bottom: 25%; right: 25%; width: 25%; height: 5px; }
-        .floor-3 .v2 { bottom: 25%; right: 50%; width: 5px; height: 25%; }
-        .floor-3 .h3 { bottom: 50%; right: 50%; width: 25%; height: 5px; }
-        .floor-3 .v3 { bottom: 50%; right: 75%; width: 5px; height: 25%; }
-        .floor-3 .h4 { bottom: 75%; right: 75%; width: 25%; height: 5px; }
-        .floor-3 .v4 { bottom: 75%; left: 0; width: 5px; height: 25%; }
-
-        /* ===== FLOOR 4: Left to Right ===== */
-        .floor-4 .h1 { bottom: 0; left: 0; width: 25%; height: 5px; }
-        .floor-4 .v1 { bottom: 0; left: 25%; width: 5px; height: 25%; }
-        .floor-4 .h2 { bottom: 25%; left: 25%; width: 25%; height: 5px; }
-        .floor-4 .v2 { bottom: 25%; left: 50%; width: 5px; height: 25%; }
-        .floor-4 .h3 { bottom: 50%; left: 50%; width: 25%; height: 5px; }
-        .floor-4 .v3 { bottom: 50%; left: 75%; width: 5px; height: 25%; }
-        .floor-4 .h4 { bottom: 75%; left: 75%; width: 25%; height: 5px; }
-        .floor-4 .v4 { bottom: 75%; right: 0; width: 5px; height: 25%; }
-
-        /* ===== FLOOR 5: Right to Left (top floor) ===== */
-        .floor-5 .h1 { bottom: 0; right: 0; width: 25%; height: 5px; }
-        .floor-5 .v1 { bottom: 0; right: 25%; width: 5px; height: 25%; }
-        .floor-5 .h2 { bottom: 25%; right: 25%; width: 25%; height: 5px; }
-        .floor-5 .v2 { bottom: 25%; right: 50%; width: 5px; height: 25%; }
-        .floor-5 .h3 { bottom: 50%; right: 50%; width: 25%; height: 5px; }
-        .floor-5 .v3 { bottom: 50%; right: 75%; width: 5px; height: 25%; }
-        .floor-5 .h4 { bottom: 75%; right: 75%; width: 25%; height: 5px; }
-        .floor-5 .v4 { bottom: 75%; left: 0; width: 5px; height: 25%; }
-
-        .platform {
-            height: 8px;
-            background: linear-gradient(180deg, #8b4513 0%, #654321 100%);
-            border-top: 2px solid #a0522d;
-            margin-top: 2px;
-        }
-
-        .title {
-            text-align: center;
-            color: #8b4513;
-            font-size: 10px;
-            margin-bottom: 15px;
-            text-shadow: 1px 1px #d4c4a8;
-        }
-
-        .ground {
-            height: 15px;
-            background: linear-gradient(180deg, #228b22 0%, #006400 100%);
-            border-top: 3px solid #32cd32;
-            margin-top: 5px;
-            border-radius: 0 0 4px 4px;
-        }
-    </style>
-    </head>
-    <body>
-    <div class="building">
-        <div class="title">OFFICE BUILDING</div>
+    This is used to store the final conversation when a delivery completes,
+    since the automatic LLM callback won't capture the final tool results.
     """
+    items = []
+    for msg in messages:
+        role = msg.get("role", "").upper()
+        content = msg.get("content", "")
+        tool_calls = msg.get("tool_calls", [])
 
-    for floor_data in floors_data:
-        floor_num = floor_data["floor"]
-        front_biz = floor_data["front"]
-        back_biz = floor_data["back"]
+        # Skip system messages
+        if role == "SYSTEM":
+            continue
 
-        is_agent_floor = floor_num == agent_floor
-        agent_on_front = is_agent_floor and agent_side == "front"
-        agent_on_back = is_agent_floor and agent_side == "back"
+        # Handle tool results
+        if role == "TOOL":
+            items.append(f"TOOL_RESULT: {content}")
+            continue
 
-        front_class = "business active" if agent_on_front else "business"
-        back_class = "business active" if agent_on_back else "business"
+        # Handle assistant with tool calls
+        if tool_calls:
+            tc_strs = []
+            for tc in tool_calls:
+                if hasattr(tc, 'function'):
+                    tc_strs.append(f"{tc.function.name}({tc.function.arguments})")
+                elif isinstance(tc, dict) and 'function' in tc:
+                    func = tc['function']
+                    tc_strs.append(f"{func.get('name', '')}({func.get('arguments', '')})")
+            if tc_strs:
+                items.append(f"ASSISTANT_TOOL_CALLS: {'; '.join(tc_strs)}")
+            if content:
+                items.append(f"ASSISTANT: {content}")
+            continue
 
-        front_sprites = ""
-        back_sprites = ""
+        # Regular messages
+        if content:
+            label = "USER" if role == "USER" else "ASSISTANT"
+            items.append(f"{label}: {content}")
 
-        # Check if agent is checking employees at current location
-        is_checking = current_action == "get_employee_list"
+    return "\n\n".join(items)
 
-        if agent_on_front:
-            # Mirror the agent to face right when on front (left) side
-            front_sprites = '<span class="agent facing-right">🚶</span>'
-            if has_package:
-                front_sprites += '<span class="package">📦</span>'
-            if is_checking:
-                front_sprites += '<span class="magnifying-glass">🔍</span>'
 
-        if agent_on_back:
-            back_sprites = '<span class="agent">🚶</span>'
-            if has_package:
-                back_sprites += '<span class="package">📦</span>'
-            if is_checking:
-                back_sprites += '<span class="magnifying-glass">🔍</span>'
+def _run_delivery_in_background(
+    action_queue: queue.Queue,
+    building,
+    package: Package,
+    model: str,
+    max_steps: int = None,
+):
+    # DEBUG: Log at the very start of the function
+    with open("/tmp/demo.log", "a") as f:
+        f.write(f"\n\n*** BACKGROUND THREAD STARTED ***\n")
+        f.write(f"Package: {package}\n")
+        f.write(f"Model: {model}\n")
+        f.write(f"Max steps: {max_steps}\n")
+    """Run a delivery in a background thread, pushing actions to queue.
 
-        html += f'''
-        <div class="floor">
-            <div class="{front_class}">
-                <div class="business-name">{front_biz.name if front_biz else "Empty"}</div>
-                <div class="sprites">{front_sprites}</div>
-            </div>
-            <div class="floor-center floor-{floor_num}">
-                <div class="staircase-container">
-                    <div class="stair-segment h1"></div>
-                    <div class="stair-segment v1"></div>
-                    <div class="stair-segment h2"></div>
-                    <div class="stair-segment v2"></div>
-                    <div class="stair-segment h3"></div>
-                    <div class="stair-segment v3"></div>
-                    <div class="stair-segment h4"></div>
-                    <div class="stair-segment v4"></div>
-                </div>
-                <div class="floor-num">F{floor_num}</div>
-            </div>
-            <div class="{back_class}">
-                <div class="business-name">{back_biz.name if back_biz else "Empty"}</div>
-                <div class="sprites">{back_sprites}</div>
-            </div>
-        </div>
-        <div class="platform"></div>
-        '''
+    This allows the UI to animate actions as they happen while the agent
+    runs at full speed without waiting for animations.
 
-    html += """
-        <div class="ground"></div>
-    </div>
-    </body>
-    </html>
+    Args:
+        action_queue: Thread-safe queue to push actions to
+        building: The building to navigate
+        package: The package to deliver
+        model: LLM model to use
+        max_steps: Maximum steps (None = no limit)
+
+    The queue receives dicts with keys:
+        - type: "action", "success", "error", "step_limit", "complete"
+        - For "action": tool_name, result, floor, side, timing
+        - For "success"/"error"/"step_limit": message
+        - For "complete": success (bool), steps (int), messages (list)
     """
+    from building import AgentState
 
-    return html
+    agent_state = AgentState()
+    agent_state.current_package = package
+
+    messages = [
+        {"role": "system", "content": "You are a delivery agent. Use the tools provided to get it delivered."},
+        {"role": "user", "content": f"Please deliver this package: {package}"}
+    ]
+
+    tools = AgentTools(building, agent_state)
+    success = False
+    error_msg = None
+
+    try:
+        while max_steps is None or agent_state.steps_taken < max_steps:
+            t0 = time.time()
+
+            # DEBUG: Log FULL prompt being sent to LLM (no truncation)
+            with open("/tmp/demo.log", "a") as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"[DEBUG] Step {agent_state.steps_taken + 1} - FULL PROMPT TO LLM:\n")
+                f.write(f"[DEBUG] Model: {model}\n")
+                f.write(f"{'='*80}\n")
+                for i, msg in enumerate(messages):
+                    role = msg.get("role", "?")
+                    content = msg.get("content", "") or "(none)"
+                    tool_calls = msg.get("tool_calls", [])
+                    f.write(f"\n--- MESSAGE [{i}] role={role} ---\n")
+                    if content:
+                        f.write(f"{content}\n")
+                    if tool_calls:
+                        f.write(f"tool_calls: {json.dumps([{'name': tc.get('function', {}).get('name', '?') if isinstance(tc, dict) else tc.function.name, 'args': tc.get('function', {}).get('arguments', '') if isinstance(tc, dict) else tc.function.arguments} for tc in tool_calls], indent=2)}\n")
+                f.write(f"\n--- TOOLS ---\n")
+                f.write(f"{json.dumps([t['function']['name'] for t in TOOL_DEFINITIONS])}\n")
+                f.write(f"{'='*80}\n")
+
+            response = memory.completion(
+                model=model,
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+                tool_choice="required",
+                timeout=30
+            )
+
+            t1 = time.time()
+            llm_duration = t1 - t0
+
+            message = response.choices[0].message
+
+            # DEBUG: Log what we received from the LLM (write to file)
+            with open("/tmp/demo.log", "a") as f:
+                f.write(f"[DEBUG] Response received in {llm_duration:.2f}s:\n")
+                if message.tool_calls:
+                    for tc in message.tool_calls:
+                        f.write(f"[DEBUG]   Tool call: {tc.function.name}({tc.function.arguments})\n")
+                if message.content:
+                    f.write(f"[DEBUG]   Content: {message.content[:200]}\n")
+                f.write(f"{'='*60}\n\n")
+
+            # Push LLM call info to queue for display (include tools)
+            llm_call_item = {
+                "type": "llm_call",
+                "step": agent_state.steps_taken + 1,
+                "messages": json.dumps({
+                    "messages": [dict(m) if isinstance(m, dict) else {"role": m.get("role", ""), "content": m.get("content", "")} for m in messages],
+                    "tools": TOOL_DEFINITIONS,
+                }),
+                "response": json.dumps({"content": message.content, "tool_calls": [{"name": tc.function.name, "arguments": tc.function.arguments} for tc in (message.tool_calls or [])]}),
+            }
+            action_queue.put(llm_call_item)
+            # DEBUG: Log that we pushed llm_call to queue
+            with open("/tmp/demo.log", "a") as f:
+                f.write(f"[QUEUE-PUSH] Pushed llm_call for step {agent_state.steps_taken + 1} to queue\n")
+
+            if message.tool_calls:
+                tool_results = []
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+
+                    result = execute_tool(tools, tool_name, arguments)
+
+                    tool_results.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "content": result
+                    })
+
+                    # Push action to queue for UI animation
+                    action_queue.put({
+                        "type": "action",
+                        "tool_name": tool_name,
+                        "result": result,
+                        "floor": agent_state.floor,
+                        "side": agent_state.side.value,
+                        "timing": llm_duration,
+                    })
+
+                    if "SUCCESS!" in result:
+                        success = True
+                        action_queue.put({
+                            "type": "success",
+                            "message": result,
+                        })
+                        break
+
+                # Serialize tool_calls to dicts for JSON compatibility
+                serialized_tool_calls = [
+                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in message.tool_calls
+                ] if message.tool_calls else []
+                messages.append({"role": "assistant", "content": message.content, "tool_calls": serialized_tool_calls})
+                messages.extend(tool_results)
+
+                if success:
+                    # Store to memory on success
+                    final_convo = _format_messages_for_retain(messages)
+                    memory.retain(final_convo)
+                    break
+
+                # Check step limit
+                if max_steps is not None and agent_state.steps_taken >= max_steps:
+                    action_queue.put({
+                        "type": "step_limit",
+                        "message": f"Exceeded {max_steps} step limit",
+                    })
+                    break
+            else:
+                # No tool calls - nudge to use tools
+                if message.content:
+                    action_queue.put({
+                        "type": "action",
+                        "tool_name": "💬 response",
+                        "result": message.content,
+                        "floor": agent_state.floor,
+                        "side": agent_state.side.value,
+                        "timing": llm_duration,
+                    })
+                messages.append({"role": "assistant", "content": message.content})
+                messages.append({"role": "user", "content": "Use the available tools to complete the delivery."})
+
+    except Exception as e:
+        error_msg = str(e)
+        action_queue.put({
+            "type": "error",
+            "message": error_msg,
+            "traceback": traceback.format_exc(),
+        })
+
+    # Signal completion
+    action_queue.put({
+        "type": "complete",
+        "success": success,
+        "steps": agent_state.steps_taken,
+        "messages": messages,
+        "error": error_msg,
+    })
+
+
+def _run_single_delivery_ff(building, include_business: bool, delivery_counter: int, max_steps: int = None):
+    """Run a single delivery to completion without Streamlit reruns.
+
+    This is optimized for fast-forward mode - no UI updates, minimal overhead.
+
+    Args:
+        building: The building to navigate
+        include_business: Whether to include business name on packages
+        delivery_counter: Counter for document_id
+        max_steps: Maximum steps per delivery (None = no limit)
+
+    Returns:
+        dict with keys: success, steps, llm_times, package_str, error (if any)
+    """
+    package = building.generate_package(include_business=include_business)
+    memory.set_document_id(f"delivery-{delivery_counter}")
+
+    agent = DeliveryAgent(building=building)
+    agent.state.current_package = package
+
+    messages = [
+        {"role": "system", "content": agent._build_system_prompt(package)},
+        {"role": "user", "content": f"Please deliver this package: {package}"}
+    ]
+
+    tools = AgentTools(agent.building, agent.state, on_action=agent._record_action)
+    llm_times = []
+    success = False
+    error = None
+
+    while max_steps is None or agent.state.steps_taken < max_steps:
+        try:
+            t0 = time.time()
+            response = memory.completion(
+                model=agent.model,
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+                tool_choice="required",
+                timeout=30
+            )
+            t1 = time.time()
+            llm_times.append(t1 - t0)
+
+            message = response.choices[0].message
+
+            if message.tool_calls:
+                tool_results = []
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+                    result = execute_tool(tools, tool_name, arguments)
+
+                    tool_results.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "content": result
+                    })
+
+                    # Check for success
+                    if "SUCCESS!" in result:
+                        success = True
+                        break
+
+                # Update messages (serialize tool_calls for JSON compatibility)
+                serialized_tool_calls = [
+                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in message.tool_calls
+                ] if message.tool_calls else []
+                messages.append({"role": "assistant", "content": message.content, "tool_calls": serialized_tool_calls})
+                messages.extend(tool_results)
+
+                if success:
+                    # Store final conversation
+                    final_convo = _format_messages_for_retain(messages)
+                    memory.retain(final_convo)
+                    break
+            else:
+                # No tool calls - nudge to use tools
+                messages.append({"role": "assistant", "content": message.content})
+                messages.append({"role": "user", "content": "Use the available tools to complete the delivery."})
+
+        except Exception as e:
+            error = str(e)
+            break
+
+    # Check for storage errors
+    storage_errors = memory.get_pending_storage_errors()
+    storage_error_msgs = []
+    if storage_errors:
+        for err in storage_errors:
+            print(f"[STORAGE ERROR] {err}", flush=True)
+            storage_error_msgs.append(str(err))
+
+    # Determine if we hit the step limit
+    hit_step_limit = max_steps is not None and agent.state.steps_taken >= max_steps and not success
+
+    return {
+        "success": success,
+        "steps": agent.state.steps_taken,
+        "llm_times": llm_times,
+        "package_str": str(package),
+        "error": error,
+        "storage_errors": storage_error_msgs,
+        "hit_step_limit": hit_step_limit,
+    }
 
 
 @st.dialog("Select Recipient", width="large")
@@ -541,6 +625,24 @@ def main():
     if "include_business" not in st.session_state:
         st.session_state.include_business = False
 
+    if "max_steps_per_delivery" not in st.session_state:
+        st.session_state.max_steps_per_delivery = None  # None = no limit
+
+    if "ff_errors" not in st.session_state:
+        st.session_state.ff_errors = []  # Track errors during FF mode
+
+    # Background thread state for UI mode streaming
+    # Note: The actual queue.Queue object is stored in _GLOBAL_QUEUES, not session state
+    # This is because queue.Queue objects don't survive Streamlit hot-reloads
+    if "bg_queue_active" not in st.session_state:
+        st.session_state.bg_queue_active = False  # Whether there's an active queue for this session
+
+    if "bg_delivery_running" not in st.session_state:
+        st.session_state.bg_delivery_running = False
+
+    if "bg_delivery_complete_info" not in st.session_state:
+        st.session_state.bg_delivery_complete_info = None  # Completion info from thread
+
     building = st.session_state.building
 
     # Auto-start delivery if recipient was selected (check this FIRST)
@@ -548,19 +650,24 @@ def main():
         st.session_state.start_delivery_now = False
         st.session_state.show_recipient_dialog = False  # Ensure dialog is closed
         st.session_state.current_actions = []
-        st.session_state.llm_messages = []  # Reset step counter for new delivery
+        st.session_state.action_queue = []  # Reset action queue
+        st.session_state.displayed_actions = []
+        st.session_state.llm_messages = []
         st.session_state.has_package = True
         st.session_state.agent_floor = 1
         st.session_state.agent_side = "front"
         st.session_state.prev_agent_floor = 1
         st.session_state.prev_agent_side = "front"
         st.session_state.current_action = None
+        st.session_state.delivery_start_time = time.time()
+        st.session_state.delivery_complete_pending = False
+        st.session_state.bg_delivery_complete_info = None  # Clear any previous completion
+        # Clear old queue before creating new one
+        _clear_queue(st.session_state.session_id)
+        st.session_state.bg_queue_active = False
 
         # Create package for selected recipient
-        from building import Package
-        import random
         recipient_name = st.session_state.selected_recipient
-        # Find the business for this recipient
         business_info = building.find_employee(recipient_name)
         business_name = business_info[0].name if business_info and st.session_state.include_business else None
         package = Package(
@@ -574,18 +681,30 @@ def main():
         st.session_state.delivery_counter += 1
         memory.set_document_id(f"delivery-{st.session_state.delivery_counter}")
 
-        # Create agent
-        agent = DeliveryAgent(building=building)
+        # Get model from a temp agent
+        model = os.environ.get("LLM_MODEL", "openai/gpt-4o-mini")
 
-        # Use step-by-step internally (for animation)
-        st.session_state.pending_delivery = {
-            "package": package,
-            "agent": agent,
-            "complete": False,
-            "auto_advance": not st.session_state.step_by_step
-        }
-        st.session_state.current_result = None
-        # Clear selected recipient after starting delivery
+        # Start background thread for delivery using global queue storage
+        action_q = _get_or_create_queue(st.session_state.session_id)
+        st.session_state.bg_queue_active = True
+        st.session_state.bg_delivery_running = True
+        st.session_state.bg_delivery_complete_info = None
+
+        # DEBUG: Log queue creation
+        with open("/tmp/demo.log", "a") as f:
+            f.write(f"\n=== STARTING THREAD from Select Recipient ===\n")
+            f.write(f"[START] Session ID: {st.session_state.session_id}\n")
+            f.write(f"[START] Queue from global: {action_q}, id={id(action_q)}\n")
+            f.write(f"[START] bg_queue_active: {st.session_state.bg_queue_active}\n")
+
+        thread = threading.Thread(
+            target=_run_delivery_in_background,
+            args=(action_q, building, package, model, st.session_state.max_steps_per_delivery),
+            daemon=True
+        )
+        thread.start()
+
+        # Clear selected recipient
         st.session_state.selected_recipient = None
         st.session_state.selected_business = None
         st.rerun()
@@ -617,29 +736,37 @@ def main():
         col_ff_controls, col_ff_stats = st.columns([1, 1])
 
         with col_ff_controls:
-            has_pending = st.session_state.pending_delivery is not None
-
             loop_count = st.slider("Deliveries to run", min_value=1, max_value=100, value=10, key="ff_loop_count")
 
-            loop_disabled = has_pending or st.session_state.loop_remaining > 0
-            if st.button("🚀 Run Loop", use_container_width=True, disabled=loop_disabled, key="ff_loop_btn"):
+            # Max steps per delivery - number input, empty = no limit
+            max_steps_input = st.number_input(
+                "Max steps per delivery",
+                min_value=1,
+                max_value=500,
+                value=None,
+                placeholder="No limit",
+                help="Leave empty for no limit. Delivery fails if it exceeds this many steps.",
+                key="ff_max_steps"
+            )
+            st.session_state.max_steps_per_delivery = max_steps_input
+
+            is_running = st.session_state.loop_remaining > 0
+            if st.button("🚀 Run Loop", use_container_width=True, disabled=is_running, key="ff_loop_btn"):
                 st.session_state.fast_forward = True
                 st.session_state.loop_remaining = loop_count
                 st.session_state.timing_loop_start = time.time()
                 st.session_state.timing_llm_calls = []
                 st.session_state.timing_deliveries = []
+                st.session_state.ff_errors = []  # Clear errors for new run
 
-            if st.session_state.loop_remaining > 0:
-                progress = 1 - (st.session_state.loop_remaining / loop_count) if loop_count > 0 else 0
-                st.progress(progress, text=f"{st.session_state.loop_remaining} remaining")
-
-            if st.button("📦 Single Delivery", use_container_width=True, disabled=has_pending, key="ff_single_btn"):
+            if st.button("📦 Single Delivery", use_container_width=True, disabled=is_running, key="ff_single_btn"):
                 st.session_state.fast_forward = True
                 st.session_state.loop_remaining = 1
+                st.session_state.ff_errors = []
 
-            if st.button("🛑 Stop", use_container_width=True, disabled=not has_pending, key="ff_stop_btn"):
+            if st.button("🛑 Stop", use_container_width=True, disabled=not is_running, key="ff_stop_btn"):
                 st.session_state.loop_remaining = 0
-                st.session_state.pending_delivery = None
+                st.session_state.fast_forward = False
 
         with col_ff_stats:
             st.markdown("#### ⏱️ Benchmarks")
@@ -660,126 +787,210 @@ def main():
                 total = time.time() - st.session_state.timing_loop_start
                 st.metric("Total Time", f"{total:.1f}s")
 
+        # Show errors from FF runs
+        if st.session_state.ff_errors:
+            with st.expander(f"⚠️ Errors ({len(st.session_state.ff_errors)})", expanded=True):
+                for err in st.session_state.ff_errors[-10:]:  # Show last 10
+                    st.error(err)
+
         # Learning curve in fast-forward
         if len(st.session_state.delivery_history) > 1:
             st.markdown("### 📈 Learning Curve")
-            import pandas as pd
             steps_history = [d["steps"] for d in st.session_state.delivery_history]
             df = pd.DataFrame({"Steps": steps_history}, index=range(1, len(steps_history) + 1))
             df.index.name = "Delivery"
             st.line_chart(df, use_container_width=True)
 
-        # Current status
-        if has_pending:
-            st.info(f"🔄 Running... Floor {st.session_state.agent_floor}, {st.session_state.agent_side} side | Step {st.session_state.pending_delivery['agent'].state.steps_taken if st.session_state.pending_delivery else 0}")
+        # Fast-forward delivery loop - uses st.empty() for real-time updates
+        if st.session_state.get("fast_forward", False) and st.session_state.loop_remaining > 0:
+            # Create placeholders for real-time updates
+            progress_placeholder = st.empty()
+            status_placeholder = st.empty()
 
-        # Fast-forward delivery loop (inside ff_tab)
-        if st.session_state.get("fast_forward", False):
-            # Auto-start if loop is active and no pending delivery
-            if st.session_state.loop_remaining > 0 and st.session_state.pending_delivery is None:
+            total_to_run = st.session_state.loop_remaining
+            completed_this_run = 0
+
+            # Run ALL deliveries in a single loop without st.rerun()
+            while st.session_state.loop_remaining > 0:
                 st.session_state.loop_remaining -= 1
-                from building import Package
-                package = building.generate_package(include_business=st.session_state.include_business)
-                st.session_state.last_package_info = str(package)
                 st.session_state.delivery_counter += 1
-                memory.set_document_id(f"delivery-{st.session_state.delivery_counter}")
-                st.session_state.delivery_start_time = time.time()
+                completed_this_run += 1
 
-                agent = DeliveryAgent(building=building)
-                st.session_state.pending_delivery = {
-                    "package": package,
-                    "agent": agent,
-                    "complete": False,
-                    "auto_advance": True
-                }
-                st.session_state.action_queue = []
-                st.session_state.displayed_actions = []
-                st.session_state.llm_messages = []
-                st.rerun()
+                # Update progress in real-time
+                progress = completed_this_run / total_to_run
+                progress_placeholder.progress(progress, text=f"Delivery {completed_this_run}/{total_to_run}")
+                status_placeholder.info(f"🚀 Running delivery {completed_this_run}...")
 
-            # Run the delivery step if pending
-            if st.session_state.pending_delivery and not st.session_state.pending_delivery["complete"]:
-                pending = st.session_state.pending_delivery
-                agent = pending["agent"]
-                package = pending["package"]
+                delivery_start = time.time()
 
-                from agent_tools import AgentTools, TOOL_DEFINITIONS, execute_tool
-                import json
-                import time as timer
+                # Run entire delivery
+                result = _run_single_delivery_ff(
+                    building=building,
+                    include_business=st.session_state.include_business,
+                    delivery_counter=st.session_state.delivery_counter,
+                    max_steps=st.session_state.max_steps_per_delivery,
+                )
 
-                if agent.state.current_package is None:
-                    agent.state.current_package = package
-                    pending["messages"] = [
-                        {"role": "system", "content": agent._build_system_prompt(package)},
-                        {"role": "user", "content": f"Please deliver this package: {package}"}
-                    ]
+                delivery_time = time.time() - delivery_start
 
-                tools = AgentTools(agent.building, agent.state, on_action=agent._record_action)
+                # Update stats
+                st.session_state.timing_llm_calls.extend(result["llm_times"])
+                st.session_state.timing_deliveries.append(delivery_time)
+                st.session_state.total_steps += result["steps"]
+                if result["success"]:
+                    st.session_state.deliveries_completed += 1
+                st.session_state.delivery_history.append({
+                    "package": result["package_str"],
+                    "success": result["success"],
+                    "steps": result["steps"],
+                })
+                st.session_state.last_package_info = result["package_str"]
 
-                try:
-                    t0 = timer.time()
-                    response = memory.completion(
-                        model=agent.model,
-                        messages=pending["messages"],
-                        tools=TOOL_DEFINITIONS,
-                        tool_choice="auto",
-                        timeout=30
-                    )
-                    t1 = timer.time()
-                    st.session_state.timing_llm_calls.append(t1 - t0)
+                # Track errors for UI display
+                if result["error"]:
+                    err_msg = f"Delivery {st.session_state.delivery_counter}: {result['error']}"
+                    st.session_state.ff_errors.append(err_msg)
+                    print(f"[FF ERROR] {err_msg}", flush=True)
 
-                    message = response.choices[0].message
+                if result["storage_errors"]:
+                    for se in result["storage_errors"]:
+                        err_msg = f"Delivery {st.session_state.delivery_counter} storage: {se}"
+                        st.session_state.ff_errors.append(err_msg)
 
-                    if message.tool_calls:
-                        tool_results = []
-                        for tool_call in message.tool_calls:
-                            tool_name = tool_call.function.name
-                            arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
-                            result = execute_tool(tools, tool_name, arguments)
+                if result["hit_step_limit"]:
+                    err_msg = f"Delivery {st.session_state.delivery_counter}: Hit step limit ({st.session_state.max_steps_per_delivery} steps)"
+                    st.session_state.ff_errors.append(err_msg)
+                    print(f"[FF STEP LIMIT] {err_msg}", flush=True)
 
-                            tool_results.append({
-                                "tool_call_id": tool_call.id,
-                                "role": "tool",
-                                "content": result
-                            })
+            # Clear placeholders and show completion
+            progress_placeholder.empty()
+            status_placeholder.success(f"✅ Completed {completed_this_run} deliveries!")
 
-                            st.session_state.agent_floor = agent.state.floor
-                            st.session_state.agent_side = agent.state.side.value
-
-                            if "SUCCESS!" in result:
-                                pending["complete"] = True
-                                st.session_state.deliveries_completed += 1
-                                st.session_state.total_steps += agent.state.steps_taken
-                                if st.session_state.delivery_start_time:
-                                    st.session_state.timing_deliveries.append(time.time() - st.session_state.delivery_start_time)
-                                st.session_state.delivery_history.append({
-                                    "package": str(package),
-                                    "success": True,
-                                    "steps": agent.state.steps_taken
-                                })
-                                st.session_state.pending_delivery = None
-                                break
-
-                        pending["messages"].append({"role": "assistant", "content": message.content, "tool_calls": message.tool_calls})
-                        pending["messages"].extend(tool_results)
-
-                        if agent.state.steps_taken >= 50:
-                            pending["complete"] = True
-                            st.session_state.pending_delivery = None
-                    else:
-                        pending["messages"].append({"role": "assistant", "content": message.content})
-                        pending["messages"].append({"role": "user", "content": "Use the available tools to complete the delivery."})
-
-                except Exception as e:
-                    print(f"[FF ERROR] {e}", flush=True)
-                    pending["complete"] = True
-                    st.session_state.pending_delivery = None
-
-                st.rerun()
+            # Clear fast_forward flag and rerun once to update all stats
+            st.session_state.fast_forward = False
+            time.sleep(0.5)  # Brief pause to show success message
+            st.rerun()
 
     with ui_tab:
         # Reset fast_forward when viewing UI tab
         st.session_state.fast_forward = False
+
+        # Poll background queue BEFORE rendering columns so both see updated state
+        # Get queue from cached storage (survives hot-reloads)
+        bg_queue = _get_queue_storage().get(st.session_state.session_id)
+
+        # SAFETY: If running but queue doesn't exist, reset the running flag
+        # This can happen after cache clears or hot-reloads
+        if st.session_state.bg_delivery_running and bg_queue is None and not st.session_state.action_queue:
+            st.session_state.bg_delivery_running = False
+            st.session_state.bg_queue_active = False
+
+        # DEBUG: Log queue polling status with more detail (only if something interesting)
+        if st.session_state.bg_delivery_running or st.session_state.action_queue or st.session_state.delivery_complete_pending:
+            with open("/tmp/demo.log", "a") as f:
+                f.write(f"[POLL] session_id={st.session_state.session_id}, bg_queue={bg_queue is not None}, bg_queue_active={st.session_state.bg_queue_active}, running={st.session_state.bg_delivery_running}, action_queue_len={len(st.session_state.action_queue)}, pending={st.session_state.delivery_complete_pending}\n")
+
+        if bg_queue is not None and (st.session_state.bg_delivery_running or st.session_state.action_queue or st.session_state.delivery_complete_pending):
+            # Drain all available items from the thread-safe queue
+            items_polled = 0
+            while True:
+                try:
+                    item = bg_queue.get_nowait()
+                    items_polled += 1
+                    item_type = item.get("type")
+                    # DEBUG: Log every item polled
+                    with open("/tmp/demo.log", "a") as f:
+                        f.write(f"[POLL] Got item #{items_polled}: type={item_type}\n")
+
+                    if item_type == "action":
+                        st.session_state.action_queue.append({
+                            "tool_name": item["tool_name"],
+                            "result": item["result"],
+                            "floor": item["floor"],
+                            "side": item["side"],
+                            "timing": item["timing"],
+                        })
+                    elif item_type == "success":
+                        st.session_state.delivery_complete_pending = True
+                    elif item_type == "error":
+                        st.session_state.action_queue.append({
+                            "tool_name": "❌ error",
+                            "result": item["message"],
+                            "floor": st.session_state.agent_floor,
+                            "side": st.session_state.agent_side,
+                            "timing": 0,
+                        })
+                        st.session_state.delivery_complete_pending = True
+                    elif item_type == "step_limit":
+                        st.session_state.action_queue.append({
+                            "tool_name": "⚠️ step_limit",
+                            "result": item["message"],
+                            "floor": st.session_state.agent_floor,
+                            "side": st.session_state.agent_side,
+                            "timing": 0,
+                        })
+                        st.session_state.delivery_complete_pending = True
+                    elif item_type == "llm_call":
+                        llm_entry = {
+                            "step": item["step"],
+                            "raw_prompt": item["messages"],
+                            "raw_response": item["response"],
+                        }
+                        st.session_state.llm_messages.append(llm_entry)
+                        # DEBUG: Log that we received an llm_call with details
+                        with open("/tmp/demo.log", "a") as f:
+                            f.write(f"[POLL] *** ADDED llm_call for step {item['step']}, total llm_messages now: {len(st.session_state.llm_messages)} ***\n")
+                            f.write(f"[POLL] llm_messages IDs: {[id(m) for m in st.session_state.llm_messages]}\n")
+                    elif item_type == "complete":
+                        st.session_state.bg_delivery_complete_info = item
+                        st.session_state.bg_delivery_running = False
+                        st.session_state.total_steps += item["steps"]
+                        if item["success"]:
+                            st.session_state.deliveries_completed += 1
+                        st.session_state.delivery_history.append({
+                            "package": st.session_state.last_package_info,
+                            "success": item["success"],
+                            "steps": item["steps"],
+                        })
+                except queue.Empty:
+                    # DEBUG: Log how many items were polled
+                    with open("/tmp/demo.log", "a") as f:
+                        f.write(f"[POLL] Queue empty after {items_polled} items, llm_messages={len(st.session_state.llm_messages)}\n")
+                    break  # Queue empty
+                except Exception as e:
+                    # Log unexpected errors instead of silently breaking
+                    with open("/tmp/demo.log", "a") as f:
+                        f.write(f"[ERROR] Queue polling error: {e}\n")
+                        f.write(f"{traceback.format_exc()}\n")
+                    break
+
+        # Process animation queue - advance one action per frame
+        current_time = time.time()
+        time_since_last = current_time - st.session_state.last_display_time
+        should_advance = time_since_last >= st.session_state.animation_duration
+
+        if st.session_state.step_by_step and st.session_state.action_queue:
+            should_advance = False  # Will be set by Next Step button
+
+        if st.session_state.action_queue and should_advance and not st.session_state.step_by_step:
+            next_action = st.session_state.action_queue.pop(0)
+            st.session_state.displayed_actions.append(next_action)
+            st.session_state.last_display_time = current_time
+
+            if next_action.get("floor") is not None:
+                st.session_state.prev_agent_floor = st.session_state.agent_floor
+                st.session_state.prev_agent_side = st.session_state.agent_side
+                st.session_state.agent_floor = next_action["floor"]
+                st.session_state.agent_side = next_action["side"]
+                st.session_state.current_action = next_action["tool_name"]
+
+        # Check if delivery complete and all animations done
+        if st.session_state.delivery_complete_pending and not st.session_state.action_queue:
+            st.session_state.delivery_complete_pending = False
+            _clear_queue(st.session_state.session_id)
+            st.session_state.bg_queue_active = False
+            st.session_state.has_package = False
+            st.balloons()
 
         # Layout: Building and Action Log side by side at top
         col_building, col_log = st.columns([1, 1])
@@ -788,11 +999,13 @@ def main():
             # Building visualization - Game View
             st.markdown("### 🎮 Building View")
 
-            # Use new animated game renderer
-            from game_renderer import generate_game_html
+            # Show current package info prominently
+            if st.session_state.last_package_info:
+                st.info(f"📦 **Delivering:** {st.session_state.last_package_info}")
+            elif st.session_state.bg_delivery_running:
+                st.warning("📦 Package info loading...")
 
             # Build businesses dict from building data
-            from building import Side
             businesses = {}
             for floor_num in range(1, building.num_floors + 1):
                 floor_data = building.floors.get(floor_num, {})
@@ -816,29 +1029,6 @@ def main():
             # Action log (newest at top)
             st.markdown("### 📝 Action Log")
 
-            # Normal mode: process queue with animation timing
-            import time as timer
-            current_time = timer.time()
-            time_since_last = current_time - st.session_state.last_display_time
-
-            if st.session_state.action_queue and time_since_last >= st.session_state.animation_duration:
-                next_action = st.session_state.action_queue.pop(0)
-                st.session_state.displayed_actions.append(next_action)
-                st.session_state.last_display_time = current_time
-
-                if next_action.get("floor") is not None:
-                    st.session_state.prev_agent_floor = st.session_state.agent_floor
-                    st.session_state.prev_agent_side = st.session_state.agent_side
-                    st.session_state.agent_floor = next_action["floor"]
-                    st.session_state.agent_side = next_action["side"]
-                    st.session_state.current_action = next_action["tool_name"]
-
-            # Check if delivery complete and all animations done
-            if st.session_state.delivery_complete_pending and not st.session_state.action_queue:
-                st.session_state.delivery_complete_pending = False
-                st.session_state.pending_delivery = None
-                st.balloons()
-
             # Display actions
             if st.session_state.displayed_actions:
                 log_container = st.container(height=600)
@@ -856,6 +1046,12 @@ def main():
                         if "SUCCESS" in result:
                             icon = "🎉"
                             header = f"{icon} The agent called **{tool_name}** - SUCCESS!"
+                        elif "error" in tool_name.lower():
+                            icon = "❌"
+                            header = f"{icon} **Error**"
+                        elif "step_limit" in tool_name.lower():
+                            icon = "⚠️"
+                            header = f"{icon} **Step Limit Reached**"
                         elif tool_name in ["go_up", "go_down", "go_to_front", "go_to_back"]:
                             icon = "🚶"
                             header = f"{icon} The agent called **{tool_name}**"
@@ -873,11 +1069,19 @@ def main():
                             st.markdown(f"**Result:** {result}")
                             st.caption(f"📍 Floor {floor}, {side} side | ⏱️ {timing:.2f}s")
             else:
-                st.markdown("*Waiting for delivery...*")
+                if st.session_state.bg_delivery_running:
+                    st.markdown("*Agent is working...*")
+                else:
+                    st.markdown("*Waiting for delivery...*")
 
-            # Auto-refresh to process queue (trigger rerun after animation duration)
-            if st.session_state.action_queue or st.session_state.delivery_complete_pending:
-                time.sleep(0.5)  # Small delay to allow UI to render
+            # Auto-refresh while delivery running or animations pending
+            needs_refresh = (
+                st.session_state.bg_delivery_running or
+                st.session_state.action_queue or
+                st.session_state.delivery_complete_pending
+            )
+            if needs_refresh and not st.session_state.step_by_step:
+                time.sleep(0.3)  # Poll interval
                 st.rerun()
 
         st.markdown("---")
@@ -902,6 +1106,18 @@ def main():
                                        help="If checked, package will show the business name")
         st.session_state.include_business = include_business
 
+        # Max steps per delivery
+        max_steps_ui = st.number_input(
+            "Max steps per delivery",
+            min_value=1,
+            max_value=500,
+            value=st.session_state.max_steps_per_delivery,
+            placeholder="No limit",
+            help="Leave empty for no limit",
+            key="ui_max_steps"
+        )
+        st.session_state.max_steps_per_delivery = max_steps_ui
+
         # Select Recipient button
         if st.button("👤 Select Recipient", use_container_width=True):
             st.session_state.show_recipient_dialog = True
@@ -909,36 +1125,38 @@ def main():
             st.session_state.selected_recipient = None
             st.rerun()
 
-        # Step by step mode
+        # Step by step mode - controls animation speed, not agent speed
         step_by_step = st.checkbox("Step by step mode", value=st.session_state.step_by_step,
-                                   help="Click 'Next Step' to advance one action at a time")
+                                   help="Click 'Next Step' to advance animations one at a time")
         st.session_state.step_by_step = step_by_step
 
-        # Check if there's a pending step-by-step delivery
-        has_pending = st.session_state.pending_delivery is not None
+        # Check if a background delivery is running
+        is_delivery_running = st.session_state.bg_delivery_running
 
         # Generate new package button
-        start_new_delivery = st.button("📦 New Delivery", use_container_width=True, disabled=has_pending)
+        start_new_delivery = st.button("📦 New Delivery", use_container_width=True, disabled=is_delivery_running)
 
         if start_new_delivery:
             st.session_state.current_actions = []
-            st.session_state.action_queue = []  # Reset action queue
-            st.session_state.displayed_actions = []  # Reset displayed actions
+            st.session_state.action_queue = []
+            st.session_state.displayed_actions = []
             st.session_state.last_display_time = 0
             st.session_state.delivery_complete_pending = False
-            st.session_state.llm_messages = []  # Reset step counter for new delivery
+            st.session_state.bg_delivery_complete_info = None  # Clear any previous completion
+            # Clear old queue before creating new one
+            _clear_queue(st.session_state.session_id)
+            st.session_state.bg_queue_active = False
+            st.session_state.llm_messages = []
             st.session_state.has_package = True
             st.session_state.agent_floor = 1
             st.session_state.agent_side = "front"
             st.session_state.prev_agent_floor = 1
             st.session_state.prev_agent_side = "front"
             st.session_state.current_action = None
-            st.session_state.delivery_start_time = time.time()  # Track delivery start
+            st.session_state.delivery_start_time = time.time()
 
             # Use selected recipient or generate random package
             if st.session_state.selected_recipient:
-                from building import Package
-                import random
                 recipient_name = st.session_state.selected_recipient
                 business_info = building.find_employee(recipient_name)
                 business_name = business_info[0].name if business_info and include_business else None
@@ -955,225 +1173,117 @@ def main():
             st.session_state.delivery_counter += 1
             memory.set_document_id(f"delivery-{st.session_state.delivery_counter}")
 
-            agent = DeliveryAgent(building=building)
-            st.session_state.pending_delivery = {
-                "package": package,
-                "agent": agent,
-                "complete": False,
-                "auto_advance": not st.session_state.step_by_step
-            }
-            st.session_state.current_result = None
+            # Get model
+            model = os.environ.get("LLM_MODEL", "openai/gpt-4o-mini")
+
+            # Start background thread for delivery using global queue storage
+            action_q = _get_or_create_queue(st.session_state.session_id)
+            st.session_state.bg_queue_active = True
+            st.session_state.bg_delivery_running = True
+            st.session_state.bg_delivery_complete_info = None
+            st.session_state.pending_delivery = None  # Clear old pending_delivery
+
+            # DEBUG: Log that we're about to start the thread
+            with open("/tmp/demo.log", "a") as f:
+                f.write(f"\n=== STARTING THREAD from New Delivery button ===\n")
+                f.write(f"[START] Session ID: {st.session_state.session_id}\n")
+                f.write(f"Package: {package}\n")
+                f.write(f"Model: {model}\n")
+                f.write(f"[START] Queue from global: {action_q}, id={id(action_q)}\n")
+                f.write(f"[START] bg_queue_active: {st.session_state.bg_queue_active}\n")
+
+            thread = threading.Thread(
+                target=_run_delivery_in_background,
+                args=(action_q, building, package, model, st.session_state.max_steps_per_delivery),
+                daemon=True
+            )
+            thread.start()
             st.rerun()
 
-        # Next Step button for step-by-step mode
-        if has_pending:
-            pending = st.session_state.pending_delivery
-            auto_advance = pending.get("auto_advance", False)
+        # Step-by-step mode: Next Step button advances animations
+        if st.session_state.step_by_step and st.session_state.action_queue:
+            if st.button("▶️ Next Step", use_container_width=True, type="primary"):
+                # Advance one action from the queue
+                next_action = st.session_state.action_queue.pop(0)
+                st.session_state.displayed_actions.append(next_action)
+                st.session_state.last_display_time = time.time()
 
-            if not pending["complete"]:
-                should_step = False
-                if auto_advance:
-                    should_step = True
-                else:
-                    should_step = st.button("▶️ Next Step", use_container_width=True, type="primary")
+                if next_action.get("floor") is not None:
+                    st.session_state.prev_agent_floor = st.session_state.agent_floor
+                    st.session_state.prev_agent_side = st.session_state.agent_side
+                    st.session_state.agent_floor = next_action["floor"]
+                    st.session_state.agent_side = next_action["side"]
+                    st.session_state.current_action = next_action["tool_name"]
+                st.rerun()
 
-                if should_step:
-                    agent = pending["agent"]
-                    package = pending["package"]
-
-                    from agent_tools import AgentTools, TOOL_DEFINITIONS, execute_tool
-                    import json
-
-                    # Batch size: run 1 step at a time for real-time UI updates
-                    # (LLM section shows each step immediately)
-                    batch_size = 1
-                    steps_this_batch = 0
-
-                    while steps_this_batch < batch_size and not pending["complete"]:
-                        steps_this_batch += 1
-
-                        if agent.state.current_package is None:
-                            agent.state.current_package = package
-                            pending["messages"] = [
-                                {"role": "system", "content": agent._build_system_prompt(package)},
-                                {"role": "user", "content": f"Please deliver this package: {package}"}
-                            ]
-
-                        tools = AgentTools(agent.building, agent.state, on_action=agent._record_action)
-
-                        try:
-                            import time as timer
-                            t0 = timer.time()
-
-                            response = memory.completion(
-                                model=agent.model,
-                                messages=pending["messages"],
-                                tools=TOOL_DEFINITIONS,
-                                tool_choice="auto",
-                                timeout=30
-                            )
-
-                            t1 = timer.time()
-                            llm_duration = t1 - t0
-                            st.session_state.timing_llm_calls.append(llm_duration)
-
-                            message = response.choices[0].message
-                            print(f"[DEBUG] LLM response ({llm_duration:.2f}s): tool_calls={bool(message.tool_calls)}, content={bool(message.content)}", flush=True)
-                            if message.tool_calls:
-                                print(f"[DEBUG] Tool calls: {[tc.function.name for tc in message.tool_calls]}", flush=True)
-
-                            import hindsight_litellm
-                            debug_info = hindsight_litellm.get_last_injection_debug()
-                            print(f"[DEBUG] Building raw messages from {len(pending['messages'])} messages...", flush=True)
-                            if debug_info:
-                                print(f"[DEBUG] Hindsight injected: {debug_info.injected}, results_count: {debug_info.results_count}", flush=True)
-
-                            # Build raw prompt - POST-INJECTION (what actually went to LLM)
-                            raw_messages = []
-                            for i, msg in enumerate(pending["messages"]):
-                                raw_msg = {"role": msg.get("role", "")}
-                                content = msg.get("content", "")
-
-                                # For system message, append injected memories (what Hindsight actually did)
-                                if msg.get("role") == "system" and debug_info and debug_info.injected:
-                                    content = f"{content}\n\n{debug_info.memory_context}"
-
-                                if content:
-                                    raw_msg["content"] = content
-                                if msg.get("tool_calls"):
-                                    tc_list = []
-                                    for tc in msg.get("tool_calls", []):
-                                        # Handle both object (from LLM response) and dict (from stored messages) formats
-                                        if hasattr(tc, 'function'):
-                                            tc_list.append({"name": tc.function.name, "arguments": tc.function.arguments})
-                                        elif isinstance(tc, dict):
-                                            func = tc.get('function', {})
-                                            tc_list.append({"name": func.get('name', ''), "arguments": func.get('arguments', '')})
-                                    raw_msg["tool_calls"] = tc_list
-                                if msg.get("tool_call_id"):
-                                    raw_msg["tool_call_id"] = msg.get("tool_call_id")
-                                raw_messages.append(raw_msg)
-
-                            # Include tools and injection info in the raw prompt
-                            raw_prompt = {
-                                "messages": raw_messages,
-                                "tools": [{"name": t["function"]["name"], "description": t["function"]["description"]} for t in TOOL_DEFINITIONS],
-                                "_hindsight_injection": {
-                                    "injected": debug_info.injected if debug_info else False,
-                                    "memories_count": debug_info.results_count if debug_info else 0,
-                                } if debug_info else None
-                            }
-
-                            # Build raw response
-                            raw_response = {
-                                "content": message.content,
-                                "tool_calls": [
-                                    {"name": tc.function.name, "arguments": tc.function.arguments}
-                                    for tc in (message.tool_calls or [])
-                                ] if message.tool_calls else None
-                            }
-
-                            tool_calls_info = []
-                            if message.tool_calls:
-                                for tc in message.tool_calls:
-                                    tool_calls_info.append({
-                                        "tool_call": tc.function.name,
-                                        "arguments": tc.function.arguments,
-                                        "reasoning": message.content or "No explicit reasoning provided"
-                                    })
-
-                            llm_entry = {
-                                "step": len(st.session_state.llm_messages) + 1,
-                                "raw_prompt": json.dumps(raw_prompt, indent=2),
-                                "raw_response": json.dumps(raw_response, indent=2),
-                                "tool_calls": tool_calls_info
-                            }
-                            st.session_state.llm_messages.append(llm_entry)
-
-                            if message.tool_calls:
-                                print(f"[DEBUG] Processing {len(message.tool_calls)} tool calls...", flush=True)
-                                tool_results = []
-                                for tool_call in message.tool_calls:
-                                    tool_name = tool_call.function.name
-                                    arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
-                                    print(f"[DEBUG] Executing tool: {tool_name}({arguments})", flush=True)
-
-                                    st.session_state.current_action = tool_name
-
-                                    # Execute tool
-                                    t_tool_start = timer.time()
-                                    result = execute_tool(tools, tool_name, arguments)
-                                    t_tool_end = timer.time()
-
-                                    tool_results.append({
-                                        "tool_call_id": tool_call.id,
-                                        "role": "tool",
-                                        "content": result
-                                    })
-
-                                    # Add to action queue (will be displayed with animation later)
-                                    action_data = {
-                                        "tool_name": tool_name,
-                                        "result": result,
-                                        "floor": agent.state.floor,
-                                        "side": agent.state.side.value,
-                                        "timing": t_tool_end - t_tool_start,
-                                    }
-                                    st.session_state.action_queue.append(action_data)
-
-                                    if "SUCCESS!" in result:
-                                        pending["complete"] = True
-                                        st.session_state.deliveries_completed += 1
-                                        st.session_state.has_package = False
-                                        st.session_state.total_steps += agent.state.steps_taken
-                                        # Track delivery duration
-                                        if st.session_state.delivery_start_time:
-                                            delivery_duration = time.time() - st.session_state.delivery_start_time
-                                            st.session_state.timing_deliveries.append(delivery_duration)
-                                        st.session_state.delivery_history.append({
-                                            "package": str(package),
-                                            "success": True,
-                                            "steps": agent.state.steps_taken
-                                        })
-                                        # Mark delivery complete but wait for animations
-                                        st.session_state.delivery_complete_pending = True
-                                        break
-
-                                pending["messages"].append({"role": "assistant", "content": message.content, "tool_calls": message.tool_calls})
-                                pending["messages"].extend(tool_results)
-
-                                if agent.state.steps_taken >= 50:
-                                    pending["complete"] = True
-                                    st.session_state.delivery_complete_pending = True
-                            else:
-                                # LLM returned text without tool calls - add to queue and nudge to use tools
-                                if message.content:
-                                    st.session_state.action_queue.append({
-                                        "tool_name": "💬 response",
-                                        "result": message.content,
-                                        "floor": agent.state.floor,
-                                        "side": agent.state.side.value,
-                                        "timing": 0,
-                                    })
-                                pending["messages"].append({"role": "assistant", "content": message.content})
-                                pending["messages"].append({"role": "user", "content": "Use the available tools to complete the delivery."})
-
-                        except Exception as e:
-                            import traceback
-                            st.error(f"❌ Error: {e}")
-                            st.code(traceback.format_exc(), language=None)
-                            pending["complete"] = True
-                            st.session_state.pending_delivery = None
-                            break  # Exit the while loop on error
-
-                    st.rerun()
+        # Show status when delivery is running
+        if is_delivery_running:
+            st.info("🔄 Agent is working... (actions will appear as they complete)")
+        elif st.session_state.bg_delivery_complete_info:
+            info = st.session_state.bg_delivery_complete_info
+            if info["success"]:
+                st.success(f"✅ Delivery complete in {info['steps']} steps!")
+            elif info["error"]:
+                st.error(f"❌ Delivery failed: {info['error']}")
             else:
-                st.success("Delivery complete!")
-                if st.button("🔄 Reset", use_container_width=True):
-                    st.session_state.pending_delivery = None
-                    st.rerun()
+                st.warning(f"⚠️ Delivery ended after {info['steps']} steps")
 
-        # Reset memory button
+            if st.button("🔄 Reset", use_container_width=True):
+                st.session_state.bg_delivery_complete_info = None
+                _clear_queue(st.session_state.session_id)
+                st.session_state.bg_queue_active = False
+                st.session_state.action_queue = []
+                st.session_state.displayed_actions = []
+                st.session_state.delivery_complete_pending = False
+                st.rerun()
+
+        # Always-visible Full Reset button - kills everything and starts completely fresh
+        if st.button("🔄 Full Reset", use_container_width=True, type="secondary"):
+            # Stop any running background delivery
+            st.session_state.bg_delivery_running = False
+            _clear_queue(st.session_state.session_id)  # Clear and remove the queue
+            st.session_state.bg_queue_active = False
+            st.session_state.bg_delivery_complete_info = None
+
+            # Clear all delivery state
+            st.session_state.action_queue = []
+            st.session_state.displayed_actions = []
+            st.session_state.delivery_complete_pending = False
+            st.session_state.llm_messages = []
+            st.session_state.has_package = False
+            st.session_state.last_package_info = None
+            st.session_state.current_action = None
+            st.session_state.agent_floor = 1
+            st.session_state.agent_side = "front"
+            st.session_state.prev_agent_floor = 1
+            st.session_state.prev_agent_side = "front"
+
+            # CRITICAL: Reset delivery trigger flags to prevent auto-start
+            st.session_state.start_delivery_now = False
+            st.session_state.show_recipient_dialog = False
+            st.session_state.pending_delivery = None
+            st.session_state.fast_forward = False
+
+            # Generate new session and bank ID (fresh memory)
+            st.session_state.session_id = uuid.uuid4().hex[:8]
+            bank_id = memory.configure_memory(session_id=st.session_state.session_id)
+            st.session_state.bank_id = bank_id
+
+            # Reset stats
+            st.session_state.deliveries_completed = 0
+            st.session_state.delivery_counter = 0
+            st.session_state.total_steps = 0
+            st.session_state.delivery_history = []
+            st.session_state.current_actions = []
+            st.session_state.selected_recipient = None
+            st.session_state.selected_business = None
+            st.session_state.stored_memories = []
+            st.session_state.loop_remaining = 0
+            st.session_state.is_running = False
+
+            st.rerun()
+
+        # Clear Memory button (keeps stats, just clears hindsight memory)
         if st.button("🧹 Clear Memory", use_container_width=True, disabled=st.session_state.is_running):
             st.session_state.session_id = uuid.uuid4().hex[:8]
             bank_id = memory.configure_memory(session_id=st.session_state.session_id)
@@ -1245,7 +1355,6 @@ def main():
         # Learning curve visualization
         if len(st.session_state.delivery_history) > 1:
             st.markdown("### 📈 Learning Curve")
-            import pandas as pd
             steps_history = [d["steps"] for d in st.session_state.delivery_history]
             # Create DataFrame with 1-indexed delivery numbers
             df = pd.DataFrame({
@@ -1256,6 +1365,9 @@ def main():
 
     # LLM Debug Section - scrollable, organized display
     st.markdown("### 🤖 LLM Prompt & Response")
+    # DEBUG: Log what we're about to render
+    with open("/tmp/demo.log", "a") as f:
+        f.write(f"[UI] Rendering LLM section, llm_messages count: {len(st.session_state.llm_messages)}\n")
     if st.session_state.llm_messages:
         # Scrollable container
         llm_container = st.container(height=500)
@@ -1269,7 +1381,6 @@ def main():
                     raw_response_str = entry.get("raw_response", "{}")
 
                     try:
-                        import json
                         raw_prompt = json.loads(raw_prompt_str)
                         messages = raw_prompt.get("messages", [])
                         injection_info = raw_prompt.get("_hindsight_injection", {})
@@ -1299,7 +1410,8 @@ def main():
                                     if role == "USER":
                                         st.caption(f"**USER:** {content}")
                                     elif role == "ASSISTANT" and tool_calls:
-                                        tc_names = [tc.get("name", "") for tc in tool_calls]
+                                        # Handle both formats: {"name": ...} or {"function": {"name": ...}}
+                                        tc_names = [tc.get("function", {}).get("name", "") or tc.get("name", "") for tc in tool_calls]
                                         st.caption(f"**ASSISTANT:** called {', '.join(tc_names)}")
                                     elif role == "TOOL":
                                         st.caption(f"**TOOL:** {content[:100]}..." if len(content) > 100 else f"**TOOL:** {content}")
@@ -1325,7 +1437,14 @@ def main():
                         else:
                             st.caption("No system prompt")
 
-                        # 3. Current (the latest message being sent)
+                        # 3. Tools available
+                        tools = raw_prompt.get("tools", [])
+                        if tools:
+                            with st.expander(f"🔧 Tools ({len(tools)} available)", expanded=False):
+                                tool_names = [t.get("function", {}).get("name", "?") for t in tools]
+                                st.write(", ".join(tool_names))
+
+                        # 4. Current (the latest message being sent)
                         st.markdown("**📤 Current:**")
                         if current_message:
                             st.json(current_message)
@@ -1334,9 +1453,18 @@ def main():
 
                         st.divider()
 
-                        # 4. Response
+                        # 5. Response
                         st.markdown("**📥 Response:**")
                         st.code(raw_response_str, language="json")
+
+                        st.divider()
+
+                        # 5. Raw Prompt & Response (for debugging)
+                        with st.expander("🔍 Raw Prompt & Response (Debug)", expanded=False):
+                            st.markdown("**Raw Prompt (full JSON sent to LLM):**")
+                            st.code(raw_prompt_str, language="json")
+                            st.markdown("**Raw Response (full JSON from LLM):**")
+                            st.code(raw_response_str, language="json")
 
                     except Exception as e:
                         st.error(f"Parse error: {e}")
