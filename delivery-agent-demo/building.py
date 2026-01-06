@@ -220,6 +220,23 @@ class Building:
             display_data.append(floor_data)
         return display_data
 
+    def get_businesses_for_renderer(self) -> dict:
+        """Get businesses dict formatted for game renderer.
+
+        Returns dict mapping (floor, side) tuples to business names.
+        Cached after first call to avoid recreation on every render.
+        """
+        if not hasattr(self, '_renderer_businesses'):
+            businesses = {}
+            for floor_num in range(1, self.num_floors + 1):
+                floor_data = self.floors.get(floor_num, {})
+                front_biz = floor_data.get(Side.FRONT)
+                back_biz = floor_data.get(Side.BACK)
+                businesses[(floor_num, "front")] = front_biz.name if front_biz else "Office"
+                businesses[(floor_num, "back")] = back_biz.name if back_biz else "Office"
+            self._renderer_businesses = businesses
+        return self._renderer_businesses
+
 
 # Singleton building instance
 _building_instance = None

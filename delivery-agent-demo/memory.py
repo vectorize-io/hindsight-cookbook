@@ -10,8 +10,18 @@ import uuid
 import hindsight_litellm
 
 
+# Debug mode - set to True to enable verbose logging
+DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true")
+
 # Current bank ID (set per session)
 _current_bank_id: str = None
+
+
+def _debug_log(msg: str):
+    """Write to debug log only if DEBUG is enabled."""
+    if DEBUG:
+        with open("/tmp/demo.log", "a") as f:
+            f.write(f"{msg}\n")
 
 
 def configure_memory(api_url: str = None, verbose: bool = True, session_id: str = None):
@@ -82,22 +92,21 @@ def completion(**kwargs):
     - Storing the conversation after the response (with document_id grouping)
     - Deduplicating facts automatically
     """
-    # DEBUG: Log that we're using hindsight_litellm
-    with open("/tmp/demo.log", "a") as f:
-        f.write(f"\n[HINDSIGHT] Calling hindsight_litellm.completion()\n")
-        f.write(f"[HINDSIGHT] Bank ID: {_current_bank_id}\n")
-        f.write(f"[HINDSIGHT] Model: {kwargs.get('model', 'N/A')}\n")
-        f.write(f"[HINDSIGHT] Tools passed: {len(kwargs.get('tools', []))} tools\n")
+    _debug_log(f"[HINDSIGHT] completion() bank={_current_bank_id}, model={kwargs.get('model', 'N/A')}")
 
     try:
         result = hindsight_litellm.completion(**kwargs)
-        # DEBUG: Log after completion
-        with open("/tmp/demo.log", "a") as f:
-            f.write(f"[HINDSIGHT] Completion returned successfully\n")
+        # Log injection info if debug enabled
+        if DEBUG:
+            try:
+                injection_debug = hindsight_litellm.get_last_injection_debug()
+                if injection_debug:
+                    _debug_log(f"[HINDSIGHT] Injection: injected={injection_debug.injected}, count={injection_debug.results_count}")
+            except Exception:
+                pass  # Silently ignore debug errors
         return result
     except Exception as e:
-        with open("/tmp/demo.log", "a") as f:
-            f.write(f"[HINDSIGHT] ERROR: {e}\n")
+        _debug_log(f"[HINDSIGHT] ERROR: {e}")
         raise
 
 

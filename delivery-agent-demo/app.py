@@ -49,7 +49,7 @@ def _clear_queue(session_id: str):
 
 
 import hindsight_litellm
-from building import get_building, Side, reset_building, Package
+from building import get_building, reset_building, Package
 from agent import DeliveryAgent, ActionEvent
 from agent_tools import AgentTools, TOOL_DEFINITIONS, execute_tool
 from game_renderer import generate_game_html
@@ -57,6 +57,15 @@ import memory
 
 # Load environment variables
 load_dotenv()
+
+# Debug mode - set to True to enable verbose logging to /tmp/demo.log
+DEBUG = False
+
+def _debug_log(msg: str):
+    """Write to debug log only if DEBUG is enabled."""
+    if DEBUG:
+        with open("/tmp/demo.log", "a") as f:
+            f.write(f"{msg}\n")
 
 # Page config
 st.set_page_config(
@@ -117,12 +126,6 @@ def _run_delivery_in_background(
     model: str,
     max_steps: int = None,
 ):
-    # DEBUG: Log at the very start of the function
-    with open("/tmp/demo.log", "a") as f:
-        f.write(f"\n\n*** BACKGROUND THREAD STARTED ***\n")
-        f.write(f"Package: {package}\n")
-        f.write(f"Model: {model}\n")
-        f.write(f"Max steps: {max_steps}\n")
     """Run a delivery in a background thread, pushing actions to queue.
 
     This allows the UI to animate actions as they happen while the agent
@@ -159,24 +162,7 @@ def _run_delivery_in_background(
         while max_steps is None or agent_state.steps_taken < max_steps:
             t0 = time.time()
 
-            # DEBUG: Log FULL prompt being sent to LLM (no truncation)
-            with open("/tmp/demo.log", "a") as f:
-                f.write(f"\n{'='*80}\n")
-                f.write(f"[DEBUG] Step {agent_state.steps_taken + 1} - FULL PROMPT TO LLM:\n")
-                f.write(f"[DEBUG] Model: {model}\n")
-                f.write(f"{'='*80}\n")
-                for i, msg in enumerate(messages):
-                    role = msg.get("role", "?")
-                    content = msg.get("content", "") or "(none)"
-                    tool_calls = msg.get("tool_calls", [])
-                    f.write(f"\n--- MESSAGE [{i}] role={role} ---\n")
-                    if content:
-                        f.write(f"{content}\n")
-                    if tool_calls:
-                        f.write(f"tool_calls: {json.dumps([{'name': tc.get('function', {}).get('name', '?') if isinstance(tc, dict) else tc.function.name, 'args': tc.get('function', {}).get('arguments', '') if isinstance(tc, dict) else tc.function.arguments} for tc in tool_calls], indent=2)}\n")
-                f.write(f"\n--- TOOLS ---\n")
-                f.write(f"{json.dumps([t['function']['name'] for t in TOOL_DEFINITIONS])}\n")
-                f.write(f"{'='*80}\n")
+            _debug_log(f"[Step {agent_state.steps_taken + 1}] Calling LLM with {len(messages)} messages")
 
             response = memory.completion(
                 model=model,
@@ -191,30 +177,23 @@ def _run_delivery_in_background(
 
             message = response.choices[0].message
 
-            # DEBUG: Log what we received from the LLM (write to file)
-            with open("/tmp/demo.log", "a") as f:
-                f.write(f"[DEBUG] Response received in {llm_duration:.2f}s:\n")
-                if message.tool_calls:
-                    for tc in message.tool_calls:
-                        f.write(f"[DEBUG]   Tool call: {tc.function.name}({tc.function.arguments})\n")
-                if message.content:
-                    f.write(f"[DEBUG]   Content: {message.content[:200]}\n")
-                f.write(f"{'='*60}\n\n")
+            tool_names = [tc.function.name for tc in (message.tool_calls or [])]
+            _debug_log(f"[Step {agent_state.steps_taken + 1}] Response in {llm_duration:.2f}s: {tool_names}")
 
-            # Push LLM call info to queue for display (include tools)
+            # Push LLM call info to queue for display - pass dicts directly, no serialization
             llm_call_item = {
                 "type": "llm_call",
                 "step": agent_state.steps_taken + 1,
-                "messages": json.dumps({
+                "prompt": {
                     "messages": [dict(m) if isinstance(m, dict) else {"role": m.get("role", ""), "content": m.get("content", "")} for m in messages],
                     "tools": TOOL_DEFINITIONS,
-                }),
-                "response": json.dumps({"content": message.content, "tool_calls": [{"name": tc.function.name, "arguments": tc.function.arguments} for tc in (message.tool_calls or [])]}),
+                },
+                "response": {
+                    "content": message.content,
+                    "tool_calls": [{"name": tc.function.name, "arguments": tc.function.arguments} for tc in (message.tool_calls or [])]
+                },
             }
             action_queue.put(llm_call_item)
-            # DEBUG: Log that we pushed llm_call to queue
-            with open("/tmp/demo.log", "a") as f:
-                f.write(f"[QUEUE-PUSH] Pushed llm_call for step {agent_state.steps_taken + 1} to queue\n")
 
             if message.tool_calls:
                 tool_results = []
@@ -690,12 +669,7 @@ def main():
         st.session_state.bg_delivery_running = True
         st.session_state.bg_delivery_complete_info = None
 
-        # DEBUG: Log queue creation
-        with open("/tmp/demo.log", "a") as f:
-            f.write(f"\n=== STARTING THREAD from Select Recipient ===\n")
-            f.write(f"[START] Session ID: {st.session_state.session_id}\n")
-            f.write(f"[START] Queue from global: {action_q}, id={id(action_q)}\n")
-            f.write(f"[START] bg_queue_active: {st.session_state.bg_queue_active}\n")
+        _debug_log(f"Starting delivery thread for {package}")
 
         thread = threading.Thread(
             target=_run_delivery_in_background,
@@ -885,22 +859,12 @@ def main():
             st.session_state.bg_delivery_running = False
             st.session_state.bg_queue_active = False
 
-        # DEBUG: Log queue polling status with more detail (only if something interesting)
-        if st.session_state.bg_delivery_running or st.session_state.action_queue or st.session_state.delivery_complete_pending:
-            with open("/tmp/demo.log", "a") as f:
-                f.write(f"[POLL] session_id={st.session_state.session_id}, bg_queue={bg_queue is not None}, bg_queue_active={st.session_state.bg_queue_active}, running={st.session_state.bg_delivery_running}, action_queue_len={len(st.session_state.action_queue)}, pending={st.session_state.delivery_complete_pending}\n")
-
         if bg_queue is not None and (st.session_state.bg_delivery_running or st.session_state.action_queue or st.session_state.delivery_complete_pending):
             # Drain all available items from the thread-safe queue
-            items_polled = 0
             while True:
                 try:
                     item = bg_queue.get_nowait()
-                    items_polled += 1
                     item_type = item.get("type")
-                    # DEBUG: Log every item polled
-                    with open("/tmp/demo.log", "a") as f:
-                        f.write(f"[POLL] Got item #{items_polled}: type={item_type}\n")
 
                     if item_type == "action":
                         st.session_state.action_queue.append({
@@ -933,14 +897,10 @@ def main():
                     elif item_type == "llm_call":
                         llm_entry = {
                             "step": item["step"],
-                            "raw_prompt": item["messages"],
-                            "raw_response": item["response"],
+                            "prompt": item["prompt"],      # Dict, not JSON string
+                            "response": item["response"],  # Dict, not JSON string
                         }
                         st.session_state.llm_messages.append(llm_entry)
-                        # DEBUG: Log that we received an llm_call with details
-                        with open("/tmp/demo.log", "a") as f:
-                            f.write(f"[POLL] *** ADDED llm_call for step {item['step']}, total llm_messages now: {len(st.session_state.llm_messages)} ***\n")
-                            f.write(f"[POLL] llm_messages IDs: {[id(m) for m in st.session_state.llm_messages]}\n")
                     elif item_type == "complete":
                         st.session_state.bg_delivery_complete_info = item
                         st.session_state.bg_delivery_running = False
@@ -953,15 +913,9 @@ def main():
                             "steps": item["steps"],
                         })
                 except queue.Empty:
-                    # DEBUG: Log how many items were polled
-                    with open("/tmp/demo.log", "a") as f:
-                        f.write(f"[POLL] Queue empty after {items_polled} items, llm_messages={len(st.session_state.llm_messages)}\n")
                     break  # Queue empty
                 except Exception as e:
-                    # Log unexpected errors instead of silently breaking
-                    with open("/tmp/demo.log", "a") as f:
-                        f.write(f"[ERROR] Queue polling error: {e}\n")
-                        f.write(f"{traceback.format_exc()}\n")
+                    _debug_log(f"[ERROR] Queue polling error: {e}\n{traceback.format_exc()}")
                     break
 
         # Process animation queue - advance one action per frame
@@ -1005,14 +959,8 @@ def main():
             elif st.session_state.bg_delivery_running:
                 st.warning("📦 Package info loading...")
 
-            # Build businesses dict from building data
-            businesses = {}
-            for floor_num in range(1, building.num_floors + 1):
-                floor_data = building.floors.get(floor_num, {})
-                front_biz = floor_data.get(Side.FRONT)
-                back_biz = floor_data.get(Side.BACK)
-                businesses[(floor_num, "front")] = front_biz.name if front_biz else "Office"
-                businesses[(floor_num, "back")] = back_biz.name if back_biz else "Office"
+            # Get cached businesses dict for renderer
+            businesses = building.get_businesses_for_renderer()
 
             game_html = generate_game_html(
                 floor=st.session_state.agent_floor,
@@ -1034,8 +982,7 @@ def main():
                 log_container = st.container(height=600)
                 with log_container:
                     # Display in reverse order (newest first)
-                    for i, action_data in enumerate(reversed(st.session_state.displayed_actions)):
-                        is_newest = (i == 0)
+                    for action_data in reversed(st.session_state.displayed_actions):
                         tool_name = action_data.get("tool_name", "unknown")
                         result = action_data.get("result", "")
                         floor = action_data.get("floor", 1)
@@ -1065,7 +1012,7 @@ def main():
                             icon = "🔧"
                             header = f"{icon} The agent called **{tool_name}**"
 
-                        with st.expander(header, expanded=is_newest):
+                        with st.expander(header, expanded=False):
                             st.markdown(f"**Result:** {result}")
                             st.caption(f"📍 Floor {floor}, {side} side | ⏱️ {timing:.2f}s")
             else:
@@ -1183,14 +1130,7 @@ def main():
             st.session_state.bg_delivery_complete_info = None
             st.session_state.pending_delivery = None  # Clear old pending_delivery
 
-            # DEBUG: Log that we're about to start the thread
-            with open("/tmp/demo.log", "a") as f:
-                f.write(f"\n=== STARTING THREAD from New Delivery button ===\n")
-                f.write(f"[START] Session ID: {st.session_state.session_id}\n")
-                f.write(f"Package: {package}\n")
-                f.write(f"Model: {model}\n")
-                f.write(f"[START] Queue from global: {action_q}, id={id(action_q)}\n")
-                f.write(f"[START] bg_queue_active: {st.session_state.bg_queue_active}\n")
+            _debug_log(f"[START] Session {st.session_state.session_id}: {package}, model={model}")
 
             thread = threading.Thread(
                 target=_run_delivery_in_background,
@@ -1365,25 +1305,20 @@ def main():
 
     # LLM Debug Section - scrollable, organized display
     st.markdown("### 🤖 LLM Prompt & Response")
-    # DEBUG: Log what we're about to render
-    with open("/tmp/demo.log", "a") as f:
-        f.write(f"[UI] Rendering LLM section, llm_messages count: {len(st.session_state.llm_messages)}\n")
     if st.session_state.llm_messages:
         # Scrollable container
         llm_container = st.container(height=500)
         with llm_container:
             for entry in reversed(st.session_state.llm_messages):  # Newest first
                 step_num = entry.get("step", "?")
-                is_newest = (entry == st.session_state.llm_messages[-1])
-
-                with st.expander(f"**Step {step_num}**", expanded=is_newest):
-                    raw_prompt_str = entry.get("raw_prompt", "{}")
-                    raw_response_str = entry.get("raw_response", "{}")
+                with st.expander(f"**Step {step_num}**", expanded=False):
+                    # Use dict-based format (no JSON parsing needed)
+                    prompt_data = entry.get("prompt", {})
+                    response_data = entry.get("response", {})
 
                     try:
-                        raw_prompt = json.loads(raw_prompt_str)
-                        messages = raw_prompt.get("messages", [])
-                        injection_info = raw_prompt.get("_hindsight_injection", {})
+                        messages = prompt_data.get("messages", [])
+                        injection_info = prompt_data.get("_hindsight_injection", {})
 
                         # Separate messages by type
                         system_msg = None
@@ -1438,7 +1373,7 @@ def main():
                             st.caption("No system prompt")
 
                         # 3. Tools available
-                        tools = raw_prompt.get("tools", [])
+                        tools = prompt_data.get("tools", [])
                         if tools:
                             with st.expander(f"🔧 Tools ({len(tools)} available)", expanded=False):
                                 tool_names = [t.get("function", {}).get("name", "?") for t in tools]
@@ -1455,20 +1390,20 @@ def main():
 
                         # 5. Response
                         st.markdown("**📥 Response:**")
-                        st.code(raw_response_str, language="json")
+                        st.json(response_data)
 
                         st.divider()
 
                         # 5. Raw Prompt & Response (for debugging)
                         with st.expander("🔍 Raw Prompt & Response (Debug)", expanded=False):
                             st.markdown("**Raw Prompt (full JSON sent to LLM):**")
-                            st.code(raw_prompt_str, language="json")
+                            st.code(json.dumps(prompt_data, indent=2), language="json")
                             st.markdown("**Raw Response (full JSON from LLM):**")
-                            st.code(raw_response_str, language="json")
+                            st.code(json.dumps(response_data, indent=2), language="json")
 
                     except Exception as e:
                         st.error(f"Parse error: {e}")
-                        st.code(raw_prompt_str, language="json")
+                        st.json(prompt_data)
     else:
         st.caption("*No LLM calls yet*")
 

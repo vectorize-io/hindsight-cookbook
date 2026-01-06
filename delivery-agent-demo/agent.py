@@ -70,7 +70,7 @@ class DeliveryAgent:
         Returns:
             System prompt string for the LLM
         """
-        return "You are a delivery agent. Use the tools provided to get it delivered."
+        return "You are a delivery agent. Get the package delivered by navigating the building."
 
     def _record_action(self, action: str, result: str):
         """Record an action for display.

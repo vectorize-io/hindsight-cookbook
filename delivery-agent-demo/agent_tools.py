@@ -254,18 +254,22 @@ TOOL_DEFINITIONS = [
 
 def execute_tool(tools: AgentTools, tool_name: str, arguments: dict) -> str:
     """Execute a tool by name with the given arguments."""
-    tool_map = {
-        "go_up": tools.go_up,
-        "go_down": tools.go_down,
-        "go_to_front": tools.go_to_front,
-        "go_to_back": tools.go_to_back,
-        "look_at_business": tools.look_at_business,
-        "get_employee_list": tools.get_employee_list,
-        "deliver_package": lambda: tools.deliver_package(arguments.get("recipient_name", "")),
-        "check_current_location": tools.check_current_location,
-    }
-
-    if tool_name in tool_map:
-        return tool_map[tool_name]()
+    # Direct dispatch - faster than dict creation on every call
+    if tool_name == "go_up":
+        return tools.go_up()
+    elif tool_name == "go_down":
+        return tools.go_down()
+    elif tool_name == "go_to_front":
+        return tools.go_to_front()
+    elif tool_name == "go_to_back":
+        return tools.go_to_back()
+    elif tool_name == "look_at_business":
+        return tools.look_at_business()
+    elif tool_name == "get_employee_list":
+        return tools.get_employee_list()
+    elif tool_name == "deliver_package":
+        return tools.deliver_package(arguments.get("recipient_name", ""))
+    elif tool_name == "check_current_location":
+        return tools.check_current_location()
     else:
         return f"Unknown tool: {tool_name}"

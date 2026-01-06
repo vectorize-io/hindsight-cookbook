@@ -5,11 +5,16 @@ Creates an HTML5/CSS animated view using sprite sheets with frame-by-frame walki
 
 import base64
 import os
+from functools import lru_cache
 from pathlib import Path
 
 
+@lru_cache(maxsize=16)
 def load_sprite_base64(filename: str) -> str:
-    """Load a sprite image as base64 for embedding in HTML."""
+    """Load a sprite image as base64 for embedding in HTML.
+
+    Cached to avoid repeated disk reads and base64 encoding.
+    """
     sprite_path = Path(__file__).parent / "sprites" / filename
     if sprite_path.exists():
         with open(sprite_path, "rb") as f:
