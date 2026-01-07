@@ -110,14 +110,19 @@ def completion(**kwargs):
         raise
 
 
-def retain(content: str):
+def retain(content: str, sync: bool = False):
     """
     Explicitly store content to Hindsight memory.
 
     Use this for storing information that won't be captured by automatic
     conversation storage (e.g., final tool results when conversation ends).
+
+    Args:
+        content: The text content to store
+        sync: If True, block until storage completes. If False (default),
+            run in background thread for better performance.
     """
-    return hindsight_litellm.retain(content)
+    return hindsight_litellm.retain(content, sync=sync)
 
 
 def get_pending_storage_errors():
@@ -132,3 +137,17 @@ def get_pending_storage_errors():
         Returns empty list if no errors.
     """
     return hindsight_litellm.get_pending_storage_errors()
+
+
+def get_pending_retain_errors():
+    """
+    Get any pending errors from async background retain operations.
+
+    When using retain(sync=False), errors are collected in the background.
+    Call this periodically to check for and handle any failures.
+
+    Returns:
+        List of exceptions from failed background retain operations.
+        The list is cleared after calling this function.
+    """
+    return hindsight_litellm.get_pending_retain_errors()

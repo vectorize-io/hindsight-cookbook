@@ -15,8 +15,15 @@ import random
 import traceback
 import threading
 import queue
+import warnings
+import logging
 import pandas as pd
 from dotenv import load_dotenv
+
+# Suppress noisy aiohttp warnings about unclosed client sessions
+warnings.filterwarnings("ignore", message="Unclosed client session")
+warnings.filterwarnings("ignore", message="Unclosed connector")
+logging.getLogger("asyncio").setLevel(logging.ERROR)
 
 # Queue storage using st.cache_resource to survive Streamlit reruns
 # Regular module-level dicts get reset when Streamlit reimports the module
@@ -371,7 +378,7 @@ def _run_delivery_in_background(
     })
 
 
-def _run_single_delivery_ff(building, include_business: bool, delivery_counter: int, max_steps: int = None):
+def _run_single_delivery_ff(building, include_business: bool, delivery_counter: int, max_steps: int = None, sync_storage: bool = False):
     """Run a single delivery to completion without Streamlit reruns.
 
     This is optimized for fast-forward mode - no UI updates, minimal overhead.
@@ -381,31 +388,43 @@ def _run_single_delivery_ff(building, include_business: bool, delivery_counter: 
         include_business: Whether to include business name on packages
         delivery_counter: Counter for document_id
         max_steps: Maximum steps per delivery (None = no limit)
+        sync_storage: If True, wait for memory storage to complete (slower but accurate timing)
 
     Returns:
-        dict with keys: success, steps, llm_times, package_str, error (if any)
+        dict with keys: success, steps, llm_times, package_str, error, injection_count (if any)
     """
+    from building import AgentState
+
     package = building.generate_package(include_business=include_business)
     memory.set_document_id(f"delivery-{delivery_counter}")
 
-    agent = DeliveryAgent(building=building)
-    agent.state.current_package = package
+    # Use consistent setup with UI mode
+    agent_state = AgentState()
+    agent_state.current_package = package
 
+    # Use same simple system prompt as UI mode
     messages = [
-        {"role": "system", "content": agent._build_system_prompt(package)},
+        {"role": "system", "content": "You are a delivery agent. Use the tools provided to get it delivered."},
         {"role": "user", "content": f"Please deliver this package: {package}"}
     ]
 
-    tools = AgentTools(agent.building, agent.state, on_action=agent._record_action)
+    tools = AgentTools(building, agent_state)
     llm_times = []
     success = False
     error = None
+    injection_count = 0  # Track total memories injected
 
-    while max_steps is None or agent.state.steps_taken < max_steps:
+    # Use model from environment (consistent with UI mode)
+    model = os.environ.get("LLM_MODEL", "openai/gpt-4o-mini")
+
+    while max_steps is None or agent_state.steps_taken < max_steps:
         try:
+            step_num = len(llm_times) + 1
+            print(f"[FF] Delivery #{delivery_counter} step {step_num}: calling LLM...", flush=True)
+
             t0 = time.time()
             response = memory.completion(
-                model=agent.model,
+                model=model,
                 messages=messages,
                 tools=TOOL_DEFINITIONS,
                 tool_choice="required",
@@ -414,7 +433,20 @@ def _run_single_delivery_ff(building, include_business: bool, delivery_counter: 
             t1 = time.time()
             llm_times.append(t1 - t0)
 
+            # Track memory injection (first call only typically has injection)
+            try:
+                injection_debug = hindsight_litellm.get_last_injection_debug()
+                if injection_debug and injection_debug.injected:
+                    injection_count = injection_debug.results_count or 0
+            except Exception:
+                pass
+
             message = response.choices[0].message
+
+            # Log tool calls
+            if message.tool_calls:
+                tool_names = [tc.function.name for tc in message.tool_calls]
+                print(f"[FF] Delivery #{delivery_counter} step {step_num}: {', '.join(tool_names)} ({t1-t0:.2f}s)", flush=True)
 
             if message.tool_calls:
                 tool_results = []
@@ -444,8 +476,9 @@ def _run_single_delivery_ff(building, include_business: bool, delivery_counter: 
 
                 if success:
                     # Store final conversation
+                    print(f"[FF] Delivery #{delivery_counter} SUCCESS in {agent_state.steps_taken} steps!", flush=True)
                     final_convo = _format_messages_for_retain(messages)
-                    memory.retain(final_convo)
+                    memory.retain(final_convo, sync=sync_storage)
                     break
             else:
                 # No tool calls - nudge to use tools
@@ -456,7 +489,7 @@ def _run_single_delivery_ff(building, include_business: bool, delivery_counter: 
             error = str(e)
             break
 
-    # Check for storage errors
+    # Check for storage errors (from auto-storage after completion)
     storage_errors = memory.get_pending_storage_errors()
     storage_error_msgs = []
     if storage_errors:
@@ -464,17 +497,27 @@ def _run_single_delivery_ff(building, include_business: bool, delivery_counter: 
             print(f"[STORAGE ERROR] {err}", flush=True)
             storage_error_msgs.append(str(err))
 
+    # Check for retain errors (from manual async retain calls)
+    retain_errors = memory.get_pending_retain_errors()
+    retain_error_msgs = []
+    if retain_errors:
+        for err in retain_errors:
+            print(f"[RETAIN ERROR] {err}", flush=True)
+            retain_error_msgs.append(str(err))
+
     # Determine if we hit the step limit
-    hit_step_limit = max_steps is not None and agent.state.steps_taken >= max_steps and not success
+    hit_step_limit = max_steps is not None and agent_state.steps_taken >= max_steps and not success
 
     return {
         "success": success,
-        "steps": agent.state.steps_taken,
+        "steps": agent_state.steps_taken,
         "llm_times": llm_times,
         "package_str": str(package),
         "error": error,
         "storage_errors": storage_error_msgs,
+        "retain_errors": retain_error_msgs,
         "hit_step_limit": hit_step_limit,
+        "injection_count": injection_count,  # Memory injection count
     }
 
 
@@ -804,6 +847,14 @@ def main():
         st.markdown("### ⚡ Fast-Forward Mode")
         st.caption("Maximum speed - no animations, minimal UI")
 
+        # Memory Bank ID display with copy button (compact)
+        bank_id = st.session_state.get('bank_id', 'N/A')
+        bank_col1, bank_col2 = st.columns([2, 3])
+        with bank_col1:
+            st.markdown("🏦 **Memory Bank:**")
+        with bank_col2:
+            st.code(bank_id, language=None)
+
         col_ff_controls, col_ff_stats = st.columns([1, 1])
 
         with col_ff_controls:
@@ -821,6 +872,24 @@ def main():
             )
             st.session_state.max_steps_per_delivery = max_steps_input
 
+            # Include business checkbox (shared with UI mode)
+            include_business_ff = st.checkbox(
+                "Include business name",
+                value=st.session_state.include_business,
+                help="If checked, package will show the business name",
+                key="ff_include_business"
+            )
+            st.session_state.include_business = include_business_ff
+
+            # Sync storage option (FF mode only)
+            # Note: Don't set session_state after widget - key auto-stores the value
+            st.checkbox(
+                "Sync storage",
+                value=st.session_state.get("ff_sync_storage", False),
+                help="If checked, wait for memory storage to complete before timing. Slower but more accurate benchmarks.",
+                key="ff_sync_storage"
+            )
+
             is_running = st.session_state.loop_remaining > 0
             if st.button("🚀 Run Loop", use_container_width=True, disabled=is_running, key="ff_loop_btn"):
                 st.session_state.fast_forward = True
@@ -829,20 +898,57 @@ def main():
                 st.session_state.timing_llm_calls = []
                 st.session_state.timing_deliveries = []
                 st.session_state.ff_errors = []  # Clear errors for new run
+                st.session_state.ff_injection_counts = []  # Track injection counts
 
             if st.button("📦 Single Delivery", use_container_width=True, disabled=is_running, key="ff_single_btn"):
                 st.session_state.fast_forward = True
                 st.session_state.loop_remaining = 1
                 st.session_state.ff_errors = []
+                st.session_state.ff_injection_counts = []
 
             if st.button("🛑 Stop", use_container_width=True, disabled=not is_running, key="ff_stop_btn"):
                 st.session_state.loop_remaining = 0
                 st.session_state.fast_forward = False
 
+            # Reset buttons
+            st.markdown("---")
+            col_reset1, col_reset2 = st.columns(2)
+            with col_reset1:
+                if st.button("🔄 Full Reset", use_container_width=True, disabled=is_running, key="ff_full_reset"):
+                    # Reset all state
+                    st.session_state.session_id = uuid.uuid4().hex[:8]
+                    bank_id = memory.configure_memory(session_id=st.session_state.session_id)
+                    st.session_state.bank_id = bank_id
+                    st.session_state.deliveries_completed = 0
+                    st.session_state.delivery_counter = 0
+                    st.session_state.total_steps = 0
+                    st.session_state.delivery_history = []
+                    st.session_state.timing_llm_calls = []
+                    st.session_state.timing_deliveries = []
+                    st.session_state.timing_loop_start = None
+                    st.session_state.ff_errors = []
+                    st.session_state.ff_injection_counts = []
+                    st.session_state.loop_remaining = 0
+                    st.session_state.fast_forward = False
+                    st.rerun()
+            with col_reset2:
+                if st.button("🧹 Clear Memory", use_container_width=True, disabled=is_running, key="ff_clear_mem"):
+                    # New bank but keep timing stats
+                    st.session_state.session_id = uuid.uuid4().hex[:8]
+                    bank_id = memory.configure_memory(session_id=st.session_state.session_id)
+                    st.session_state.bank_id = bank_id
+                    st.session_state.deliveries_completed = 0
+                    st.session_state.delivery_counter = 0
+                    st.session_state.total_steps = 0
+                    st.session_state.delivery_history = []
+                    st.session_state.ff_injection_counts = []
+                    st.rerun()
+
         with col_ff_stats:
             st.markdown("#### ⏱️ Benchmarks")
             llm_times = st.session_state.timing_llm_calls
             delivery_times = st.session_state.timing_deliveries
+            injection_counts = st.session_state.get("ff_injection_counts", [])
 
             col_a, col_b = st.columns(2)
             with col_a:
@@ -858,19 +964,36 @@ def main():
                 total = time.time() - st.session_state.timing_loop_start
                 st.metric("Total Time", f"{total:.1f}s")
 
+            # Memory injection stats
+            if injection_counts:
+                st.markdown("#### 🧠 Memory")
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    injected_count = sum(1 for c in injection_counts if c > 0)
+                    st.metric("With Memories", f"{injected_count}/{len(injection_counts)}")
+                with col_m2:
+                    if any(c > 0 for c in injection_counts):
+                        avg_inj = sum(injection_counts) / max(1, injected_count)
+                        st.metric("Avg Injected", f"{avg_inj:.0f}")
+
         # Show errors from FF runs
         if st.session_state.ff_errors:
-            with st.expander(f"⚠️ Errors ({len(st.session_state.ff_errors)})", expanded=True):
-                for err in st.session_state.ff_errors[-10:]:  # Show last 10
-                    st.error(err)
+            with st.expander(f"⚠️ Errors ({len(st.session_state.ff_errors)})", expanded=False):
+                # Show all errors in scrollable container
+                error_container = st.container(height=300)
+                with error_container:
+                    for err in st.session_state.ff_errors:
+                        st.error(err)
 
         # Learning curve in fast-forward
         if len(st.session_state.delivery_history) >= 1:
             st.markdown("### 📈 Learning Curve")
             steps_history = [d["steps"] for d in st.session_state.delivery_history]
-            df = pd.DataFrame({"Steps": steps_history}, index=range(1, len(steps_history) + 1))
-            df.index.name = "Delivery"
-            st.line_chart(df, use_container_width=True)
+            df = pd.DataFrame({
+                "Delivery": range(1, len(steps_history) + 1),
+                "Steps": steps_history
+            })
+            st.line_chart(df, x="Delivery", y="Steps", use_container_width=True)
 
         # Fast-forward delivery loop - uses st.empty() for real-time updates
         if st.session_state.get("fast_forward", False) and st.session_state.loop_remaining > 0:
@@ -900,6 +1023,7 @@ def main():
                     include_business=st.session_state.include_business,
                     delivery_counter=st.session_state.delivery_counter,
                     max_steps=st.session_state.max_steps_per_delivery,
+                    sync_storage=st.session_state.get("ff_sync_storage", False),
                 )
 
                 delivery_time = time.time() - delivery_start
@@ -917,19 +1041,33 @@ def main():
                 })
                 st.session_state.last_package_info = result["package_str"]
 
+                # Track memory injection counts
+                if "ff_injection_counts" not in st.session_state:
+                    st.session_state.ff_injection_counts = []
+                st.session_state.ff_injection_counts.append(result.get("injection_count", 0))
+
                 # Track errors for UI display
+                delivery_num = st.session_state.delivery_counter
+                steps = result["steps"]
+
                 if result["error"]:
-                    err_msg = f"Delivery {st.session_state.delivery_counter}: {result['error']}"
+                    err_msg = f"Delivery #{delivery_num} (step {steps}): {result['error']}"
                     st.session_state.ff_errors.append(err_msg)
                     print(f"[FF ERROR] {err_msg}", flush=True)
 
                 if result["storage_errors"]:
                     for se in result["storage_errors"]:
-                        err_msg = f"Delivery {st.session_state.delivery_counter} storage: {se}"
+                        err_msg = f"Delivery #{delivery_num} (step {steps}) storage error: {se}"
                         st.session_state.ff_errors.append(err_msg)
 
+                if result.get("retain_errors"):
+                    for re in result["retain_errors"]:
+                        err_msg = f"Delivery #{delivery_num} (step {steps}) retain error: {re}"
+                        st.session_state.ff_errors.append(err_msg)
+                        print(f"[FF RETAIN ERROR] {err_msg}", flush=True)
+
                 if result["hit_step_limit"]:
-                    err_msg = f"Delivery {st.session_state.delivery_counter}: Hit step limit ({st.session_state.max_steps_per_delivery} steps)"
+                    err_msg = f"Delivery #{delivery_num}: Hit step limit ({st.session_state.max_steps_per_delivery} steps)"
                     st.session_state.ff_errors.append(err_msg)
                     print(f"[FF STEP LIMIT] {err_msg}", flush=True)
 
@@ -1210,400 +1348,400 @@ def main():
 
         st.markdown("---")
 
-    # Bottom section: Only show in UI mode (not fast-forward)
-    if st.session_state.get("fast_forward", False):
-        return  # Fast-forward mode has its own UI in ff_tab
+        # Bottom section: Controls, Stats, History (inside ui_tab)
+        col_controls, col_stats, col_history = st.columns([1, 1, 1])
 
-    col_controls, col_stats, col_history = st.columns([1, 1, 1])
+        with col_controls:
+            # Controls
+            st.markdown("### 🎮 Controls")
 
-    with col_controls:
-        # Controls
-        st.markdown("### 🎮 Controls")
+            # Current package info
+            if st.session_state.last_package_info:
+                st.markdown("**📦 Current Package:**")
+                st.code(st.session_state.last_package_info, language=None)
 
-        # Current package info
-        if st.session_state.last_package_info:
-            st.markdown("**📦 Current Package:**")
-            st.code(st.session_state.last_package_info, language=None)
+            # Package options
+            include_business = st.checkbox("Include business name", value=st.session_state.include_business,
+                                           help="If checked, package will show the business name")
+            st.session_state.include_business = include_business
 
-        # Package options
-        include_business = st.checkbox("Include business name", value=st.session_state.include_business,
-                                       help="If checked, package will show the business name")
-        st.session_state.include_business = include_business
-
-        # Max steps per delivery
-        max_steps_ui = st.number_input(
-            "Max steps per delivery",
-            min_value=1,
-            max_value=500,
-            value=st.session_state.max_steps_per_delivery,
-            placeholder="No limit",
-            help="Leave empty for no limit",
-            key="ui_max_steps"
-        )
-        st.session_state.max_steps_per_delivery = max_steps_ui
-
-        # Select Recipient button
-        if st.button("👤 Select Recipient", use_container_width=True):
-            st.session_state.show_recipient_dialog = True
-            st.session_state.start_delivery_now = False
-            st.session_state.selected_recipient = None
-            st.rerun()
-
-        # Step by step mode - controls animation speed, not agent speed
-        step_by_step = st.checkbox("Step by step mode", value=st.session_state.step_by_step,
-                                   help="Click 'Next Step' to advance animations one at a time")
-        st.session_state.step_by_step = step_by_step
-
-        # Check if a background delivery is running
-        is_delivery_running = st.session_state.bg_delivery_running
-
-        # Generate new package button
-        start_new_delivery = st.button("📦 New Delivery", use_container_width=True, disabled=is_delivery_running)
-
-        if start_new_delivery:
-            st.session_state.current_actions = []
-            st.session_state.action_queue = []
-            st.session_state.displayed_actions = []
-            st.session_state.last_display_time = 0
-            st.session_state.delivery_complete_pending = False
-            st.session_state.bg_delivery_complete_info = None  # Clear any previous completion
-            # Clear old queue before creating new one - process any pending complete
-            complete_item = _clear_queue(st.session_state.session_id)
-            _process_complete_item(complete_item)
-            st.session_state.bg_queue_active = False
-            st.session_state.llm_messages = []
-            st.session_state.has_package = True
-            st.session_state.agent_floor = 1
-            st.session_state.agent_side = "front"
-            st.session_state.prev_agent_floor = 1
-            st.session_state.prev_agent_side = "front"
-            st.session_state.current_action = None
-            st.session_state.delivery_start_time = time.time()
-
-            # Use selected recipient or generate random package
-            if st.session_state.selected_recipient:
-                recipient_name = st.session_state.selected_recipient
-                business_info = building.find_employee(recipient_name)
-                business_name = business_info[0].name if business_info and include_business else None
-                package = Package(
-                    id=f"{random.randint(1000, 9999)}",
-                    recipient_name=recipient_name,
-                    business_name=business_name
-                )
-            else:
-                package = building.generate_package(include_business=include_business)
-            st.session_state.last_package_info = str(package)
-
-            # Increment delivery counter and set document_id for memory grouping
-            st.session_state.delivery_counter += 1
-            memory.set_document_id(f"delivery-{st.session_state.delivery_counter}")
-
-            # Get model
-            model = os.environ.get("LLM_MODEL", "openai/gpt-4o-mini")
-
-            # Start background thread for delivery using global queue storage
-            action_q = _get_or_create_queue(st.session_state.session_id)
-            cancel_evt = _get_or_create_cancel_event(st.session_state.session_id)
-            _reset_cancel_event(st.session_state.session_id)  # Clear any previous cancellation
-            st.session_state.bg_queue_active = True
-            st.session_state.bg_delivery_running = True
-            st.session_state.bg_delivery_complete_info = None
-            st.session_state.pending_delivery = None  # Clear old pending_delivery
-
-            _debug_log(f"[START] Session {st.session_state.session_id}: {package}, model={model}")
-
-            thread = threading.Thread(
-                target=_run_delivery_in_background,
-                args=(action_q, building, package, model, st.session_state.max_steps_per_delivery, cancel_evt),
-                daemon=True
+            # Max steps per delivery
+            max_steps_ui = st.number_input(
+                "Max steps per delivery",
+                min_value=1,
+                max_value=500,
+                value=st.session_state.max_steps_per_delivery,
+                placeholder="No limit",
+                help="Leave empty for no limit",
+                key="ui_max_steps"
             )
-            thread.start()
-            st.rerun()
+            st.session_state.max_steps_per_delivery = max_steps_ui
 
-        # Step-by-step mode: Next Step button advances animations
-        if st.session_state.step_by_step and st.session_state.action_queue:
-            if st.button("▶️ Next Step", use_container_width=True, type="primary"):
-                # Advance one action from the queue
-                next_action = st.session_state.action_queue.pop(0)
-                st.session_state.displayed_actions.append(next_action)
-                st.session_state.last_display_time = time.time()
-
-                if next_action.get("floor") is not None:
-                    st.session_state.prev_agent_floor = st.session_state.agent_floor
-                    st.session_state.prev_agent_side = st.session_state.agent_side
-                    st.session_state.agent_floor = next_action["floor"]
-                    st.session_state.agent_side = next_action["side"]
-                    st.session_state.current_action = next_action["tool_name"]
+            # Select Recipient button
+            if st.button("👤 Select Recipient", use_container_width=True):
+                st.session_state.show_recipient_dialog = True
+                st.session_state.start_delivery_now = False
+                st.session_state.selected_recipient = None
                 st.rerun()
 
-        # Show status when delivery is running
-        if is_delivery_running:
-            st.info("🔄 Agent is working... (actions will appear as they complete)")
-            if st.button("🛑 Stop Delivery", use_container_width=True, type="primary"):
-                _cancel_delivery(st.session_state.session_id)
-                st.toast("Stopping delivery...")
-                st.rerun()
-        elif st.session_state.bg_delivery_complete_info:
-            info = st.session_state.bg_delivery_complete_info
-            if info["success"]:
-                st.success(f"✅ Delivery complete in {info['steps']} steps!")
-            elif info.get("cancelled"):
-                st.warning(f"🛑 Delivery cancelled after {info['steps']} steps")
-            elif info["error"]:
-                st.error(f"❌ Delivery failed: {info['error']}")
-            else:
-                st.warning(f"⚠️ Delivery ended after {info['steps']} steps")
+            # Step by step mode - controls animation speed, not agent speed
+            step_by_step = st.checkbox("Step by step mode", value=st.session_state.step_by_step,
+                                       help="Click 'Next Step' to advance animations one at a time")
+            st.session_state.step_by_step = step_by_step
 
-            if st.button("🔄 Reset", use_container_width=True):
-                st.session_state.bg_delivery_complete_info = None
-                _clear_queue(st.session_state.session_id)
+            # Check if a background delivery is running
+            is_delivery_running = st.session_state.bg_delivery_running
+
+            # Generate new package button
+            start_new_delivery = st.button("📦 New Delivery", use_container_width=True, disabled=is_delivery_running)
+
+            if start_new_delivery:
+                st.session_state.current_actions = []
+                st.session_state.action_queue = []
+                st.session_state.displayed_actions = []
+                st.session_state.last_display_time = 0
+                st.session_state.delivery_complete_pending = False
+                st.session_state.bg_delivery_complete_info = None  # Clear any previous completion
+                # Clear old queue before creating new one - process any pending complete
+                complete_item = _clear_queue(st.session_state.session_id)
+                _process_complete_item(complete_item)
                 st.session_state.bg_queue_active = False
+                st.session_state.llm_messages = []
+                st.session_state.has_package = True
+                st.session_state.agent_floor = 1
+                st.session_state.agent_side = "front"
+                st.session_state.prev_agent_floor = 1
+                st.session_state.prev_agent_side = "front"
+                st.session_state.current_action = None
+                st.session_state.delivery_start_time = time.time()
+
+                # Use selected recipient or generate random package
+                if st.session_state.selected_recipient:
+                    recipient_name = st.session_state.selected_recipient
+                    business_info = building.find_employee(recipient_name)
+                    business_name = business_info[0].name if business_info and include_business else None
+                    package = Package(
+                        id=f"{random.randint(1000, 9999)}",
+                        recipient_name=recipient_name,
+                        business_name=business_name
+                    )
+                else:
+                    package = building.generate_package(include_business=include_business)
+                st.session_state.last_package_info = str(package)
+
+                # Increment delivery counter and set document_id for memory grouping
+                st.session_state.delivery_counter += 1
+                memory.set_document_id(f"delivery-{st.session_state.delivery_counter}")
+
+                # Get model
+                model = os.environ.get("LLM_MODEL", "openai/gpt-4o-mini")
+
+                # Start background thread for delivery using global queue storage
+                action_q = _get_or_create_queue(st.session_state.session_id)
+                cancel_evt = _get_or_create_cancel_event(st.session_state.session_id)
+                _reset_cancel_event(st.session_state.session_id)  # Clear any previous cancellation
+                st.session_state.bg_queue_active = True
+                st.session_state.bg_delivery_running = True
+                st.session_state.bg_delivery_complete_info = None
+                st.session_state.pending_delivery = None  # Clear old pending_delivery
+
+                _debug_log(f"[START] Session {st.session_state.session_id}: {package}, model={model}")
+
+                thread = threading.Thread(
+                    target=_run_delivery_in_background,
+                    args=(action_q, building, package, model, st.session_state.max_steps_per_delivery, cancel_evt),
+                    daemon=True
+                )
+                thread.start()
+                st.rerun()
+
+            # Step-by-step mode: Next Step button advances animations
+            if st.session_state.step_by_step and st.session_state.action_queue:
+                if st.button("▶️ Next Step", use_container_width=True, type="primary"):
+                    # Advance one action from the queue
+                    next_action = st.session_state.action_queue.pop(0)
+                    st.session_state.displayed_actions.append(next_action)
+                    st.session_state.last_display_time = time.time()
+
+                    if next_action.get("floor") is not None:
+                        st.session_state.prev_agent_floor = st.session_state.agent_floor
+                        st.session_state.prev_agent_side = st.session_state.agent_side
+                        st.session_state.agent_floor = next_action["floor"]
+                        st.session_state.agent_side = next_action["side"]
+                        st.session_state.current_action = next_action["tool_name"]
+                    st.rerun()
+
+            # Show status when delivery is running
+            if is_delivery_running:
+                st.info("🔄 Agent is working... (actions will appear as they complete)")
+                if st.button("🛑 Stop Delivery", use_container_width=True, type="primary"):
+                    _cancel_delivery(st.session_state.session_id)
+                    st.toast("Stopping delivery...")
+                    st.rerun()
+            elif st.session_state.bg_delivery_complete_info:
+                info = st.session_state.bg_delivery_complete_info
+                if info["success"]:
+                    st.success(f"✅ Delivery complete in {info['steps']} steps!")
+                elif info.get("cancelled"):
+                    st.warning(f"🛑 Delivery cancelled after {info['steps']} steps")
+                elif info["error"]:
+                    st.error(f"❌ Delivery failed: {info['error']}")
+                else:
+                    st.warning(f"⚠️ Delivery ended after {info['steps']} steps")
+
+                if st.button("🔄 Reset", use_container_width=True):
+                    st.session_state.bg_delivery_complete_info = None
+                    _clear_queue(st.session_state.session_id)
+                    st.session_state.bg_queue_active = False
+                    st.session_state.action_queue = []
+                    st.session_state.displayed_actions = []
+                    st.session_state.delivery_complete_pending = False
+                    st.rerun()
+
+            # Always-visible Full Reset button - kills everything and starts completely fresh
+            if st.button("🔄 Full Reset", use_container_width=True, type="secondary"):
+                # Stop any running background delivery by signaling cancellation
+                _cancel_delivery(st.session_state.session_id)
+                st.session_state.bg_delivery_running = False
+                _clear_queue(st.session_state.session_id)  # Clear and remove the queue
+                st.session_state.bg_queue_active = False
+                st.session_state.bg_delivery_complete_info = None
+
+                # Clear all delivery state
                 st.session_state.action_queue = []
                 st.session_state.displayed_actions = []
                 st.session_state.delivery_complete_pending = False
+                st.session_state.llm_messages = []
+                st.session_state.has_package = False
+                st.session_state.last_package_info = None
+                st.session_state.current_action = None
+                st.session_state.agent_floor = 1
+                st.session_state.agent_side = "front"
+                st.session_state.prev_agent_floor = 1
+                st.session_state.prev_agent_side = "front"
+
+                # CRITICAL: Reset delivery trigger flags to prevent auto-start
+                st.session_state.start_delivery_now = False
+                st.session_state.show_recipient_dialog = False
+                st.session_state.pending_delivery = None
+                st.session_state.fast_forward = False
+
+                # Generate new session and bank ID (fresh memory)
+                st.session_state.session_id = uuid.uuid4().hex[:8]
+                bank_id = memory.configure_memory(session_id=st.session_state.session_id)
+                st.session_state.bank_id = bank_id
+
+                # Reset stats
+                st.session_state.deliveries_completed = 0
+                st.session_state.delivery_counter = 0
+                st.session_state.total_steps = 0
+                st.session_state.delivery_history = []
+                st.session_state.current_actions = []
+                st.session_state.selected_recipient = None
+                st.session_state.selected_business = None
+                st.session_state.stored_memories = []
+                st.session_state.loop_remaining = 0
+                st.session_state.is_running = False
+
                 st.rerun()
 
-        # Always-visible Full Reset button - kills everything and starts completely fresh
-        if st.button("🔄 Full Reset", use_container_width=True, type="secondary"):
-            # Stop any running background delivery by signaling cancellation
-            _cancel_delivery(st.session_state.session_id)
-            st.session_state.bg_delivery_running = False
-            _clear_queue(st.session_state.session_id)  # Clear and remove the queue
-            st.session_state.bg_queue_active = False
-            st.session_state.bg_delivery_complete_info = None
+            # Clear Memory button (keeps stats, just clears hindsight memory)
+            if st.button("🧹 Clear Memory", use_container_width=True, disabled=st.session_state.is_running):
+                st.session_state.session_id = uuid.uuid4().hex[:8]
+                bank_id = memory.configure_memory(session_id=st.session_state.session_id)
+                st.session_state.bank_id = bank_id
+                st.session_state.deliveries_completed = 0
+                st.session_state.delivery_counter = 0  # Reset delivery counter
+                st.session_state.loop_remaining = 0  # Stop any active loop
+                st.session_state.total_steps = 0
+                st.session_state.delivery_history = []
+                st.session_state.current_actions = []
+                st.session_state.has_package = False
+                st.session_state.last_package_info = None
+                st.session_state.current_action = None
+                st.session_state.selected_recipient = None
+                st.session_state.llm_messages = []
+                st.session_state.stored_memories = []
+                st.rerun()
 
-            # Clear all delivery state
-            st.session_state.action_queue = []
-            st.session_state.displayed_actions = []
-            st.session_state.delivery_complete_pending = False
-            st.session_state.llm_messages = []
-            st.session_state.has_package = False
-            st.session_state.last_package_info = None
-            st.session_state.current_action = None
-            st.session_state.agent_floor = 1
-            st.session_state.agent_side = "front"
-            st.session_state.prev_agent_floor = 1
-            st.session_state.prev_agent_side = "front"
+        with col_stats:
+            # Stats panel
+            st.markdown("### 📊 Stats")
 
-            # CRITICAL: Reset delivery trigger flags to prevent auto-start
-            st.session_state.start_delivery_now = False
-            st.session_state.show_recipient_dialog = False
-            st.session_state.pending_delivery = None
-            st.session_state.fast_forward = False
+            # Memory Bank ID with copy button (compact)
+            bank_id = st.session_state.get('bank_id', 'N/A')
+            bank_col1, bank_col2 = st.columns([1, 2])
+            with bank_col1:
+                st.markdown("🏦 **Bank:**")
+            with bank_col2:
+                st.code(bank_id, language=None)
 
-            # Generate new session and bank ID (fresh memory)
-            st.session_state.session_id = uuid.uuid4().hex[:8]
-            bank_id = memory.configure_memory(session_id=st.session_state.session_id)
-            st.session_state.bank_id = bank_id
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.metric("Deliveries", st.session_state.deliveries_completed)
+            with col_b:
+                st.metric("Total Steps", st.session_state.total_steps)
 
-            # Reset stats
-            st.session_state.deliveries_completed = 0
-            st.session_state.delivery_counter = 0
-            st.session_state.total_steps = 0
-            st.session_state.delivery_history = []
-            st.session_state.current_actions = []
-            st.session_state.selected_recipient = None
-            st.session_state.selected_business = None
-            st.session_state.stored_memories = []
-            st.session_state.loop_remaining = 0
-            st.session_state.is_running = False
+            if st.session_state.deliveries_completed > 0:
+                avg_steps = st.session_state.total_steps / st.session_state.deliveries_completed
+                st.metric("Avg Steps", f"{avg_steps:.1f}")
 
-            st.rerun()
+            # Timing Benchmarks
+            if st.session_state.get("timing_llm_calls") or st.session_state.get("timing_deliveries"):
+                st.markdown("### ⏱️ Benchmarks")
 
-        # Clear Memory button (keeps stats, just clears hindsight memory)
-        if st.button("🧹 Clear Memory", use_container_width=True, disabled=st.session_state.is_running):
-            st.session_state.session_id = uuid.uuid4().hex[:8]
-            bank_id = memory.configure_memory(session_id=st.session_state.session_id)
-            st.session_state.bank_id = bank_id
-            st.session_state.deliveries_completed = 0
-            st.session_state.delivery_counter = 0  # Reset delivery counter
-            st.session_state.loop_remaining = 0  # Stop any active loop
-            st.session_state.total_steps = 0
-            st.session_state.delivery_history = []
-            st.session_state.current_actions = []
-            st.session_state.has_package = False
-            st.session_state.last_package_info = None
-            st.session_state.current_action = None
-            st.session_state.selected_recipient = None
-            st.session_state.llm_messages = []
-            st.session_state.stored_memories = []
-            st.rerun()
+                llm_times = st.session_state.get("timing_llm_calls", [])
+                delivery_times = st.session_state.get("timing_deliveries", [])
 
-    with col_stats:
-        # Stats panel
-        st.markdown("### 📊 Stats")
+                if llm_times:
+                    avg_llm = sum(llm_times) / len(llm_times)
+                    st.metric("Avg LLM Call", f"{avg_llm:.2f}s")
 
-        # Memory Bank ID with copy button
-        bank_id = st.session_state.get('bank_id', 'N/A')
-        st.markdown("🏦 **Memory Bank:**")
-        st.code(bank_id, language=None)
+                if delivery_times:
+                    avg_delivery = sum(delivery_times) / len(delivery_times)
+                    st.metric("Avg Delivery", f"{avg_delivery:.1f}s")
 
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.metric("Deliveries", st.session_state.deliveries_completed)
-        with col_b:
-            st.metric("Total Steps", st.session_state.total_steps)
+                # Total loop time
+                if st.session_state.get("timing_loop_start") and delivery_times:
+                    total_loop = time.time() - st.session_state.timing_loop_start
+                    st.metric("Total Loop Time", f"{total_loop:.1f}s")
+                    st.caption(f"{len(llm_times)} LLM calls | {len(delivery_times)} deliveries")
 
-        if st.session_state.deliveries_completed > 0:
-            avg_steps = st.session_state.total_steps / st.session_state.deliveries_completed
-            st.metric("Avg Steps", f"{avg_steps:.1f}")
+        with col_history:
+            # Delivery history
+            st.markdown("### 📜 History")
+            if st.session_state.delivery_history:
+                for i, delivery in enumerate(reversed(st.session_state.delivery_history[-5:]), 1):
+                    status = "✅" if delivery["success"] else "❌"
+                    st.markdown(f"{status} **{delivery['steps']} steps** 🧠")
+            else:
+                st.markdown("*No deliveries yet*")
 
-        # Timing Benchmarks
-        if st.session_state.get("timing_llm_calls") or st.session_state.get("timing_deliveries"):
-            st.markdown("### ⏱️ Benchmarks")
+            # Learning curve visualization
+            if len(st.session_state.delivery_history) >= 1:
+                st.markdown("### 📈 Learning Curve")
+                steps_history = [d["steps"] for d in st.session_state.delivery_history]
+                # Create DataFrame with 1-indexed delivery numbers as column
+                df = pd.DataFrame({
+                    "Delivery": range(1, len(steps_history) + 1),
+                    "Steps": steps_history
+                })
+                st.line_chart(df, x="Delivery", y="Steps", use_container_width=True)
 
-            llm_times = st.session_state.get("timing_llm_calls", [])
-            delivery_times = st.session_state.get("timing_deliveries", [])
+        # LLM Debug Section - scrollable, organized display
+        st.markdown("### 🤖 LLM Prompt & Response")
+        if st.session_state.llm_messages:
+            # Scrollable container
+            llm_container = st.container(height=500)
+            with llm_container:
+                for entry in reversed(st.session_state.llm_messages):  # Newest first
+                    step_num = entry.get("step", "?")
+                    with st.expander(f"**Step {step_num}**", expanded=False):
+                        # Use dict-based format (no JSON parsing needed)
+                        prompt_data = entry.get("prompt", {})
+                        response_data = entry.get("response", {})
 
-            if llm_times:
-                avg_llm = sum(llm_times) / len(llm_times)
-                st.metric("Avg LLM Call", f"{avg_llm:.2f}s")
+                        try:
+                            messages = prompt_data.get("messages", [])
+                            injection_info = prompt_data.get("_hindsight_injection", {})
 
-            if delivery_times:
-                avg_delivery = sum(delivery_times) / len(delivery_times)
-                st.metric("Avg Delivery", f"{avg_delivery:.1f}s")
+                            # Separate messages by type
+                            system_msg = None
+                            history_messages = []
+                            current_message = None
 
-            # Total loop time
-            if st.session_state.get("timing_loop_start") and delivery_times:
-                total_loop = time.time() - st.session_state.timing_loop_start
-                st.metric("Total Loop Time", f"{total_loop:.1f}s")
-                st.caption(f"{len(llm_times)} LLM calls | {len(delivery_times)} deliveries")
+                            for msg in messages:
+                                role = msg.get("role", "")
+                                if role == "system":
+                                    system_msg = msg
+                                elif msg == messages[-1]:
+                                    current_message = msg
+                                else:
+                                    history_messages.append(msg)
 
-    with col_history:
-        # Delivery history
-        st.markdown("### 📜 History")
-        if st.session_state.delivery_history:
-            for i, delivery in enumerate(reversed(st.session_state.delivery_history[-5:]), 1):
-                status = "✅" if delivery["success"] else "❌"
-                st.markdown(f"{status} **{delivery['steps']} steps** 🧠")
-        else:
-            st.markdown("*No deliveries yet*")
+                            # 1. History (collapsed) - previous conversation turns
+                            if history_messages:
+                                with st.expander(f"📜 History ({len(history_messages)} messages)", expanded=False):
+                                    for msg in history_messages:
+                                        role = msg.get("role", "").upper()
+                                        content = msg.get("content", "")
+                                        tool_calls = msg.get("tool_calls", [])
 
-        # Learning curve visualization
-        if len(st.session_state.delivery_history) >= 1:
-            st.markdown("### 📈 Learning Curve")
-            steps_history = [d["steps"] for d in st.session_state.delivery_history]
-            # Create DataFrame with 1-indexed delivery numbers
-            df = pd.DataFrame({
-                "Steps": steps_history
-            }, index=range(1, len(steps_history) + 1))
-            df.index.name = "Delivery"
-            st.line_chart(df, use_container_width=True)
+                                        if role == "USER":
+                                            st.caption(f"**USER:** {content}")
+                                        elif role == "ASSISTANT" and tool_calls:
+                                            # Handle both formats: {"name": ...} or {"function": {"name": ...}}
+                                            tc_names = [tc.get("function", {}).get("name", "") or tc.get("name", "") for tc in tool_calls]
+                                            st.caption(f"**ASSISTANT:** called {', '.join(tc_names)}")
+                                        elif role == "TOOL":
+                                            st.caption(f"**TOOL:** {content[:100]}..." if len(content) > 100 else f"**TOOL:** {content}")
+                                        else:
+                                            st.caption(f"**{role}:** {content[:100]}..." if len(content) > 100 else f"**{role}:** {content}")
 
-    # LLM Debug Section - scrollable, organized display
-    st.markdown("### 🤖 LLM Prompt & Response")
-    if st.session_state.llm_messages:
-        # Scrollable container
-        llm_container = st.container(height=500)
-        with llm_container:
-            for entry in reversed(st.session_state.llm_messages):  # Newest first
-                step_num = entry.get("step", "?")
-                with st.expander(f"**Step {step_num}**", expanded=False):
-                    # Use dict-based format (no JSON parsing needed)
-                    prompt_data = entry.get("prompt", {})
-                    response_data = entry.get("response", {})
+                            # 2. System Prompt (with injected memories)
+                            st.markdown("**🔧 System Prompt:**")
+                            if system_msg:
+                                system_content = system_msg.get("content", "")
+                                # Check if memories were injected
+                                injected = injection_info.get("injected", False) if injection_info else False
+                                memories_count = injection_info.get("memories_count", 0) if injection_info else 0
+                                memory_context = injection_info.get("memory_context", "") if injection_info else ""
 
-                    try:
-                        messages = prompt_data.get("messages", [])
-                        injection_info = prompt_data.get("_hindsight_injection", {})
-
-                        # Separate messages by type
-                        system_msg = None
-                        history_messages = []
-                        current_message = None
-
-                        for msg in messages:
-                            role = msg.get("role", "")
-                            if role == "system":
-                                system_msg = msg
-                            elif msg == messages[-1]:
-                                current_message = msg
-                            else:
-                                history_messages.append(msg)
-
-                        # 1. History (collapsed) - previous conversation turns
-                        if history_messages:
-                            with st.expander(f"📜 History ({len(history_messages)} messages)", expanded=False):
-                                for msg in history_messages:
-                                    role = msg.get("role", "").upper()
-                                    content = msg.get("content", "")
-                                    tool_calls = msg.get("tool_calls", [])
-
-                                    if role == "USER":
-                                        st.caption(f"**USER:** {content}")
-                                    elif role == "ASSISTANT" and tool_calls:
-                                        # Handle both formats: {"name": ...} or {"function": {"name": ...}}
-                                        tc_names = [tc.get("function", {}).get("name", "") or tc.get("name", "") for tc in tool_calls]
-                                        st.caption(f"**ASSISTANT:** called {', '.join(tc_names)}")
-                                    elif role == "TOOL":
-                                        st.caption(f"**TOOL:** {content[:100]}..." if len(content) > 100 else f"**TOOL:** {content}")
-                                    else:
-                                        st.caption(f"**{role}:** {content[:100]}..." if len(content) > 100 else f"**{role}:** {content}")
-
-                        # 2. System Prompt (with injected memories)
-                        st.markdown("**🔧 System Prompt:**")
-                        if system_msg:
-                            system_content = system_msg.get("content", "")
-                            # Check if memories were injected
-                            injected = injection_info.get("injected", False) if injection_info else False
-                            memories_count = injection_info.get("memories_count", 0) if injection_info else 0
-                            memory_context = injection_info.get("memory_context", "") if injection_info else ""
-
-                            if injected and memories_count > 0:
-                                st.success(f"🧠 {memories_count} memories injected")
-                                # Show actual injected memories (from memory_context)
-                                if memory_context:
-                                    with st.expander("View injected memories", expanded=True):
-                                        st.code(memory_context, language=None)
-                                # Show original system prompt
-                                with st.expander("View original system prompt", expanded=False):
+                                if injected and memories_count > 0:
+                                    st.success(f"🧠 {memories_count} memories injected")
+                                    # Show actual injected memories (from memory_context)
+                                    if memory_context:
+                                        with st.expander("View injected memories", expanded=True):
+                                            st.code(memory_context, language=None)
+                                    # Show original system prompt
+                                    with st.expander("View original system prompt", expanded=False):
+                                        st.code(system_content, language=None)
+                                else:
+                                    st.caption("🧠 No memories injected")
                                     st.code(system_content, language=None)
                             else:
-                                st.caption("🧠 No memories injected")
-                                st.code(system_content, language=None)
-                        else:
-                            st.caption("No system prompt")
+                                st.caption("No system prompt")
 
-                        # 3. Tools available
-                        tools = prompt_data.get("tools", [])
-                        if tools:
-                            with st.expander(f"🔧 Tools ({len(tools)} available)", expanded=False):
-                                tool_names = [t.get("function", {}).get("name", "?") for t in tools]
-                                st.write(", ".join(tool_names))
+                            # 3. Tools available
+                            tools = prompt_data.get("tools", [])
+                            if tools:
+                                with st.expander(f"🔧 Tools ({len(tools)} available)", expanded=False):
+                                    tool_names = [t.get("function", {}).get("name", "?") for t in tools]
+                                    st.write(", ".join(tool_names))
 
-                        # 4. Current (the latest message being sent)
-                        st.markdown("**📤 Current:**")
-                        if current_message:
-                            st.json(current_message)
-                        else:
-                            st.caption("No current message")
+                            # 4. Current (the latest message being sent)
+                            st.markdown("**📤 Current:**")
+                            if current_message:
+                                st.json(current_message)
+                            else:
+                                st.caption("No current message")
 
-                        st.divider()
+                            st.divider()
 
-                        # 5. Response
-                        st.markdown("**📥 Response:**")
-                        st.json(response_data)
+                            # 5. Response
+                            st.markdown("**📥 Response:**")
+                            st.json(response_data)
 
-                        st.divider()
+                            st.divider()
 
-                        # 5. Raw Prompt & Response (for debugging)
-                        with st.expander("🔍 Raw Prompt & Response (Debug)", expanded=False):
-                            st.markdown("**Raw Prompt (full JSON sent to LLM):**")
-                            st.code(json.dumps(prompt_data, indent=2), language="json")
-                            st.markdown("**Raw Response (full JSON from LLM):**")
-                            st.code(json.dumps(response_data, indent=2), language="json")
+                            # 5. Raw Prompt & Response (for debugging)
+                            with st.expander("🔍 Raw Prompt & Response (Debug)", expanded=False):
+                                st.markdown("**Raw Prompt (full JSON sent to LLM):**")
+                                st.code(json.dumps(prompt_data, indent=2), language="json")
+                                st.markdown("**Raw Response (full JSON from LLM):**")
+                                st.code(json.dumps(response_data, indent=2), language="json")
 
-                    except Exception as e:
-                        st.error(f"Parse error: {e}")
-                        st.json(prompt_data)
-    else:
-        st.caption("*No LLM calls yet*")
+                        except Exception as e:
+                            st.error(f"Parse error: {e}")
+                            st.json(prompt_data)
+        else:
+            st.caption("*No LLM calls yet*")
 
-    # Auto-refresh at the end, after all UI has been rendered
-    # This allows all sections (including LLM) to display before refreshing
-    if needs_refresh and not st.session_state.step_by_step:
-        time.sleep(0.3)  # Poll interval
-        st.rerun()
+        # Auto-refresh at the end, after all UI has been rendered
+        # This allows all sections (including LLM) to display before refreshing
+        if needs_refresh and not st.session_state.step_by_step:
+            time.sleep(0.3)  # Poll interval
+            st.rerun()
 
 
 if __name__ == "__main__":
