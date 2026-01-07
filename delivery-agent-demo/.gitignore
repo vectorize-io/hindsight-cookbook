@@ -24,3 +24,6 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Evaluation data (can be large)
+evaluation_runs/

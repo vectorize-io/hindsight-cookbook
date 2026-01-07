@@ -115,6 +115,20 @@ from agent import DeliveryAgent, ActionEvent
 from agent_tools import AgentTools, TOOL_DEFINITIONS, execute_tool
 from game_renderer import generate_game_html
 import memory
+from evaluation import (
+    EvalConfig,
+    EVAL_CONFIG_SETTINGS,
+    EvaluationRunner,
+    DeliveryData,
+    StepData,
+    compute_optimal_path,
+    categorize_error,
+    check_memory_relevance,
+    generate_summary,
+    generate_report_markdown,
+    get_building_layout_dict,
+)
+from building import Side
 
 # Load environment variables
 load_dotenv()
@@ -521,6 +535,333 @@ def _run_single_delivery_ff(building, include_business: bool, delivery_counter: 
     }
 
 
+def _run_single_delivery_eval(
+    building,
+    delivery_id: int,
+    max_steps: int = 50,
+    config: EvalConfig = EvalConfig.RECALL_MID,
+) -> DeliveryData:
+    """Run a single delivery with detailed data collection for evaluation.
+
+    This captures all the data needed for analysis:
+    - Every step's tool calls and results
+    - Memory injection details
+    - Error categorization
+    - Timing information
+
+    Args:
+        building: The building to navigate
+        delivery_id: Unique ID for this delivery
+        max_steps: Maximum steps allowed
+        config: Hindsight configuration to use
+
+    Returns:
+        DeliveryData with complete step-by-step information
+    """
+    from building import AgentState
+
+    # Generate package
+    package = building.generate_package(include_business=False)
+    memory.set_document_id(f"eval-delivery-{delivery_id}")
+
+    # Compute optimal path
+    optimal_info = compute_optimal_path(building, package)
+    optimal_steps = optimal_info.get("optimal_steps", 0)
+    target_floor = optimal_info.get("target_floor", 1)
+    target_side = optimal_info.get("target_side", Side.FRONT)
+
+    # Get employee's business for relevance checking
+    emp_info = building.find_employee(package.recipient_name)
+    target_business = emp_info[0].name if emp_info else None
+
+    # Setup agent state
+    agent_state = AgentState()
+    agent_state.current_package = package
+
+    messages = [
+        {"role": "system", "content": "You are a delivery agent. Use the tools provided to get it delivered."},
+        {"role": "user", "content": f"Please deliver this package: {package}"}
+    ]
+
+    tools = AgentTools(building, agent_state)
+    model = os.environ.get("LLM_MODEL", "openai/gpt-4o-mini")
+
+    # Data collection
+    steps_data = []
+    llm_times = []
+    success = False
+    error = None
+    failure_reason = None
+    total_memories_injected = 0
+    relevant_memories_count = 0
+
+    delivery_start = time.time()
+
+    step_num = 0
+    while step_num < max_steps:
+        step_num += 1
+
+        try:
+            t0 = time.time()
+            response = memory.completion(
+                model=model,
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+                tool_choice="required",
+                timeout=30
+            )
+            t1 = time.time()
+            llm_time_ms = (t1 - t0) * 1000
+            llm_times.append(llm_time_ms)
+
+            # Capture memory injection info
+            memory_injection = None
+            try:
+                injection_debug = hindsight_litellm.get_last_injection_debug()
+                if injection_debug and injection_debug.injected:
+                    memories_list = []
+
+                    # Extract memories from recall results (handle both dict and object types)
+                    if injection_debug.recall_results:
+                        for r in injection_debug.recall_results:
+                            if isinstance(r, dict):
+                                memories_list.append(r.get("text", str(r)))
+                            elif hasattr(r, "text"):
+                                memories_list.append(r.text)
+                            else:
+                                memories_list.append(str(r))
+                    elif injection_debug.reflect_text:
+                        memories_list = [injection_debug.reflect_text]
+                    elif injection_debug.memory_context:
+                        # Fallback to the formatted memory context
+                        memories_list = [injection_debug.memory_context]
+
+                    # Check relevance
+                    relevance = check_memory_relevance(
+                        memories_list,
+                        package.recipient_name,
+                        target_floor,
+                        target_side,
+                        target_business,
+                    )
+
+                    memory_injection = {
+                        "mode": injection_debug.mode,
+                        "count": injection_debug.results_count or len(memories_list),
+                        "memories": memories_list[:5],  # Limit to first 5 for storage
+                        "relevant": relevance["relevant_count"] > 0,
+                        "relevant_count": relevance["relevant_count"],
+                        "relevance_types": relevance["relevance_types"],
+                    }
+
+                    total_memories_injected += injection_debug.results_count or len(memories_list)
+                    relevant_memories_count += relevance["relevant_count"]
+            except Exception as e:
+                # Log injection debug errors for troubleshooting
+                print(f"[EVAL] Warning: Failed to capture injection debug: {e}", flush=True)
+
+            message = response.choices[0].message
+
+            if message.tool_calls:
+                tool_calls_data = []
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+
+                    # Capture floor/side BEFORE the tool call (for error categorization)
+                    floor_before = agent_state.floor
+                    side_before = agent_state.side
+
+                    result = execute_tool(tools, tool_name, arguments)
+
+                    tool_calls_data.append({
+                        "name": tool_name,
+                        "args": arguments,
+                        "result": result,
+                    })
+
+                    # Check for errors using state BEFORE the move
+                    error_type = categorize_error(
+                        tool_name,
+                        floor_before,
+                        side_before,
+                        target_floor,
+                        target_side,
+                        "SUCCESS!" in result,
+                    )
+
+                    # Record step data
+                    step_data = StepData(
+                        step_number=step_num,
+                        tool_calls=tool_calls_data,
+                        llm_time_ms=llm_time_ms,
+                        memory_injection=memory_injection,
+                        llm_response_content=message.content,
+                        action_correct=error_type is None,
+                        error_type=error_type,
+                    )
+                    steps_data.append(step_data)
+
+                    if "SUCCESS!" in result:
+                        success = True
+                        break
+
+                # Update messages
+                serialized_tool_calls = [
+                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in message.tool_calls
+                ] if message.tool_calls else []
+                messages.append({"role": "assistant", "content": message.content, "tool_calls": serialized_tool_calls})
+
+                tool_results = []
+                for i, tool_call in enumerate(message.tool_calls):
+                    tool_results.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "content": tool_calls_data[i]["result"] if i < len(tool_calls_data) else ""
+                    })
+                messages.extend(tool_results)
+
+                if success:
+                    break
+            else:
+                # No tool calls - nudge
+                messages.append({"role": "assistant", "content": message.content})
+                messages.append({"role": "user", "content": "Use the available tools to complete the delivery."})
+
+        except Exception as e:
+            error = str(e)
+            failure_reason = f"Exception: {error}"
+            break
+
+    # Check if hit step limit
+    if not success and step_num >= max_steps:
+        failure_reason = f"Exceeded {max_steps} step limit"
+
+    # Store ALL deliveries (success AND failures) - failures contain learning info too
+    # e.g., "I tried floor 3 but John wasn't there" helps learn where John IS
+    try:
+        final_convo = _format_messages_for_retain(messages)
+        outcome = "SUCCESS" if success else f"FAILED: {failure_reason or 'unknown'}"
+        content_to_store = f"Delivery attempt for {package.recipient_name}:\n{outcome}\n\n{final_convo}"
+        memory.retain(content_to_store, sync=True)  # Sync for evaluation accuracy
+    except Exception as e:
+        print(f"[EVAL] Warning: Failed to store delivery {delivery_id}: {e}", flush=True)
+
+    delivery_time = time.time() - delivery_start
+
+    return DeliveryData(
+        delivery_id=delivery_id,
+        package={
+            "recipient": package.recipient_name,
+            "business": package.business_name,
+            "floor": target_floor,
+            "side": target_side.value,
+        },
+        optimal_steps=optimal_steps,
+        success=success,
+        actual_steps=step_num,
+        total_time_ms=delivery_time * 1000,
+        llm_time_ms=sum(llm_times),
+        steps=steps_data,
+        failure_reason=failure_reason,
+        memories_injected_total=total_memories_injected,
+        relevant_memories_count=relevant_memories_count,
+    )
+
+
+def _run_evaluation(
+    building,
+    config: EvalConfig,
+    num_deliveries: int,
+    max_steps: int,
+    progress_callback=None,
+) -> tuple[str, list[DeliveryData]]:
+    """Run a complete evaluation with the given configuration.
+
+    Args:
+        building: The building to use
+        config: Hindsight configuration
+        num_deliveries: Number of deliveries to run
+        max_steps: Max steps per delivery
+        progress_callback: Function to call with (current, total) for progress updates
+
+    Returns:
+        Tuple of (run_directory_path, list of DeliveryData)
+    """
+    # Get settings for this config
+    settings = EVAL_CONFIG_SETTINGS[config]
+
+    # Configure hindsight with these settings
+    hindsight_litellm.configure(
+        hindsight_api_url=os.environ.get("HINDSIGHT_API_URL", "http://localhost:8888"),
+        store_conversations=False,  # We explicitly retain at end of each delivery
+        inject_memories=settings["inject_memories"],
+        verbose=True,  # Required to get injection debug info for analysis
+    )
+
+    # Create unique bank for this evaluation run
+    eval_bank_id = f"eval-{config.value}-{uuid.uuid4().hex[:8]}"
+    hindsight_litellm.set_defaults(
+        bank_id=eval_bank_id,
+        use_reflect=settings["use_reflect"],
+        recall_budget=settings["recall_budget"],
+    )
+
+    if settings["inject_memories"]:
+        hindsight_litellm.enable()
+
+    # Setup evaluation runner
+    runner = EvaluationRunner()
+    run_dir = runner.create_run_directory(config)
+
+    # Save config (include bank_id for reference)
+    settings_with_bank = {**settings, "bank_id": eval_bank_id}
+    runner.save_config(run_dir, config, settings_with_bank, building, num_deliveries)
+
+    # Run deliveries
+    deliveries = []
+    start_time = time.time()
+
+    for i in range(num_deliveries):
+        delivery_id = i + 1
+
+        if progress_callback:
+            progress_callback(delivery_id, num_deliveries)
+
+        print(f"[EVAL] {config.value} - Delivery {delivery_id}/{num_deliveries}", flush=True)
+
+        delivery_data = _run_single_delivery_eval(
+            building=building,
+            delivery_id=delivery_id,
+            max_steps=max_steps,
+            config=config,
+        )
+        deliveries.append(delivery_data)
+
+        # Save delivery data incrementally
+        runner.save_delivery(run_dir, delivery_data)
+
+    total_time = time.time() - start_time
+
+    # Disable hindsight if it was enabled
+    if settings["inject_memories"]:
+        hindsight_litellm.disable()
+
+    # Generate and save summary
+    summary = generate_summary(config, deliveries, total_time, building)
+    runner.save_summary(run_dir, summary)
+
+    # Generate and save report
+    timestamp = os.path.basename(run_dir).replace(f"run_", "").replace(f"_{config.value}", "")
+    report = generate_report_markdown(config, summary, building, settings, timestamp)
+    runner.save_report(run_dir, report)
+
+    print(f"[EVAL] {config.value} complete! Results saved to: {run_dir}", flush=True)
+
+    return run_dir, deliveries
+
+
 @st.dialog("Select Recipient", width="large")
 def recipient_dialog(building, include_business):
     """Dialog to select a recipient from the building directory."""
@@ -840,7 +1181,7 @@ def main():
         st.session_state.delivery_start_time = None
 
     # Mode tabs at top
-    ui_tab, ff_tab = st.tabs(["🎮 UI Mode", "⚡ Fast-Forward Mode"])
+    ui_tab, ff_tab, eval_tab = st.tabs(["🎮 UI Mode", "⚡ Fast-Forward Mode", "📊 Evaluation Mode"])
 
     with ff_tab:
         # Fast-forward mode - minimal UI for benchmarking
@@ -1079,6 +1420,271 @@ def main():
             st.session_state.fast_forward = False
             time.sleep(0.5)  # Brief pause to show success message
             st.rerun()
+
+    with eval_tab:
+        # Evaluation Mode - systematic testing with different Hindsight configurations
+        st.markdown("### 📊 Evaluation Mode")
+        st.caption("Run systematic evaluations with different Hindsight configurations")
+
+        # Initialize evaluation state
+        if "eval_running" not in st.session_state:
+            st.session_state.eval_running = False
+        if "eval_results" not in st.session_state:
+            st.session_state.eval_results = []
+
+        col_eval_config, col_eval_results = st.columns([1, 1])
+
+        with col_eval_config:
+            st.markdown("#### Configuration")
+
+            # Number of deliveries per config
+            num_deliveries = st.slider(
+                "Deliveries per configuration",
+                min_value=5,
+                max_value=1000,
+                value=100,
+                step=5,
+                key="eval_num_deliveries",
+                help="Number of deliveries to run for each selected configuration"
+            )
+
+            # Max steps per delivery
+            eval_max_steps = st.number_input(
+                "Max steps per delivery",
+                min_value=10,
+                max_value=500,
+                value=150,
+                key="eval_max_steps",
+                help="Maximum steps allowed before a delivery is considered failed. Higher values allow more exploration early on before memories accumulate."
+            )
+
+            st.markdown("#### Select Configurations")
+            st.caption("Choose which Hindsight configurations to test:")
+
+            # Configuration selection with descriptions
+            config_options = {
+                EvalConfig.BASELINE: "🚫 Baseline (No Memory)",
+                EvalConfig.RECALL_LOW: "📥 Recall - Low Budget",
+                EvalConfig.RECALL_MID: "📥 Recall - Mid Budget",
+                EvalConfig.RECALL_HIGH: "📥 Recall - High Budget",
+                EvalConfig.REFLECT_LOW: "🪞 Reflect - Low Budget",
+                EvalConfig.REFLECT_MID: "🪞 Reflect - Mid Budget",
+                EvalConfig.REFLECT_HIGH: "🪞 Reflect - High Budget",
+            }
+
+            selected_configs = []
+            for config, label in config_options.items():
+                if st.checkbox(label, value=config in [EvalConfig.BASELINE, EvalConfig.RECALL_MID], key=f"eval_config_{config.value}"):
+                    selected_configs.append(config)
+
+            # Estimate
+            if selected_configs:
+                total_deliveries = len(selected_configs) * num_deliveries
+                st.info(f"📊 Will run **{total_deliveries}** total deliveries ({len(selected_configs)} configs × {num_deliveries} each)")
+
+                # Disk space estimate
+                est_size_mb = total_deliveries * 0.03  # ~30KB per delivery
+                st.caption(f"Estimated disk usage: ~{est_size_mb:.1f} MB")
+
+            # Run button
+            st.markdown("---")
+            is_eval_running = st.session_state.eval_running
+
+            if st.button(
+                "🚀 Start Evaluation",
+                use_container_width=True,
+                disabled=is_eval_running or len(selected_configs) == 0,
+                type="primary",
+                key="eval_start_btn"
+            ):
+                st.session_state.eval_running = True
+                st.session_state.eval_results = []
+                st.rerun()
+
+            if st.button(
+                "🛑 Stop",
+                use_container_width=True,
+                disabled=not is_eval_running,
+                key="eval_stop_btn"
+            ):
+                st.session_state.eval_running = False
+                st.rerun()
+
+        with col_eval_results:
+            st.markdown("#### Results")
+
+            # Show progress if running
+            if st.session_state.eval_running and selected_configs:
+                progress_placeholder = st.empty()
+                status_placeholder = st.empty()
+                results_placeholder = st.empty()
+
+                total_configs = len(selected_configs)
+                completed_configs = 0
+
+                for config in selected_configs:
+                    if not st.session_state.eval_running:
+                        break  # Stop if user clicked stop
+
+                    status_placeholder.info(f"🔄 Running: **{config.value}** ({completed_configs + 1}/{total_configs})")
+
+                    def update_progress(current, total):
+                        progress = (completed_configs * num_deliveries + current) / (total_configs * num_deliveries)
+                        progress_placeholder.progress(progress, text=f"Config {completed_configs + 1}/{total_configs}: Delivery {current}/{total}")
+
+                    try:
+                        run_dir, deliveries = _run_evaluation(
+                            building=building,
+                            config=config,
+                            num_deliveries=num_deliveries,
+                            max_steps=eval_max_steps,
+                            progress_callback=update_progress,
+                        )
+
+                        # Load summary for display
+                        summary_path = os.path.join(run_dir, "summary.json")
+                        with open(summary_path) as f:
+                            summary = json.load(f)
+
+                        st.session_state.eval_results.append({
+                            "config": config.value,
+                            "run_dir": run_dir,
+                            "summary": summary,
+                        })
+
+                        completed_configs += 1
+
+                    except Exception as e:
+                        st.error(f"Error running {config.value}: {e}")
+                        print(f"[EVAL ERROR] {config.value}: {e}", flush=True)
+                        import traceback
+                        traceback.print_exc()
+
+                # Done
+                progress_placeholder.empty()
+                status_placeholder.success(f"✅ Completed {completed_configs}/{total_configs} configurations!")
+                st.session_state.eval_running = False
+                st.rerun()
+
+            # Show completed results
+            if st.session_state.eval_results:
+                st.markdown("#### Completed Runs")
+
+                # Summary comparison table
+                comparison_data = []
+                for result in st.session_state.eval_results:
+                    summary = result["summary"]
+                    comparison_data.append({
+                        "Config": result["config"],
+                        "Success Rate": f"{summary['success_rate']:.1%}",
+                        "Avg Steps": f"{summary['avg_steps']:.1f}",
+                        "Efficiency": f"{summary['step_efficiency']:.1%}",
+                        "Deliveries": summary["total_deliveries"],
+                    })
+
+                if comparison_data:
+                    st.dataframe(comparison_data, use_container_width=True)
+
+                # Individual run details
+                for result in st.session_state.eval_results:
+                    summary = result["summary"]
+                    with st.expander(f"📁 {result['config']}", expanded=False):
+                        col_s1, col_s2, col_s3 = st.columns(3)
+                        with col_s1:
+                            st.metric("Success Rate", f"{summary['success_rate']:.1%}")
+                        with col_s2:
+                            st.metric("Avg Steps", f"{summary['avg_steps']:.1f}")
+                        with col_s3:
+                            st.metric("Efficiency", f"{summary['step_efficiency']:.1%}")
+
+                        # Memory stats if available
+                        mem_stats = summary.get("memory_stats", {})
+                        if mem_stats.get("with_relevant_memory_count", 0) > 0:
+                            st.markdown("**Memory Effectiveness:**")
+                            col_m1, col_m2 = st.columns(2)
+                            with col_m1:
+                                st.metric(
+                                    "With Relevant Memory",
+                                    f"{mem_stats.get('with_relevant_memory_success_rate', 0):.1%}",
+                                    help="Success rate when relevant memories were injected"
+                                )
+                            with col_m2:
+                                st.metric(
+                                    "Without Relevant Memory",
+                                    f"{mem_stats.get('without_relevant_memory_success_rate', 0):.1%}",
+                                    help="Success rate when no relevant memories were injected"
+                                )
+
+                        # Error breakdown
+                        errors = summary.get("error_counts", {})
+                        if errors:
+                            st.markdown("**Error Breakdown:**")
+                            for err_type, count in sorted(errors.items(), key=lambda x: -x[1])[:5]:
+                                st.caption(f"• {err_type}: {count}")
+
+                        # Link to files
+                        st.caption(f"📁 Results saved to: `{result['run_dir']}`")
+
+                # Clear results button
+                if st.button("🗑️ Clear Results", key="eval_clear_results"):
+                    st.session_state.eval_results = []
+                    st.rerun()
+
+            else:
+                if not st.session_state.eval_running:
+                    st.markdown("*No evaluation results yet. Select configurations and click Start.*")
+
+        # Building layout reference
+        st.markdown("---")
+        st.markdown("#### 🏢 Building Layout (Reference)")
+        st.caption("All evaluations use this fixed building layout for consistency.")
+
+        with st.expander("View Building Layout", expanded=False):
+            layout = get_building_layout_dict(building)
+            for floor_num in sorted(layout["floors"].keys(), reverse=True, key=int):
+                floor_data = layout["floors"][floor_num]
+                st.markdown(f"**Floor {floor_num}**")
+                for side in ["front", "back"]:
+                    if side in floor_data:
+                        biz = floor_data[side]
+                        employees = ", ".join([e["name"] for e in biz["employees"]])
+                        st.caption(f"• {side.title()}: {biz['business_name']} - {employees}")
+
+        # Previous runs
+        st.markdown("---")
+        st.markdown("#### 📂 Previous Evaluation Runs")
+
+        runner = EvaluationRunner()
+        prev_runs = runner.get_all_runs()
+
+        if prev_runs:
+            for run in prev_runs[:10]:  # Show last 10
+                run_name = run["name"]
+                config = run.get("config", {})
+                summary = run.get("summary", {})
+
+                if summary:
+                    with st.expander(f"📁 {run_name}", expanded=False):
+                        col_p1, col_p2, col_p3 = st.columns(3)
+                        with col_p1:
+                            st.metric("Success Rate", f"{summary.get('success_rate', 0):.1%}")
+                        with col_p2:
+                            st.metric("Deliveries", summary.get("total_deliveries", 0))
+                        with col_p3:
+                            st.metric("Efficiency", f"{summary.get('step_efficiency', 0):.1%}")
+
+                        st.caption(f"Config: {summary.get('config_name', 'N/A')}")
+                        st.caption(f"Path: `{run['path']}`")
+
+                        # View report button
+                        report_path = os.path.join(run["path"], "report.md")
+                        if os.path.exists(report_path):
+                            with open(report_path) as f:
+                                report_content = f.read()
+                            st.markdown("**Report:**")
+                            st.markdown(report_content)
+        else:
+            st.caption("*No previous evaluation runs found.*")
 
     with ui_tab:
         # Reset fast_forward when viewing UI tab
