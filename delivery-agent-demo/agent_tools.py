@@ -64,8 +64,10 @@ class AgentTools:
 
         self.state.side = Side.FRONT
         business = self.building.get_business(self.state.floor, Side.FRONT)
-        biz_name = business.name if business else "unknown business"
-        result = f"Walked to the front side of Floor {self.state.floor}. Now at {biz_name}."
+        if not business:
+            # This should never happen - every floor has front/back businesses
+            raise ValueError(f"No business found at Floor {self.state.floor}, Front. Building floors: {list(self.building.floors.keys())}")
+        result = f"Walked to the front side of Floor {self.state.floor}. Now at {business.name}."
         return self._record_action("go_to_front", result)
 
     def go_to_back(self) -> str:
@@ -76,8 +78,10 @@ class AgentTools:
 
         self.state.side = Side.BACK
         business = self.building.get_business(self.state.floor, Side.BACK)
-        biz_name = business.name if business else "unknown business"
-        result = f"Walked to the back side of Floor {self.state.floor}. Now at {biz_name}."
+        if not business:
+            # This should never happen - every floor has front/back businesses
+            raise ValueError(f"No business found at Floor {self.state.floor}, Back. Building floors: {list(self.building.floors.keys())}")
+        result = f"Walked to the back side of Floor {self.state.floor}. Now at {business.name}."
         return self._record_action("go_to_back", result)
 
     def get_employee_list(self) -> str:

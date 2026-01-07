@@ -26,12 +26,42 @@ def _get_queue_storage() -> dict:
     return {}
 
 
+@st.cache_resource
+def _get_cancel_storage() -> dict:
+    """Get the persistent cancellation event storage. Survives Streamlit reruns."""
+    return {}
+
+
 def _get_or_create_queue(session_id: str) -> queue.Queue:
     """Get the queue for this session, creating if needed."""
     storage = _get_queue_storage()
     if session_id not in storage:
         storage[session_id] = queue.Queue()
     return storage[session_id]
+
+
+def _get_or_create_cancel_event(session_id: str) -> threading.Event:
+    """Get the cancellation event for this session, creating if needed."""
+    storage = _get_cancel_storage()
+    if session_id not in storage:
+        storage[session_id] = threading.Event()
+    return storage[session_id]
+
+
+def _cancel_delivery(session_id: str):
+    """Signal cancellation for the delivery in this session."""
+    storage = _get_cancel_storage()
+    if session_id in storage:
+        storage[session_id].set()
+
+
+def _reset_cancel_event(session_id: str):
+    """Reset the cancellation event for a new delivery."""
+    storage = _get_cancel_storage()
+    if session_id in storage:
+        storage[session_id].clear()
+    else:
+        storage[session_id] = threading.Event()
 
 
 def _clear_queue(session_id: str):
@@ -62,6 +92,9 @@ from building import get_building, reset_building, Package
 def _process_complete_item(complete_item):
     """Process a 'complete' item to update stats and history."""
     if complete_item is None:
+        return
+    # Don't count cancelled deliveries in stats/history
+    if complete_item.get("cancelled"):
         return
     st.session_state.total_steps += complete_item["steps"]
     if complete_item["success"]:
@@ -146,6 +179,7 @@ def _run_delivery_in_background(
     package: Package,
     model: str,
     max_steps: int = None,
+    cancel_event: threading.Event = None,
 ):
     """Run a delivery in a background thread, pushing actions to queue.
 
@@ -158,17 +192,21 @@ def _run_delivery_in_background(
         package: The package to deliver
         model: LLM model to use
         max_steps: Maximum steps (None = no limit)
+        cancel_event: Threading event to signal cancellation
 
     The queue receives dicts with keys:
-        - type: "action", "success", "error", "step_limit", "complete"
-        - For "action": tool_name, result, floor, side, timing
-        - For "success"/"error"/"step_limit": message
-        - For "complete": success (bool), steps (int), messages (list)
+        - type: "step", "success", "error", "step_limit", "cancelled", "memory_storing", "memory_stored", "complete"
+        - For "step": Combined LLM call + tool execution (tool_name, tool_result, floor, side, timing, prompt, llm_response)
+        - For "action": Fallback for non-tool responses (tool_name, result, floor, side, timing)
+        - For "success"/"error"/"step_limit"/"cancelled": message
+        - For "memory_storing"/"memory_stored": step, timing (for stored)
+        - For "complete": success (bool), steps (int), messages (list), cancelled (bool)
     """
     from building import AgentState
 
     agent_state = AgentState()
     agent_state.current_package = package
+    cancelled = False
 
     messages = [
         {"role": "system", "content": "You are a delivery agent. Use the tools provided to get it delivered."},
@@ -181,6 +219,15 @@ def _run_delivery_in_background(
 
     try:
         while max_steps is None or agent_state.steps_taken < max_steps:
+            # Check for cancellation
+            if cancel_event and cancel_event.is_set():
+                cancelled = True
+                action_queue.put({
+                    "type": "cancelled",
+                    "message": "Delivery cancelled by user",
+                })
+                break
+
             t0 = time.time()
 
             _debug_log(f"[Step {agent_state.steps_taken + 1}] Calling LLM with {len(messages)} messages")
@@ -198,23 +245,23 @@ def _run_delivery_in_background(
 
             message = response.choices[0].message
 
+            # Get injection debug info AFTER completion
+            injection_info = {}
+            try:
+                import hindsight_litellm
+                injection_debug = hindsight_litellm.get_last_injection_debug()
+                if injection_debug:
+                    injection_info = {
+                        "injected": injection_debug.injected,
+                        "memories_count": injection_debug.results_count or 0,
+                        "error": str(injection_debug.error) if injection_debug.error else None,
+                        "memory_context": injection_debug.memory_context,  # The actual injected text
+                    }
+            except Exception:
+                pass  # Silently ignore if not available
+
             tool_names = [tc.function.name for tc in (message.tool_calls or [])]
             _debug_log(f"[Step {agent_state.steps_taken + 1}] Response in {llm_duration:.2f}s: {tool_names}")
-
-            # Push LLM call info to queue for display - pass dicts directly, no serialization
-            llm_call_item = {
-                "type": "llm_call",
-                "step": agent_state.steps_taken + 1,
-                "prompt": {
-                    "messages": [dict(m) if isinstance(m, dict) else {"role": m.get("role", ""), "content": m.get("content", "")} for m in messages],
-                    "tools": TOOL_DEFINITIONS,
-                },
-                "response": {
-                    "content": message.content,
-                    "tool_calls": [{"name": tc.function.name, "arguments": tc.function.arguments} for tc in (message.tool_calls or [])]
-                },
-            }
-            action_queue.put(llm_call_item)
 
             if message.tool_calls:
                 tool_results = []
@@ -230,12 +277,21 @@ def _run_delivery_in_background(
                         "content": result
                     })
 
-                    # Push action to queue for UI animation
+                    # Push combined step item with LLM info and action result
                     action_queue.put({
-                        "type": "action",
+                        "type": "step",
                         "step": agent_state.steps_taken,
+                        "prompt": {
+                            "messages": [dict(m) for m in messages],  # Shallow copy each message dict
+                            "tools": TOOL_DEFINITIONS,
+                            "_hindsight_injection": injection_info,  # Add injection debug info
+                        },
+                        "llm_response": {
+                            "content": message.content,
+                            "tool_calls": [{"name": tc.function.name, "arguments": tc.function.arguments} for tc in (message.tool_calls or [])]
+                        },
                         "tool_name": tool_name,
-                        "result": result,
+                        "tool_result": result,
                         "floor": agent_state.floor,
                         "side": agent_state.side.value,
                         "timing": llm_duration,
@@ -311,6 +367,7 @@ def _run_delivery_in_background(
         "steps": agent_state.steps_taken,
         "messages": messages,
         "error": error_msg,
+        "cancelled": cancelled,
     })
 
 
@@ -470,6 +527,9 @@ def recipient_dialog(building, include_business):
 
 
 def main():
+    # Track if UI needs refresh (set in UI tab, checked at end of function)
+    needs_refresh = False
+
     # Title
     st.markdown("""
     <h1 style="text-align: center; color: #00ff00; font-family: monospace;">
@@ -700,6 +760,8 @@ def main():
 
         # Start background thread for delivery using global queue storage
         action_q = _get_or_create_queue(st.session_state.session_id)
+        cancel_evt = _get_or_create_cancel_event(st.session_state.session_id)
+        _reset_cancel_event(st.session_state.session_id)  # Clear any previous cancellation
         st.session_state.bg_queue_active = True
         st.session_state.bg_delivery_running = True
         st.session_state.bg_delivery_complete_info = None
@@ -708,7 +770,7 @@ def main():
 
         thread = threading.Thread(
             target=_run_delivery_in_background,
-            args=(action_q, building, package, model, st.session_state.max_steps_per_delivery),
+            args=(action_q, building, package, model, st.session_state.max_steps_per_delivery, cancel_evt),
             daemon=True
         )
         thread.start()
@@ -803,7 +865,7 @@ def main():
                     st.error(err)
 
         # Learning curve in fast-forward
-        if len(st.session_state.delivery_history) > 1:
+        if len(st.session_state.delivery_history) >= 1:
             st.markdown("### 📈 Learning Curve")
             steps_history = [d["steps"] for d in st.session_state.delivery_history]
             df = pd.DataFrame({"Steps": steps_history}, index=range(1, len(steps_history) + 1))
@@ -901,7 +963,29 @@ def main():
                     item = bg_queue.get_nowait()
                     item_type = item.get("type")
 
-                    if item_type == "action":
+                    if item_type == "step":
+                        # Combined step item - add to both action log and LLM messages
+                        _debug_log(f"[QUEUE] Received step item: {item.get('step')}, tool={item.get('tool_name')}")
+                        st.session_state.action_queue.append({
+                            "step": item.get("step", "?"),
+                            "tool_name": item["tool_name"],
+                            "result": item["tool_result"],
+                            "floor": item["floor"],
+                            "side": item["side"],
+                            "timing": item["timing"],
+                            # Also include LLM info for expanded view
+                            "prompt": item.get("prompt"),
+                            "llm_response": item.get("llm_response"),
+                        })
+                        # Also add to llm_messages for the dedicated LLM section
+                        st.session_state.llm_messages.append({
+                            "step": item.get("step", "?"),
+                            "prompt": item.get("prompt", {}),
+                            "response": item.get("llm_response", {}),
+                        })
+                        _debug_log(f"[QUEUE] llm_messages now has {len(st.session_state.llm_messages)} items")
+                    elif item_type == "action":
+                        # Fallback for non-tool-call responses (nudge messages)
                         st.session_state.action_queue.append({
                             "step": item.get("step", "?"),
                             "tool_name": item["tool_name"],
@@ -930,13 +1014,16 @@ def main():
                             "timing": 0,
                         })
                         st.session_state.delivery_complete_pending = True
-                    elif item_type == "llm_call":
-                        llm_entry = {
-                            "step": item["step"],
-                            "prompt": item["prompt"],      # Dict, not JSON string
-                            "response": item["response"],  # Dict, not JSON string
-                        }
-                        st.session_state.llm_messages.append(llm_entry)
+                    elif item_type == "cancelled":
+                        st.session_state.action_queue.append({
+                            "step": "—",
+                            "tool_name": "🛑 cancelled",
+                            "result": item["message"],
+                            "floor": st.session_state.agent_floor,
+                            "side": st.session_state.agent_side,
+                            "timing": 0,
+                        })
+                        st.session_state.delivery_complete_pending = True
                     elif item_type == "memory_storing":
                         st.session_state.action_queue.append({
                             "step": item.get("step", "?"),
@@ -958,14 +1045,16 @@ def main():
                     elif item_type == "complete":
                         st.session_state.bg_delivery_complete_info = item
                         st.session_state.bg_delivery_running = False
-                        st.session_state.total_steps += item["steps"]
-                        if item["success"]:
-                            st.session_state.deliveries_completed += 1
-                        st.session_state.delivery_history.append({
-                            "package": st.session_state.last_package_info,
-                            "success": item["success"],
-                            "steps": item["steps"],
-                        })
+                        # Don't count cancelled deliveries in stats/history
+                        if not item.get("cancelled"):
+                            st.session_state.total_steps += item["steps"]
+                            if item["success"]:
+                                st.session_state.deliveries_completed += 1
+                            st.session_state.delivery_history.append({
+                                "package": st.session_state.last_package_info,
+                                "success": item["success"],
+                                "steps": item["steps"],
+                            })
                 except queue.Empty:
                     break  # Queue empty
                 except Exception as e:
@@ -1075,21 +1164,49 @@ def main():
                         with st.expander(header, expanded=False):
                             st.markdown(f"**Result:** {result}")
                             st.caption(f"📍 Floor {floor}, {side} side | ⏱️ {timing:.2f}s")
+
+                            # Show LLM prompt/response if available (from combined "step" items)
+                            prompt_data = action_data.get("prompt")
+                            llm_response = action_data.get("llm_response")
+                            if prompt_data or llm_response:
+                                st.divider()
+                                # Show injection status
+                                injection_info = prompt_data.get("_hindsight_injection", {}) if prompt_data else {}
+                                if injection_info.get("injected") and injection_info.get("memories_count", 0) > 0:
+                                    st.success(f"🧠 {injection_info['memories_count']} memories injected")
+                                    # Show the actual injected memories
+                                    memory_context = injection_info.get("memory_context", "")
+                                    if memory_context:
+                                        with st.expander("View injected memories", expanded=False):
+                                            st.code(memory_context, language=None)
+                                if llm_response:
+                                    tool_calls = llm_response.get("tool_calls", [])
+                                    if tool_calls:
+                                        tc_str = ", ".join([f"{tc.get('name', '?')}({tc.get('arguments', '')})" for tc in tool_calls])
+                                        st.markdown(f"**LLM Called:** `{tc_str}`")
+                                if prompt_data:
+                                    with st.expander("📤 View LLM Prompt", expanded=False):
+                                        messages = prompt_data.get("messages", [])
+                                        # Show last few messages (most relevant context)
+                                        if messages:
+                                            st.caption(f"{len(messages)} messages in context")
+                                            for msg in messages[-3:]:
+                                                role = msg.get("role", "").upper()
+                                                content = msg.get("content", "")
+                                                if content:
+                                                    st.text(f"{role}: {content[:200]}{'...' if len(content) > 200 else ''}")
             else:
                 if st.session_state.bg_delivery_running:
                     st.markdown("*Agent is working...*")
                 else:
                     st.markdown("*Waiting for delivery...*")
 
-            # Auto-refresh while delivery running or animations pending
+            # Track if we need to refresh (checked at end of function)
             needs_refresh = (
                 st.session_state.bg_delivery_running or
                 st.session_state.action_queue or
                 st.session_state.delivery_complete_pending
             )
-            if needs_refresh and not st.session_state.step_by_step:
-                time.sleep(0.3)  # Poll interval
-                st.rerun()
 
         st.markdown("---")
 
@@ -1186,6 +1303,8 @@ def main():
 
             # Start background thread for delivery using global queue storage
             action_q = _get_or_create_queue(st.session_state.session_id)
+            cancel_evt = _get_or_create_cancel_event(st.session_state.session_id)
+            _reset_cancel_event(st.session_state.session_id)  # Clear any previous cancellation
             st.session_state.bg_queue_active = True
             st.session_state.bg_delivery_running = True
             st.session_state.bg_delivery_complete_info = None
@@ -1195,7 +1314,7 @@ def main():
 
             thread = threading.Thread(
                 target=_run_delivery_in_background,
-                args=(action_q, building, package, model, st.session_state.max_steps_per_delivery),
+                args=(action_q, building, package, model, st.session_state.max_steps_per_delivery, cancel_evt),
                 daemon=True
             )
             thread.start()
@@ -1220,10 +1339,16 @@ def main():
         # Show status when delivery is running
         if is_delivery_running:
             st.info("🔄 Agent is working... (actions will appear as they complete)")
+            if st.button("🛑 Stop Delivery", use_container_width=True, type="primary"):
+                _cancel_delivery(st.session_state.session_id)
+                st.toast("Stopping delivery...")
+                st.rerun()
         elif st.session_state.bg_delivery_complete_info:
             info = st.session_state.bg_delivery_complete_info
             if info["success"]:
                 st.success(f"✅ Delivery complete in {info['steps']} steps!")
+            elif info.get("cancelled"):
+                st.warning(f"🛑 Delivery cancelled after {info['steps']} steps")
             elif info["error"]:
                 st.error(f"❌ Delivery failed: {info['error']}")
             else:
@@ -1240,7 +1365,8 @@ def main():
 
         # Always-visible Full Reset button - kills everything and starts completely fresh
         if st.button("🔄 Full Reset", use_container_width=True, type="secondary"):
-            # Stop any running background delivery
+            # Stop any running background delivery by signaling cancellation
+            _cancel_delivery(st.session_state.session_id)
             st.session_state.bg_delivery_running = False
             _clear_queue(st.session_state.session_id)  # Clear and remove the queue
             st.session_state.bg_queue_active = False
@@ -1354,7 +1480,7 @@ def main():
             st.markdown("*No deliveries yet*")
 
         # Learning curve visualization
-        if len(st.session_state.delivery_history) > 1:
+        if len(st.session_state.delivery_history) >= 1:
             st.markdown("### 📈 Learning Curve")
             steps_history = [d["steps"] for d in st.session_state.delivery_history]
             # Create DataFrame with 1-indexed delivery numbers
@@ -1421,11 +1547,16 @@ def main():
                             # Check if memories were injected
                             injected = injection_info.get("injected", False) if injection_info else False
                             memories_count = injection_info.get("memories_count", 0) if injection_info else 0
+                            memory_context = injection_info.get("memory_context", "") if injection_info else ""
 
                             if injected and memories_count > 0:
                                 st.success(f"🧠 {memories_count} memories injected")
-                                # Show full system prompt with memories
-                                with st.expander("View full system prompt with memories", expanded=False):
+                                # Show actual injected memories (from memory_context)
+                                if memory_context:
+                                    with st.expander("View injected memories", expanded=True):
+                                        st.code(memory_context, language=None)
+                                # Show original system prompt
+                                with st.expander("View original system prompt", expanded=False):
                                     st.code(system_content, language=None)
                             else:
                                 st.caption("🧠 No memories injected")
@@ -1467,6 +1598,12 @@ def main():
                         st.json(prompt_data)
     else:
         st.caption("*No LLM calls yet*")
+
+    # Auto-refresh at the end, after all UI has been rendered
+    # This allows all sections (including LLM) to display before refreshing
+    if needs_refresh and not st.session_state.step_by_step:
+        time.sleep(0.3)  # Poll interval
+        st.rerun()
 
 
 if __name__ == "__main__":
