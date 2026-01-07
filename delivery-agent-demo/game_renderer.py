@@ -318,7 +318,9 @@ function getFloorBottom(floor) {{
 }}
 
 function getTargetX(side) {{
-    return side === "front" ? LEFT_DOOR_X : RIGHT_DOOR_X;
+    if (side === "front") return LEFT_DOOR_X;
+    if (side === "back") return RIGHT_DOOR_X;
+    return ELEVATOR_X;  // "middle" - elevator area
 }}
 
 function startWalkAnimation() {{
@@ -344,9 +346,15 @@ function showNameplate(businessName) {{
 
 function updateIndicators() {{
     floorIndicator.textContent = 'Floor ' + targetFloor;
-    sideIndicator.textContent = (targetSide === 'front' ? '◀ Left Side' : 'Right Side ▶');
+    if (targetSide === 'front') {{
+        sideIndicator.textContent = '◀ Left Side';
+    }} else if (targetSide === 'back') {{
+        sideIndicator.textContent = 'Right Side ▶';
+    }} else {{
+        sideIndicator.textContent = '🛗 Elevator';
+    }}
 
-    const bizName = businesses[targetFloor + '_' + targetSide] || 'Unknown';
+    const bizName = targetSide === 'middle' ? 'Middle Hallway' : (businesses[targetFloor + '_' + targetSide] || 'Unknown');
     locationIndicator.innerHTML = '<strong>' + bizName + '</strong>';
 
     if (currentAction) {{

@@ -35,57 +35,57 @@ class AgentTools:
         return result
 
     def go_up(self) -> str:
-        """Move up one floor."""
+        """Move up one floor via the elevator. Ends up in the middle (elevator area)."""
         if self.state.floor >= self.building.max_floor:
             result = f"Cannot go up. Already at the top floor (Floor {self.state.floor})."
             return self._record_action("go_up", result)
 
         self.state.floor += 1
-        result = f"Moved up to Floor {self.state.floor}."
+        self.state.side = Side.MIDDLE  # Elevator deposits in the middle
+        result = f"Took elevator up to Floor {self.state.floor}. Now in the middle hallway."
         return self._record_action("go_up", result)
 
     def go_down(self) -> str:
-        """Move down one floor."""
+        """Move down one floor via the elevator. Ends up in the middle (elevator area)."""
         if self.state.floor <= self.building.min_floor:
             result = f"Cannot go down. Already at the bottom floor (Floor {self.state.floor})."
             return self._record_action("go_down", result)
 
         self.state.floor -= 1
-        result = f"Moved down to Floor {self.state.floor}."
+        self.state.side = Side.MIDDLE  # Elevator deposits in the middle
+        result = f"Took elevator down to Floor {self.state.floor}. Now in the middle hallway."
         return self._record_action("go_down", result)
 
     def go_to_front(self) -> str:
-        """Go to the front side of the current floor."""
+        """Walk to the front side of the current floor to reach the front business."""
         if self.state.side == Side.FRONT:
             result = "Already at the front side of this floor."
             return self._record_action("go_to_front", result)
 
         self.state.side = Side.FRONT
-        result = f"Moved to the front side of Floor {self.state.floor}."
+        business = self.building.get_business(self.state.floor, Side.FRONT)
+        biz_name = business.name if business else "unknown business"
+        result = f"Walked to the front side of Floor {self.state.floor}. Now at {biz_name}."
         return self._record_action("go_to_front", result)
 
     def go_to_back(self) -> str:
-        """Go to the back side of the current floor."""
+        """Walk to the back side of the current floor to reach the back business."""
         if self.state.side == Side.BACK:
             result = "Already at the back side of this floor."
             return self._record_action("go_to_back", result)
 
         self.state.side = Side.BACK
-        result = f"Moved to the back side of Floor {self.state.floor}."
+        business = self.building.get_business(self.state.floor, Side.BACK)
+        biz_name = business.name if business else "unknown business"
+        result = f"Walked to the back side of Floor {self.state.floor}. Now at {biz_name}."
         return self._record_action("go_to_back", result)
-
-    def look_at_business(self) -> str:
-        """Look at the business sign at the current location."""
-        business = self.building.get_business(self.state.floor, self.state.side)
-        if business:
-            result = f"The business here is: {business.name}"
-            return self._record_action("look_at_business", result)
-        else:
-            result = "No business at this location."
-            return self._record_action("look_at_business", result)
 
     def get_employee_list(self) -> str:
         """Get the list of employees at the current business."""
+        if self.state.side == Side.MIDDLE:
+            result = "You're in the middle hallway. Go to the front or back side to see employees."
+            return self._record_action("get_employee_list", result)
+
         business = self.building.get_business(self.state.floor, self.state.side)
         if not business:
             result = "No business at this location."
@@ -111,6 +111,10 @@ class AgentTools:
         """
         if not self.state.current_package:
             result = "No package to deliver."
+            return self._record_action("deliver_package", result)
+
+        if self.state.side == Side.MIDDLE:
+            result = "FAILED: You're in the middle hallway. Go to the front or back side to deliver."
             return self._record_action("deliver_package", result)
 
         pkg = self.state.current_package
@@ -142,7 +146,12 @@ class AgentTools:
 
     def check_current_location(self) -> str:
         """Check the agent's current location in the building."""
-        result = f"Current location: Floor {self.state.floor}, {self.state.side.value} side"
+        if self.state.side == Side.MIDDLE:
+            result = f"Current location: Floor {self.state.floor}, middle hallway."
+        else:
+            business = self.building.get_business(self.state.floor, self.state.side)
+            biz_name = business.name if business else "unknown"
+            result = f"Current location: Floor {self.state.floor} on the {self.state.side.value} side at business: {biz_name}"
         return self._record_action("check_current_location", result)
 
 
@@ -189,18 +198,6 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "go_to_back",
             "description": "Go to the back side of the current floor.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "look_at_business",
-            "description": "Look at the business sign at your current location.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -263,8 +260,6 @@ def execute_tool(tools: AgentTools, tool_name: str, arguments: dict) -> str:
         return tools.go_to_front()
     elif tool_name == "go_to_back":
         return tools.go_to_back()
-    elif tool_name == "look_at_business":
-        return tools.look_at_business()
     elif tool_name == "get_employee_list":
         return tools.get_employee_list()
     elif tool_name == "deliver_package":

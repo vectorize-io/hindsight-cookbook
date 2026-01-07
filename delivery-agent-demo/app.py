@@ -35,21 +35,42 @@ def _get_or_create_queue(session_id: str) -> queue.Queue:
 
 
 def _clear_queue(session_id: str):
-    """Clear and remove the queue for this session."""
+    """Clear and remove the queue for this session.
+
+    Returns the 'complete' item if found, so caller can process it.
+    """
     storage = _get_queue_storage()
+    complete_item = None
     if session_id in storage:
-        # Drain any remaining items
+        # Drain any remaining items, but capture 'complete' for processing
         q = storage[session_id]
         while True:
             try:
-                q.get_nowait()
+                item = q.get_nowait()
+                if item.get("type") == "complete":
+                    complete_item = item
             except queue.Empty:
                 break
         del storage[session_id]
+    return complete_item
 
 
 import hindsight_litellm
 from building import get_building, reset_building, Package
+
+
+def _process_complete_item(complete_item):
+    """Process a 'complete' item to update stats and history."""
+    if complete_item is None:
+        return
+    st.session_state.total_steps += complete_item["steps"]
+    if complete_item["success"]:
+        st.session_state.deliveries_completed += 1
+    st.session_state.delivery_history.append({
+        "package": st.session_state.get("last_package_info", "Unknown"),
+        "success": complete_item["success"],
+        "steps": complete_item["steps"],
+    })
 from agent import DeliveryAgent, ActionEvent
 from agent_tools import AgentTools, TOOL_DEFINITIONS, execute_tool
 from game_renderer import generate_game_html
@@ -212,6 +233,7 @@ def _run_delivery_in_background(
                     # Push action to queue for UI animation
                     action_queue.put({
                         "type": "action",
+                        "step": agent_state.steps_taken,
                         "tool_name": tool_name,
                         "result": result,
                         "floor": agent_state.floor,
@@ -237,8 +259,19 @@ def _run_delivery_in_background(
 
                 if success:
                     # Store to memory on success
+                    action_queue.put({
+                        "type": "memory_storing",
+                        "step": agent_state.steps_taken,
+                    })
                     final_convo = _format_messages_for_retain(messages)
+                    t_store = time.time()
                     memory.retain(final_convo)
+                    store_duration = time.time() - t_store
+                    action_queue.put({
+                        "type": "memory_stored",
+                        "step": agent_state.steps_taken,
+                        "timing": store_duration,
+                    })
                     break
 
                 # Check step limit
@@ -253,6 +286,7 @@ def _run_delivery_in_background(
                 if message.content:
                     action_queue.put({
                         "type": "action",
+                        "step": agent_state.steps_taken,
                         "tool_name": "💬 response",
                         "result": message.content,
                         "floor": agent_state.floor,
@@ -641,8 +675,9 @@ def main():
         st.session_state.delivery_start_time = time.time()
         st.session_state.delivery_complete_pending = False
         st.session_state.bg_delivery_complete_info = None  # Clear any previous completion
-        # Clear old queue before creating new one
-        _clear_queue(st.session_state.session_id)
+        # Clear old queue before creating new one - process any pending complete
+        complete_item = _clear_queue(st.session_state.session_id)
+        _process_complete_item(complete_item)
         st.session_state.bg_queue_active = False
 
         # Create package for selected recipient
@@ -868,6 +903,7 @@ def main():
 
                     if item_type == "action":
                         st.session_state.action_queue.append({
+                            "step": item.get("step", "?"),
                             "tool_name": item["tool_name"],
                             "result": item["result"],
                             "floor": item["floor"],
@@ -901,6 +937,24 @@ def main():
                             "response": item["response"],  # Dict, not JSON string
                         }
                         st.session_state.llm_messages.append(llm_entry)
+                    elif item_type == "memory_storing":
+                        st.session_state.action_queue.append({
+                            "step": item.get("step", "?"),
+                            "tool_name": "🧠 storing_memory",
+                            "result": "Storing delivery experience to Hindsight...",
+                            "floor": st.session_state.agent_floor,
+                            "side": st.session_state.agent_side,
+                            "timing": 0,
+                        })
+                    elif item_type == "memory_stored":
+                        st.session_state.action_queue.append({
+                            "step": item.get("step", "?"),
+                            "tool_name": "🧠 memory_stored",
+                            "result": f"Memory stored successfully!",
+                            "floor": st.session_state.agent_floor,
+                            "side": st.session_state.agent_side,
+                            "timing": item.get("timing", 0),
+                        })
                     elif item_type == "complete":
                         st.session_state.bg_delivery_complete_info = item
                         st.session_state.bg_delivery_running = False
@@ -939,7 +993,9 @@ def main():
                 st.session_state.current_action = next_action["tool_name"]
 
         # Check if delivery complete and all animations done
-        if st.session_state.delivery_complete_pending and not st.session_state.action_queue:
+        # Only finalize when we've received the "complete" item (bg_delivery_complete_info is set)
+        # This prevents race condition where "success" arrives but "complete" hasn't yet
+        if st.session_state.delivery_complete_pending and not st.session_state.action_queue and st.session_state.bg_delivery_complete_info:
             st.session_state.delivery_complete_pending = False
             _clear_queue(st.session_state.session_id)
             st.session_state.bg_queue_active = False
@@ -983,6 +1039,7 @@ def main():
                 with log_container:
                     # Display in reverse order (newest first)
                     for action_data in reversed(st.session_state.displayed_actions):
+                        step = action_data.get("step", "?")
                         tool_name = action_data.get("tool_name", "unknown")
                         result = action_data.get("result", "")
                         floor = action_data.get("floor", 1)
@@ -992,25 +1049,28 @@ def main():
                         # Determine icon and style based on result
                         if "SUCCESS" in result:
                             icon = "🎉"
-                            header = f"{icon} The agent called **{tool_name}** - SUCCESS!"
+                            header = f"{icon} Step {step}: **{tool_name}** - SUCCESS!"
                         elif "error" in tool_name.lower():
                             icon = "❌"
-                            header = f"{icon} **Error**"
+                            header = f"{icon} Step {step}: **Error**"
                         elif "step_limit" in tool_name.lower():
                             icon = "⚠️"
-                            header = f"{icon} **Step Limit Reached**"
+                            header = f"{icon} Step {step}: **Step Limit Reached**"
                         elif tool_name in ["go_up", "go_down", "go_to_front", "go_to_back"]:
                             icon = "🚶"
-                            header = f"{icon} The agent called **{tool_name}**"
-                        elif tool_name == "look_at_business":
-                            icon = "👀"
-                            header = f"{icon} The agent called **{tool_name}**"
+                            header = f"{icon} Step {step}: **{tool_name}**"
                         elif tool_name == "deliver_package":
                             icon = "📦"
-                            header = f"{icon} The agent called **{tool_name}**"
+                            header = f"{icon} Step {step}: **{tool_name}**"
+                        elif "storing_memory" in tool_name:
+                            icon = "🧠"
+                            header = f"{icon} **Storing memory...**"
+                        elif "memory_stored" in tool_name:
+                            icon = "✅"
+                            header = f"{icon} **Memory stored!**"
                         else:
                             icon = "🔧"
-                            header = f"{icon} The agent called **{tool_name}**"
+                            header = f"{icon} Step {step}: **{tool_name}**"
 
                         with st.expander(header, expanded=False):
                             st.markdown(f"**Result:** {result}")
@@ -1090,8 +1150,9 @@ def main():
             st.session_state.last_display_time = 0
             st.session_state.delivery_complete_pending = False
             st.session_state.bg_delivery_complete_info = None  # Clear any previous completion
-            # Clear old queue before creating new one
-            _clear_queue(st.session_state.session_id)
+            # Clear old queue before creating new one - process any pending complete
+            complete_item = _clear_queue(st.session_state.session_id)
+            _process_complete_item(complete_item)
             st.session_state.bg_queue_active = False
             st.session_state.llm_messages = []
             st.session_state.has_package = True

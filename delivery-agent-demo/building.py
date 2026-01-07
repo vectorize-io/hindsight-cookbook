@@ -12,9 +12,10 @@ import random
 
 
 class Side(Enum):
-    """Which side of the floor a business is on."""
+    """Which side of the floor a business is on, or middle (elevator area)."""
     FRONT = "front"
     BACK = "back"
+    MIDDLE = "middle"  # Elevator/hallway - no business here
 
 
 @dataclass
