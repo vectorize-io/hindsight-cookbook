@@ -24,7 +24,7 @@ from ..websocket.events import (
 from ..config import LLM_MODEL
 
 
-def format_messages_for_retain(messages: list) -> str:
+def format_messages_for_retain(messages: list, success: bool = True) -> str:
     """Format conversation messages for storage to Hindsight."""
     items = []
     for msg in messages:
@@ -57,6 +57,12 @@ def format_messages_for_retain(messages: list) -> str:
             label = "USER" if role == "USER" else "ASSISTANT"
             items.append(f"{label}: {content}")
 
+    # Add outcome message
+    if success:
+        items.append("OUTCOME: DELIVERY SUCCESSFUL - Package was delivered to the correct recipient.")
+    else:
+        items.append("OUTCOME: DELIVERY FAILED - The delivery could not be completed.")
+
     return "\n\n".join(items)
 
 
@@ -67,6 +73,8 @@ async def run_delivery(
     delivery_id: int,
     max_steps: Optional[int] = None,
     cancelled: asyncio.Event = None,
+    model: Optional[str] = None,
+    hindsight: Optional[dict] = None,
 ):
     """Run a delivery, streaming events via WebSocket.
 
@@ -77,7 +85,29 @@ async def run_delivery(
         delivery_id: Unique ID for this delivery (for memory grouping)
         max_steps: Maximum steps allowed (None = no limit)
         cancelled: Event to signal cancellation
+        model: LLM model to use (None = use default from config)
+        hindsight: Hindsight settings (inject, reflect, store)
     """
+    # Use provided model or fall back to default
+    llm_model = model or LLM_MODEL
+
+    # Configure hindsight based on settings
+    inject_memories = hindsight.get("inject", True) if hindsight else True
+    use_reflect = hindsight.get("reflect", False) if hindsight else False
+    store_conversations = hindsight.get("store", True) if hindsight else True
+    custom_bank_id = hindsight.get("bankId") if hindsight else None
+
+    # Update hindsight config
+    import hindsight_litellm
+    config = hindsight_litellm.get_config()
+    if config:
+        config.inject_memories = inject_memories
+    defaults = hindsight_litellm.get_defaults()
+    if defaults:
+        defaults.use_reflect = use_reflect
+        # Use custom bank_id if provided
+        if custom_bank_id:
+            defaults.bank_id = custom_bank_id
     # Set up agent state
     agent_state = AgentState()
     agent_state.current_package = package
@@ -117,13 +147,15 @@ async def run_delivery(
             print(f"[AGENT DEBUG]   bank_id={defaults.bank_id if defaults else 'N/A'}")
             print(f"[AGENT DEBUG]   use_reflect={defaults.use_reflect if defaults else 'N/A'}")
             print(f"[AGENT DEBUG]   user_query={messages[-1].get('content', '')[:50] if messages else 'N/A'}")
+            print(f"[AGENT DEBUG]   using model={llm_model}")
 
             response = await completion(
-                model=LLM_MODEL,
+                model=llm_model,
                 messages=messages,
                 tools=TOOL_DEFINITIONS,
                 tool_choice="required",
                 timeout=30,
+                hindsight_query=package.recipient_name,
             )
             timing = time.time() - t0
 
@@ -200,13 +232,14 @@ async def run_delivery(
                 messages.extend(tool_results)
 
                 if success:
-                    # Store memory
-                    await websocket.send_json(event(EventType.MEMORY_STORING))
-                    final_convo = format_messages_for_retain(messages)
-                    t_store = time.time()
-                    retain(final_convo)
-                    store_timing = time.time() - t_store
-                    await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
+                    # Store memory (if enabled)
+                    if store_conversations:
+                        await websocket.send_json(event(EventType.MEMORY_STORING))
+                        final_convo = format_messages_for_retain(messages, success=True)
+                        t_store = time.time()
+                        retain(final_convo)
+                        store_timing = time.time() - t_store
+                        await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
 
                     # Send success
                     await websocket.send_json(event(EventType.DELIVERY_SUCCESS, {
@@ -230,7 +263,15 @@ async def run_delivery(
                 messages.append({"role": "assistant", "content": message.content})
                 messages.append({"role": "user", "content": "Use the available tools to complete the delivery."})
 
-        # Step limit reached
+        # Step limit reached - store failed delivery (if enabled)
+        if store_conversations:
+            await websocket.send_json(event(EventType.MEMORY_STORING))
+            final_convo = format_messages_for_retain(messages, success=False)
+            t_store = time.time()
+            retain(final_convo)
+            store_timing = time.time() - t_store
+            await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
+
         await websocket.send_json(event(EventType.STEP_LIMIT_REACHED, {
             "message": f"Exceeded {max_steps} step limit",
             "steps": agent_state.steps_taken
@@ -246,3 +287,149 @@ async def run_delivery(
             "message": str(e),
             "traceback": traceback.format_exc()
         }))
+
+
+async def run_delivery_fast(
+    building: Building,
+    package: Package,
+    max_steps: int = 150,
+    model: Optional[str] = None,
+    hindsight: Optional[dict] = None,
+) -> dict:
+    """Run a delivery without WebSocket streaming (fast-forward mode).
+
+    Args:
+        building: The building to navigate
+        package: The package to deliver
+        max_steps: Maximum steps allowed
+        model: LLM model to use (None = use default from config)
+        hindsight: Hindsight settings (inject, reflect, store)
+
+    Returns:
+        dict with success, steps, and actions taken
+    """
+    # Use provided model or fall back to default
+    llm_model = model or LLM_MODEL
+
+    # Configure hindsight based on settings
+    inject_memories = hindsight.get("inject", True) if hindsight else True
+    use_reflect = hindsight.get("reflect", False) if hindsight else False
+    store_conversations = hindsight.get("store", True) if hindsight else True
+    custom_bank_id = hindsight.get("bankId") if hindsight else None
+
+    # Update hindsight config
+    import hindsight_litellm
+    config = hindsight_litellm.get_config()
+    if config:
+        config.inject_memories = inject_memories
+    defaults = hindsight_litellm.get_defaults()
+    if defaults:
+        defaults.use_reflect = use_reflect
+        # Use custom bank_id if provided
+        if custom_bank_id:
+            defaults.bank_id = custom_bank_id
+
+    # Set up agent state
+    agent_state = AgentState()
+    agent_state.current_package = package
+
+    # Initial messages
+    messages = [
+        {"role": "system", "content": "You are a delivery agent. Use the tools provided to get it delivered."},
+        {"role": "user", "content": f"Please deliver this package: {package}"}
+    ]
+
+    tools = AgentTools(building, agent_state)
+    success = False
+    actions = []
+
+    try:
+        while agent_state.steps_taken < max_steps:
+            # Call LLM
+            t0 = time.time()
+            response = await completion(
+                model=llm_model,
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+                tool_choice="required",
+                timeout=30,
+                hindsight_query=package.recipient_name,
+            )
+            timing = time.time() - t0
+
+            # Get memory injection info
+            injection_debug = get_last_injection_debug()
+            memory_count = injection_debug.results_count if injection_debug and injection_debug.injected else 0
+
+            message = response.choices[0].message
+
+            if message.tool_calls:
+                tool_results = []
+
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+
+                    result = execute_tool(tools, tool_name, arguments)
+
+                    tool_results.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "content": result
+                    })
+
+                    actions.append({
+                        "step": agent_state.steps_taken,
+                        "tool": tool_name,
+                        "args": arguments,
+                        "result": result[:100] if len(result) > 100 else result,
+                        "timing": round(timing * 1000),
+                        "memoryCount": memory_count,
+                    })
+
+                    if "SUCCESS!" in result:
+                        success = True
+                        break
+
+                # Update messages
+                serialized_tool_calls = [
+                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in message.tool_calls
+                ] if message.tool_calls else []
+                messages.append({"role": "assistant", "content": message.content, "tool_calls": serialized_tool_calls})
+                messages.extend(tool_results)
+
+                if success:
+                    # Store memory (if enabled)
+                    if store_conversations:
+                        final_convo = format_messages_for_retain(messages, success=True)
+                        retain(final_convo)
+                    break
+
+            else:
+                # No tool calls - nudge to use tools
+                messages.append({"role": "assistant", "content": message.content})
+                messages.append({"role": "user", "content": "Use the available tools to complete the delivery."})
+
+        # If we exit the loop without success, store the failed delivery
+        if not success and store_conversations:
+            final_convo = format_messages_for_retain(messages, success=False)
+            retain(final_convo)
+
+        return {
+            "success": success,
+            "steps": agent_state.steps_taken,
+            "actions": actions,
+            "floor": agent_state.floor,
+            "side": agent_state.side.value,
+        }
+
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "steps": agent_state.steps_taken,
+            "actions": actions,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }

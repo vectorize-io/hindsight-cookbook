@@ -52,6 +52,13 @@ def get_bank_id() -> str:
     return _current_bank_id
 
 
+def set_bank_id(bank_id: str):
+    """Set the bank_id for memory operations."""
+    global _current_bank_id
+    _current_bank_id = bank_id
+    hindsight_litellm.set_defaults(bank_id=bank_id)
+
+
 def set_document_id(document_id: str):
     """Set the document_id for grouping memories per delivery."""
     hindsight_litellm.set_document_id(document_id)

@@ -67,6 +67,27 @@ class CancelDeliveryRequest(BaseModel):
     deliveryId: Optional[str] = None
 
 
+class HindsightSettings(BaseModel):
+    inject: bool = True
+    reflect: bool = False
+    store: bool = True
+    bankId: Optional[str] = None  # Custom bank ID for evaluation
+
+
+class FastDeliveryRequest(BaseModel):
+    recipientName: Optional[str] = None  # None = random
+    includeBusiness: bool = False
+    maxSteps: int = 150
+    model: Optional[str] = None  # None = use default
+    hindsight: Optional[HindsightSettings] = None
+
+
+class FastLoopRequest(BaseModel):
+    count: int = 10
+    includeBusiness: bool = False
+    maxSteps: int = 150
+
+
 # REST endpoints for memory management
 @app.get("/api/memory/bank")
 async def get_memory_bank():
@@ -113,6 +134,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 recipient_name = payload.get("recipientName")
                 include_business = payload.get("includeBusiness", False)
                 max_steps = payload.get("maxSteps")
+                model = payload.get("model")  # Custom model override
+                hindsight = payload.get("hindsight")  # Hindsight settings
 
                 # Find employee's business
                 emp_info = building.find_employee(recipient_name)
@@ -146,6 +169,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                             delivery_id=session.delivery_counter,
                             max_steps=max_steps,
                             cancelled=session.cancelled,
+                            model=model,
+                            hindsight=hindsight,
                         )
                     except asyncio.CancelledError:
                         pass
@@ -195,6 +220,106 @@ async def get_demo_config():
             {"name": "check_current_location", "description": "Check current location in building"},
             {"name": "deliver_package", "description": "Attempt to deliver package at current location"},
         ]
+    }
+
+
+# Fast-forward delivery endpoints (no WebSocket, returns results directly)
+@app.post("/api/delivery/fast")
+async def fast_delivery(request: FastDeliveryRequest):
+    """Run a single delivery in fast-forward mode (no streaming)."""
+    building = get_building()
+
+    # Get recipient (random if not specified)
+    if request.recipientName:
+        recipient_name = request.recipientName
+    else:
+        # building.floors is dict[int, dict[Side, Business]]
+        all_employees = list(building.all_employees.keys())
+        recipient_name = random.choice(all_employees)
+
+    # Find employee's business
+    emp_info = building.find_employee(recipient_name)
+    if not emp_info:
+        return {"error": f"Employee {recipient_name} not found"}
+
+    business_name = emp_info[0].name if request.includeBusiness else None
+
+    package = Package(
+        id=f"{random.randint(1000, 9999)}",
+        recipient_name=recipient_name,
+        business_name=business_name
+    )
+
+    # Convert hindsight settings to dict if provided
+    hindsight_dict = None
+    if request.hindsight:
+        hindsight_dict = {
+            "inject": request.hindsight.inject,
+            "reflect": request.hindsight.reflect,
+            "store": request.hindsight.store,
+            "bankId": request.hindsight.bankId,
+        }
+
+    # Run delivery
+    result = await agent_service.run_delivery_fast(
+        building=building,
+        package=package,
+        max_steps=request.maxSteps,
+        model=request.model,
+        hindsight=hindsight_dict,
+    )
+
+    result["recipientName"] = recipient_name
+    return result
+
+
+@app.post("/api/delivery/fast-loop")
+async def fast_delivery_loop(request: FastLoopRequest):
+    """Run multiple deliveries in fast-forward mode."""
+    building = get_building()
+    results = []
+
+    # Get all employees for random selection
+    all_employees = list(building.all_employees.keys())
+
+    for i in range(request.count):
+        recipient_name = random.choice(all_employees)
+
+        # Find employee's business
+        emp_info = building.find_employee(recipient_name)
+        business_name = emp_info[0].name if emp_info and request.includeBusiness else None
+
+        package = Package(
+            id=f"{random.randint(1000, 9999)}",
+            recipient_name=recipient_name,
+            business_name=business_name
+        )
+
+        # Run delivery
+        result = await agent_service.run_delivery_fast(
+            building=building,
+            package=package,
+            max_steps=request.maxSteps,
+        )
+
+        result["deliveryNumber"] = i + 1
+        result["recipientName"] = recipient_name
+        results.append(result)
+
+    # Compute summary
+    successes = sum(1 for r in results if r.get("success"))
+    total_steps = sum(r.get("steps", 0) for r in results)
+
+    return {
+        "results": results,
+        "summary": {
+            "total": len(results),
+            "successes": successes,
+            "failures": len(results) - successes,
+            "successRate": successes / len(results) if results else 0,
+            "totalSteps": total_steps,
+            "avgSteps": total_steps / len(results) if results else 0,
+        }
     }
 
 

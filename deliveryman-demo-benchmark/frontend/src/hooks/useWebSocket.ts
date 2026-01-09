@@ -80,11 +80,25 @@ export function useWebSocket() {
     }
   }, []);
 
-  const startDelivery = useCallback((recipientName: string, includeBusiness: boolean, maxSteps?: number | null) => {
+  interface HindsightSettings {
+    inject: boolean;
+    reflect: boolean;
+    store: boolean;
+  }
+
+  const startDelivery = useCallback((
+    recipientName: string,
+    includeBusiness: boolean,
+    maxSteps?: number | null,
+    model?: string,
+    hindsight?: HindsightSettings
+  ) => {
     send('start_delivery', {
       recipientName,
       includeBusiness,
-      maxSteps: maxSteps ?? undefined
+      maxSteps: maxSteps ?? undefined,
+      model: model ?? undefined,
+      hindsight: hindsight ?? undefined
     });
   }, [send]);
 
