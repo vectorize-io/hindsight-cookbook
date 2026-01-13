@@ -16,6 +16,7 @@ export const gameConfig: Phaser.Types.Core.GameConfig = {
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
+    expandParent: false,
   },
 };
 
@@ -57,19 +58,19 @@ const EASY_CONFIG: DifficultyConfig = {
 };
 
 // Medium mode: 4 floors, 3 buildings (A, B, C)
+// Image is 2048x1365 scaled to 800x533
 const MEDIUM_CONFIG: DifficultyConfig = {
   numFloors: 4,
   floorY: {
-    1: 455,  // Ground floor
-    2: 355,  // Second floor
-    3: 255,  // Third floor (bridge level)
-    4: 155,  // Top floor
+    1: 505,  // Ground floor (Lobby/Storage/IT Support)
+    2: 425,  // Second floor (Game Studio/Archives/Accounting)
+    3: 370,  // Third floor - bridge level (Exec Suite/Marketing/Sales)
+    4: 290,  // Top floor (Reception/Cafe/HR Dept)
   },
   sideX: {
-    building_a: 135,
-    building_b: 400,
-    building_c: 665,
-    middle: 400,  // For elevator - defaults to building B
+    building_a: 175,   // Left building (Lobby column)
+    building_b: 415,   // Center building (Storage column)
+    building_c: 655,   // Right building (IT Support column)
   },
   businesses: {
     '1_building_a': 'Lobby',

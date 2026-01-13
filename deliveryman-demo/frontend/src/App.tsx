@@ -29,6 +29,8 @@ interface BuildingInfo {
     side: string;
     employees: { name: string; role: string }[];
   }[];
+  isMultiBuilding?: boolean;
+  difficulty?: string;
 }
 
 function ActionLogEntry({ action, expanded, onToggle }: {
@@ -122,6 +124,9 @@ function App() {
     setMaxSteps,
     resetHistory,
     memoryReflect,
+    bankId: storeBankId,
+    setBankId: setStoreBankId,
+    setDifficulty: setStoreDifficulty,
   } = useGameStore();
 
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -175,8 +180,12 @@ function App() {
     fetch('/api/difficulty')
       .then(res => res.json())
       .then(data => {
-        setDifficulty(data.difficulty);
+        const diff = data.difficulty as 'easy' | 'medium' | 'hard';
+        setDifficulty(diff);
         setCurrentBankId(data.bankId || '');
+        // Sync store difficulty (sets correct initial position)
+        setStoreDifficulty(diff);
+        setStoreBankId(data.bankId || '');
       })
       .catch(console.error);
 
@@ -219,6 +228,15 @@ function App() {
     }
   }, []);
 
+  // Sync currentBankId when gameStore's bankId changes (e.g., after reset_memory)
+  useEffect(() => {
+    if (storeBankId && storeBankId !== currentBankId) {
+      setCurrentBankId(storeBankId);
+      // Also refresh bank history
+      refreshBankHistory();
+    }
+  }, [storeBankId, currentBankId, refreshBankHistory]);
+
   // Change difficulty
   const changeDifficulty = useCallback(async (newDifficulty: 'easy' | 'medium' | 'hard') => {
     if (newDifficulty === difficulty) return;
@@ -231,17 +249,18 @@ function App() {
       const data = await res.json();
       setDifficulty(newDifficulty);
       setCurrentBankId(data.bankId || '');
+      // Also update gameStore so the sync effect doesn't overwrite with stale value
+      setStoreBankId(data.bankId || '');
+      // Update store difficulty (preserves history, resets current delivery state)
+      setStoreDifficulty(newDifficulty);
       // Refresh building data for new difficulty
       await refreshBuildingData();
       // Refresh bank history for new difficulty
       await refreshBankHistory();
-      // Reset game store history since it's a different building now
-      // Note: The initial side depends on difficulty (building_a for medium, front for others)
-      resetHistory();
     } catch (err) {
       console.error('Failed to change difficulty:', err);
     }
-  }, [difficulty, refreshBuildingData, refreshBankHistory, resetHistory]);
+  }, [difficulty, refreshBuildingData, refreshBankHistory, setStoreBankId, setStoreDifficulty]);
 
   // Bank management functions
   const copyBankId = useCallback(() => {
@@ -333,7 +352,7 @@ function App() {
         if (!trainingAbortRef.current && trainingRunning) {
           startRandomTrainingDelivery();
         }
-      }, 500);
+      }, 100);  // Minimal delay - just enough for state to settle
     }
   }, [history.length, trainingRunning, trainingTarget, viewMode, startRandomTrainingDelivery]);
 
@@ -368,10 +387,25 @@ function App() {
     }
   };
 
-  const handleResetMemory = () => {
+  const handleResetMemory = async () => {
     if (confirm('This will clear all agent memories and delivery history. Continue?')) {
       resetMemory();
       resetHistory();
+      // Fetch the new bank ID from REST API as fallback (WebSocket should also update it)
+      // Small delay to let backend process the reset
+      setTimeout(async () => {
+        try {
+          const res = await fetch('/api/memory/bank');
+          const data = await res.json();
+          if (data.bankId) {
+            setCurrentBankId(data.bankId);
+            setStoreBankId(data.bankId);
+            refreshBankHistory();
+          }
+        } catch (err) {
+          console.error('Failed to refresh bank ID after reset:', err);
+        }
+      }, 100);
     }
   };
 
@@ -665,12 +699,89 @@ function App() {
                   <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700 space-y-4">
                     <div className="text-sm text-slate-400 mb-2">
                       {buildingInfo.floors} floors • {buildingInfo.businesses.length} businesses • {buildingInfo.businesses.reduce((acc, b) => acc + b.employees.length, 0)} employees
+                      {buildingInfo.isMultiBuilding && <span className="ml-2 text-yellow-400">(3 buildings)</span>}
                     </div>
 
                     {/* Render floors from top to bottom */}
                     {[...Array(buildingInfo.floors)].map((_, i) => {
                       const floorNum = buildingInfo.floors - i;
                       const floorBusinesses = buildingInfo.businesses.filter(b => b.floor === floorNum);
+
+                      // Multi-building layout (medium difficulty)
+                      if (buildingInfo.isMultiBuilding) {
+                        const buildingABiz = floorBusinesses.find(b => b.side === 'building_a');
+                        const buildingBBiz = floorBusinesses.find(b => b.side === 'building_b');
+                        const buildingCBiz = floorBusinesses.find(b => b.side === 'building_c');
+
+                        return (
+                          <div key={floorNum} className="border border-slate-700 rounded-lg overflow-hidden">
+                            <div className="bg-slate-700/50 px-3 py-1.5 text-xs font-medium text-slate-300">
+                              Floor {floorNum}
+                            </div>
+                            <div className="grid grid-cols-3 divide-x divide-slate-700">
+                              {/* Building A */}
+                              <div className="p-2">
+                                <div className="text-xs text-slate-500 uppercase mb-1">Building A</div>
+                                {buildingABiz ? (
+                                  <div>
+                                    <div className="text-sm font-medium text-cyan-400">{buildingABiz.name}</div>
+                                    <div className="mt-1 space-y-0.5">
+                                      {buildingABiz.employees.map(emp => (
+                                        <div key={emp.name} className="text-xs text-slate-400">
+                                          <span className="text-slate-300">{emp.name}</span>
+                                          <span className="text-slate-500"> • {emp.role}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="text-xs text-slate-500 italic">Empty</div>
+                                )}
+                              </div>
+                              {/* Building B */}
+                              <div className="p-2">
+                                <div className="text-xs text-slate-500 uppercase mb-1">Building B</div>
+                                {buildingBBiz ? (
+                                  <div>
+                                    <div className="text-sm font-medium text-cyan-400">{buildingBBiz.name}</div>
+                                    <div className="mt-1 space-y-0.5">
+                                      {buildingBBiz.employees.map(emp => (
+                                        <div key={emp.name} className="text-xs text-slate-400">
+                                          <span className="text-slate-300">{emp.name}</span>
+                                          <span className="text-slate-500"> • {emp.role}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="text-xs text-slate-500 italic">Empty</div>
+                                )}
+                              </div>
+                              {/* Building C */}
+                              <div className="p-2">
+                                <div className="text-xs text-slate-500 uppercase mb-1">Building C</div>
+                                {buildingCBiz ? (
+                                  <div>
+                                    <div className="text-sm font-medium text-cyan-400">{buildingCBiz.name}</div>
+                                    <div className="mt-1 space-y-0.5">
+                                      {buildingCBiz.employees.map(emp => (
+                                        <div key={emp.name} className="text-xs text-slate-400">
+                                          <span className="text-slate-300">{emp.name}</span>
+                                          <span className="text-slate-500"> • {emp.role}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="text-xs text-slate-500 italic">Empty</div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      // Single building layout (easy/hard difficulty)
                       const frontBiz = floorBusinesses.find(b => b.side === 'front');
                       const backBiz = floorBusinesses.find(b => b.side === 'back');
 

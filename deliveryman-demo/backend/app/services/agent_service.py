@@ -28,10 +28,10 @@ from ..config import LLM_MODEL
 
 # Hindsight query template for memory lookup - includes recipient name
 def get_hindsight_query(recipient_name: str) -> str:
-    return f"Where does {recipient_name} work? If unknown, what locations have I already checked? Include building layout."
+    return f"Where does {recipient_name} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries."
 
 
-def format_messages_for_retain(messages: list, success: bool = True) -> str:
+def format_messages_for_retain(messages: list, success: bool = True, steps: int = 0) -> str:
     """Format conversation messages for storage to Hindsight."""
     items = []
     for msg in messages:
@@ -64,11 +64,11 @@ def format_messages_for_retain(messages: list, success: bool = True) -> str:
             label = "USER" if role == "USER" else "ASSISTANT"
             items.append(f"{label}: {content}")
 
-    # Add outcome message
+    # Add outcome message with step count
     if success:
-        items.append("OUTCOME: DELIVERY SUCCESSFUL - Package was delivered to the correct recipient.")
+        items.append(f"OUTCOME: DELIVERY SUCCESSFUL in {steps} steps - Package was delivered to the correct recipient.")
     else:
-        items.append("OUTCOME: DELIVERY FAILED - The delivery could not be completed.")
+        items.append(f"OUTCOME: DELIVERY FAILED after {steps} steps - The delivery could not be completed.")
 
     return "\n\n".join(items)
 
@@ -237,7 +237,7 @@ async def run_delivery(
                     # Store memory (if enabled)
                     if store_conversations:
                         await websocket.send_json(event(EventType.MEMORY_STORING))
-                        final_convo = format_messages_for_retain(messages, success=True)
+                        final_convo = format_messages_for_retain(messages, success=True, steps=agent_state.steps_taken)
                         t_store = time.time()
                         await retain_async(final_convo)
                         store_timing = time.time() - t_store
@@ -267,7 +267,7 @@ async def run_delivery(
         # Step limit reached - store failed delivery (if enabled)
         if store_conversations:
             await websocket.send_json(event(EventType.MEMORY_STORING))
-            final_convo = format_messages_for_retain(messages, success=False)
+            final_convo = format_messages_for_retain(messages, success=False, steps=agent_state.steps_taken)
             t_store = time.time()
             await retain_async(final_convo)
             store_timing = time.time() - t_store

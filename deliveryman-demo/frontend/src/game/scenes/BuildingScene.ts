@@ -21,9 +21,13 @@ export class BuildingScene extends Phaser.Scene {
   }
 
   create() {
-    // Add building background sprite
-    this.buildingSprite = this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, this.config.buildingImage);
-    this.buildingSprite.setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
+    // Add building background sprite - fills the full canvas
+    this.buildingSprite = this.add.image(0, 0, this.config.buildingImage);
+    this.buildingSprite.setOrigin(0, 0);
+    // Calculate scale to fit the canvas exactly
+    const scaleX = GAME_WIDTH / this.buildingSprite.width;
+    const scaleY = GAME_HEIGHT / this.buildingSprite.height;
+    this.buildingSprite.setScale(scaleX, scaleY);
 
     // Create agent container - start at initial position for current difficulty
     const initialSide = this.config.isMultiBuilding ? 'building_a' : 'front';
@@ -75,6 +79,9 @@ export class BuildingScene extends Phaser.Scene {
 
     // Listen for game events from React
     window.addEventListener('game-event', this.handleGameEvent.bind(this) as EventListener);
+
+    // Signal that the scene is ready to receive events
+    window.dispatchEvent(new CustomEvent('scene-ready'));
   }
 
   private handleGameEvent(event: CustomEvent) {
@@ -111,14 +118,28 @@ export class BuildingScene extends Phaser.Scene {
     this.currentDifficulty = difficulty;
     this.config = DIFFICULTY_CONFIGS[difficulty];
 
-    // Update building sprite
+    // Update building sprite and recalculate scale for new texture
     this.buildingSprite.setTexture(this.config.buildingImage);
+    const scaleX = GAME_WIDTH / this.buildingSprite.width;
+    const scaleY = GAME_HEIGHT / this.buildingSprite.height;
+    this.buildingSprite.setScale(scaleX, scaleY);
+
+    // Stop any running animations on the agent before repositioning
+    this.tweens.killTweensOf(this.agent);
+    this.tweens.killTweensOf(this.agentSprite);
+    this.isMoving = false;
 
     // Reset agent to starting position for new difficulty
     const initialSide = this.config.isMultiBuilding ? 'building_a' : 'front';
     this.currentFloor = 1;
     this.currentSide = initialSide;
     this.agent.setPosition(this.config.sideX[initialSide], this.config.floorY[1]);
+    this.agent.setAlpha(1);  // Ensure agent is visible (in case elevator fade was interrupted)
+
+    // Restart idle animation
+    this.agentSprite.y = 0;
+    this.agentSprite.setScale(0.85);
+    this.startIdleAnimation();
 
     // Update UI
     this.updateUI();
@@ -148,7 +169,7 @@ export class BuildingScene extends Phaser.Scene {
     // But as a safety fallback, we just return if already moving
     if (this.isMoving) return;
 
-    const targetX = this.config.sideX[side] || this.config.sideX.middle;
+    const targetX = this.config.sideX[side] || this.agent.x;
     const targetY = this.config.floorY[floor] || this.config.floorY[1];
 
     const sameFloor = floor === this.currentFloor;
@@ -177,6 +198,66 @@ export class BuildingScene extends Phaser.Scene {
       window.dispatchEvent(new CustomEvent('animation-complete'));
     };
 
+    // Multi-building mode (medium): different animation logic
+    if (this.config.isMultiBuilding) {
+      if (sameFloor) {
+        // Same floor, different building - walk horizontally (bridge at floor 3)
+        this.walkTo(targetX, () => {
+          this.currentSide = side;
+          this.updateUI();
+          finishMove();
+        });
+      } else if (sameSide) {
+        // Same building, different floor - elevator (fade in place)
+        this.tweens.add({
+          targets: this.agent,
+          alpha: 0,
+          duration: 200,
+          onComplete: () => {
+            this.agent.y = targetY;
+            this.currentFloor = floor;
+            this.tweens.add({
+              targets: this.agent,
+              alpha: 1,
+              duration: 200,
+              delay: 300,
+              onComplete: () => {
+                this.updateUI();
+                finishMove();
+              },
+            });
+          },
+        });
+      } else {
+        // Different building AND different floor
+        // Animate: elevator to current position, walk to target building, elevator to target floor
+        // Simplified: just fade and reposition
+        this.tweens.add({
+          targets: this.agent,
+          alpha: 0,
+          duration: 200,
+          onComplete: () => {
+            this.agent.x = targetX;
+            this.agent.y = targetY;
+            this.currentFloor = floor;
+            this.currentSide = side;
+            this.tweens.add({
+              targets: this.agent,
+              alpha: 1,
+              duration: 200,
+              delay: 400,
+              onComplete: () => {
+                this.updateUI();
+                finishMove();
+              },
+            });
+          },
+        });
+      }
+      return;
+    }
+
+    // Single building mode (easy/hard): original logic
     if (sameFloor) {
       // Just walk horizontally
       this.walkTo(targetX, () => {
@@ -185,7 +266,7 @@ export class BuildingScene extends Phaser.Scene {
         finishMove();
       });
     } else {
-      // Walk to elevator, then move vertically, then walk to target
+      // Walk to elevator (middle), then move vertically, then walk to target
       this.walkTo(this.config.sideX.middle, () => {
         // Fade out for elevator
         this.tweens.add({

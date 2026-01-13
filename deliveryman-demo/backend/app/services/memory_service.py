@@ -26,7 +26,7 @@ _configured: bool = False
 _bank_history: dict[str, list[str]] = {"easy": [], "medium": [], "hard": []}
 
 # Bank background - simple and focused on what to remember
-BANK_BACKGROUND = "Delivery agent. Remember employee locations and building layout."
+BANK_BACKGROUND = "Delivery agent. Remember employee locations, building layout, and optimal paths."
 
 
 def generate_bank_id(difficulty: str = None) -> str:

@@ -10,6 +10,14 @@ import type {
   MemoryReflect
 } from '../types';
 
+type Difficulty = 'easy' | 'medium' | 'hard';
+
+type HistoryEntry = DeliveryResult & { recipientName: string };
+
+interface DifficultyStats {
+  history: HistoryEntry[];
+}
+
 interface GameState {
   // Connection
   connected: boolean;
@@ -28,13 +36,18 @@ interface GameState {
   deliveryStatus: DeliveryStatus;
   deliverySteps: number;
 
-  // Action log
+  // Action log (current delivery only)
   actions: ActionEntry[];
 
-  // Stats
+  // Stats per difficulty
+  difficulty: Difficulty;
+  statsByDifficulty: Record<Difficulty, DifficultyStats>;
+
+  // Computed stats for current difficulty (derived in selectors)
+  // These are kept for backwards compatibility with components
   deliveriesCompleted: number;
   totalSteps: number;
-  history: (DeliveryResult & { recipientName: string })[];
+  history: HistoryEntry[];
 
   // Memory
   bankId: string | null;
@@ -52,11 +65,29 @@ interface GameState {
   resetAgent: () => void;
   resetStats: () => void;
   resetHistory: () => void;
+  resetAllHistory: () => void;
+  setAgentPosition: (floor: number, side: Side) => void;
   setMode: (mode: Mode) => void;
   setIncludeBusiness: (value: boolean) => void;
   setMaxSteps: (value: number | null) => void;
   setAnimating: (value: boolean) => void;
+  setBankId: (bankId: string) => void;
+  setDifficulty: (difficulty: Difficulty) => void;
 }
+
+// Helper to compute derived stats from history
+function computeStats(history: HistoryEntry[]) {
+  return {
+    deliveriesCompleted: history.filter(h => h.success).length,
+    totalSteps: history.reduce((sum, h) => sum + h.steps, 0),
+  };
+}
+
+const initialStatsByDifficulty: Record<Difficulty, DifficultyStats> = {
+  easy: { history: [] },
+  medium: { history: [] },
+  hard: { history: [] },
+};
 
 export const useGameStore = create<GameState>((set, get) => ({
   // Initial state
@@ -72,9 +103,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   deliveryStatus: 'idle',
   deliverySteps: 0,
   actions: [],
+
+  // Per-difficulty stats
+  difficulty: 'easy',
+  statsByDifficulty: { ...initialStatsByDifficulty },
+
+  // Computed (will be updated when difficulty changes or history updates)
   deliveriesCompleted: 0,
   totalSteps: 0,
   history: [],
+
   bankId: null,
   memoryReflect: null,
   mode: 'ui',
@@ -148,21 +186,32 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       case 'delivery_success': {
         const steps = payload?.steps ?? state.deliverySteps;
+        const newEntry: HistoryEntry = {
+          package: state.currentPackage ?
+            `${state.currentPackage.recipientName}${state.currentPackage.businessName ? ` @ ${state.currentPackage.businessName}` : ''}` :
+            'Unknown',
+          recipientName: state.currentPackage?.recipientName ?? 'Unknown',
+          success: true,
+          steps,
+        };
+
+        const currentDifficulty = state.difficulty;
+        const updatedHistory = [...state.statsByDifficulty[currentDifficulty].history, newEntry];
+        const stats = computeStats(updatedHistory);
+
         set({
           deliveryStatus: 'success',
           hasPackage: false,
           isThinking: false,
           thinkingText: null,
-          deliveriesCompleted: state.deliveriesCompleted + 1,
-          totalSteps: state.totalSteps + steps,
-          history: [...state.history, {
-            package: state.currentPackage ?
-              `${state.currentPackage.recipientName}${state.currentPackage.businessName ? ` @ ${state.currentPackage.businessName}` : ''}` :
-              'Unknown',
-            recipientName: state.currentPackage?.recipientName ?? 'Unknown',
-            success: true,
-            steps,
-          }],
+          statsByDifficulty: {
+            ...state.statsByDifficulty,
+            [currentDifficulty]: { history: updatedHistory },
+          },
+          // Update computed values
+          history: updatedHistory,
+          deliveriesCompleted: stats.deliveriesCompleted,
+          totalSteps: stats.totalSteps,
         });
         break;
       }
@@ -170,20 +219,32 @@ export const useGameStore = create<GameState>((set, get) => ({
       case 'delivery_failed':
       case 'step_limit_reached': {
         const steps = payload?.steps ?? state.deliverySteps;
+        const newEntry: HistoryEntry = {
+          package: state.currentPackage ?
+            `${state.currentPackage.recipientName}${state.currentPackage.businessName ? ` @ ${state.currentPackage.businessName}` : ''}` :
+            'Unknown',
+          recipientName: state.currentPackage?.recipientName ?? 'Unknown',
+          success: false,
+          steps,
+        };
+
+        const currentDifficulty = state.difficulty;
+        const updatedHistory = [...state.statsByDifficulty[currentDifficulty].history, newEntry];
+        const stats = computeStats(updatedHistory);
+
         set({
           deliveryStatus: 'failed',
           hasPackage: false,
           isThinking: false,
           thinkingText: null,
-          totalSteps: state.totalSteps + steps,
-          history: [...state.history, {
-            package: state.currentPackage ?
-              `${state.currentPackage.recipientName}${state.currentPackage.businessName ? ` @ ${state.currentPackage.businessName}` : ''}` :
-              'Unknown',
-            recipientName: state.currentPackage?.recipientName ?? 'Unknown',
-            success: false,
-            steps,
-          }],
+          statsByDifficulty: {
+            ...state.statsByDifficulty,
+            [currentDifficulty]: { history: updatedHistory },
+          },
+          // Update computed values
+          history: updatedHistory,
+          deliveriesCompleted: stats.deliveriesCompleted,
+          totalSteps: stats.totalSteps,
         });
         break;
       }
@@ -226,13 +287,46 @@ export const useGameStore = create<GameState>((set, get) => ({
     actions: [],
   }),
 
-  resetStats: () => set({
-    deliveriesCompleted: 0,
-    totalSteps: 0,
-    history: [],
-  }),
+  resetStats: () => {
+    const state = get();
+    const currentDifficulty = state.difficulty;
+    set({
+      statsByDifficulty: {
+        ...state.statsByDifficulty,
+        [currentDifficulty]: { history: [] },
+      },
+      deliveriesCompleted: 0,
+      totalSteps: 0,
+      history: [],
+    });
+  },
 
-  resetHistory: () => set({
+  // Reset history for current difficulty only
+  resetHistory: () => {
+    const state = get();
+    const currentDifficulty = state.difficulty;
+    const initialSide = currentDifficulty === 'medium' ? 'building_a' : 'front';
+
+    set({
+      statsByDifficulty: {
+        ...state.statsByDifficulty,
+        [currentDifficulty]: { history: [] },
+      },
+      deliveriesCompleted: 0,
+      totalSteps: 0,
+      history: [],
+      actions: [],
+      deliveryStatus: 'idle',
+      currentPackage: null,
+      agentFloor: 1,
+      agentSide: initialSide,
+      hasPackage: false,
+    });
+  },
+
+  // Reset history for ALL difficulties
+  resetAllHistory: () => set({
+    statsByDifficulty: { ...initialStatsByDifficulty },
     deliveriesCompleted: 0,
     totalSteps: 0,
     history: [],
@@ -244,8 +338,36 @@ export const useGameStore = create<GameState>((set, get) => ({
     hasPackage: false,
   }),
 
+  setAgentPosition: (floor, side) => set({
+    agentFloor: floor,
+    agentSide: side,
+  }),
+
   setMode: (mode) => set({ mode }),
   setIncludeBusiness: (includeBusiness) => set({ includeBusiness }),
   setMaxSteps: (maxSteps) => set({ maxSteps }),
   setAnimating: (isAnimating) => set({ isAnimating }),
+  setBankId: (bankId) => set({ bankId }),
+
+  setDifficulty: (difficulty) => {
+    const state = get();
+    const difficultyHistory = state.statsByDifficulty[difficulty].history;
+    const stats = computeStats(difficultyHistory);
+    const initialSide = difficulty === 'medium' ? 'building_a' : 'front';
+
+    set({
+      difficulty,
+      history: difficultyHistory,
+      deliveriesCompleted: stats.deliveriesCompleted,
+      totalSteps: stats.totalSteps,
+      // Reset current delivery state when switching
+      actions: [],
+      deliveryStatus: 'idle',
+      currentPackage: null,
+      agentFloor: 1,
+      agentSide: initialSide,
+      hasPackage: false,
+      memoryReflect: null,
+    });
+  },
 }));

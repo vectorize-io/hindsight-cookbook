@@ -248,6 +248,17 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 session.cancelled.set()
                 manager.cancel_delivery(client_id)
 
+            elif event_type == "reset_memory":
+                # Generate a new bank ID to start fresh
+                difficulty = memory_service.get_current_difficulty()
+                new_bank_id = memory_service.configure_memory(difficulty=difficulty)
+                memory_service.ensure_bank_exists()
+                # Notify client of new bank ID
+                await websocket.send_json(event(EventType.CONNECTED, {
+                    "clientId": client_id,
+                    "bankId": new_bank_id,
+                }))
+
     except WebSocketDisconnect:
         manager.disconnect(client_id)
 
@@ -270,7 +281,7 @@ async def get_demo_config():
             "apiUrl": HINDSIGHT_API_URL,
             "bankId": memory_service.get_bank_id(),
             "method": "reflect",
-            "queryTemplate": "Where does {recipient_name} work? If unknown, what locations have I already checked? Include building layout.",
+            "queryTemplate": "Where does {recipient_name} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries.",
             "budget": "high",
             "background": memory_service.BANK_BACKGROUND,
         },

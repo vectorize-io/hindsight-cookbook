@@ -86,9 +86,23 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
     return () => window.removeEventListener('animation-complete', handleAnimationComplete);
   }, [processNextMove]);
 
-  // Initialize Phaser game
+  // Track initial difficulty for scene-ready handler
+  const initialDifficultyRef = useRef(difficulty);
+  initialDifficultyRef.current = difficulty;
+
+  // Initialize Phaser game (only once)
   useEffect(() => {
     if (!containerRef.current || gameRef.current) return;
+
+    // Handler for when BuildingScene signals it's ready
+    const handleSceneReady = () => {
+      window.dispatchEvent(new CustomEvent('game-event', {
+        detail: { type: 'set_difficulty', payload: { difficulty: initialDifficultyRef.current } }
+      }));
+      window.removeEventListener('scene-ready', handleSceneReady);
+    };
+
+    window.addEventListener('scene-ready', handleSceneReady);
 
     gameRef.current = new Phaser.Game({
       ...gameConfig,
@@ -96,11 +110,13 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
     });
 
     return () => {
+      window.removeEventListener('scene-ready', handleSceneReady);
       if (gameRef.current) {
         gameRef.current.destroy(true);
         gameRef.current = null;
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Handle floor/side changes - queue moves instead of dispatching directly
@@ -195,7 +211,7 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
       ref={containerRef}
       id="phaser-container"
       className="w-full rounded-lg overflow-hidden"
-      style={{ aspectRatio: '800/550' }}
+      style={{ aspectRatio: '800/533' }}
     />
   );
 }
