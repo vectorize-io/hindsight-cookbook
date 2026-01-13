@@ -31,6 +31,11 @@ interface GameState {
   thinkingText: string | null;
   isAnimating: boolean;
 
+  // Hard mode city grid state
+  agentGridRow: number;
+  agentGridCol: number;
+  agentCurrentBuilding: string | null;
+
   // Current delivery
   currentPackage: Package | null;
   deliveryStatus: DeliveryStatus;
@@ -67,6 +72,7 @@ interface GameState {
   resetHistory: () => void;
   resetAllHistory: () => void;
   setAgentPosition: (floor: number, side: Side) => void;
+  setAgentGridPosition: (row: number, col: number, building: string | null) => void;
   setMode: (mode: Mode) => void;
   setIncludeBusiness: (value: boolean) => void;
   setMaxSteps: (value: number | null) => void;
@@ -99,6 +105,12 @@ export const useGameStore = create<GameState>((set, get) => ({
   isThinking: false,
   thinkingText: null,
   isAnimating: false,
+
+  // Hard mode city grid initial state
+  agentGridRow: 0,
+  agentGridCol: 0,
+  agentCurrentBuilding: null,
+
   currentPackage: null,
   deliveryStatus: 'idle',
   deliverySteps: 0,
@@ -166,13 +178,24 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       case 'agent_action': {
         const actionPayload = payload as ActionEntry;
-        set({
+        const updateState: Partial<GameState> = {
           isThinking: false,
           agentFloor: actionPayload.floor,
           agentSide: actionPayload.side as Side,
           deliverySteps: actionPayload.step,
           actions: [...state.actions, actionPayload],
-        });
+        };
+        // Handle hard mode grid position
+        if (actionPayload.gridRow !== undefined) {
+          updateState.agentGridRow = actionPayload.gridRow;
+        }
+        if (actionPayload.gridCol !== undefined) {
+          updateState.agentGridCol = actionPayload.gridCol;
+        }
+        if (actionPayload.currentBuilding !== undefined) {
+          updateState.agentCurrentBuilding = actionPayload.currentBuilding;
+        }
+        set(updateState as GameState);
         break;
       }
 
@@ -276,16 +299,25 @@ export const useGameStore = create<GameState>((set, get) => ({
     // Note: Don't reset agentFloor/agentSide - let agent_action events update them
   }),
 
-  resetAgent: () => set({
-    agentFloor: 1,
-    agentSide: 'front',
-    hasPackage: false,
-    isThinking: false,
-    currentPackage: null,
-    deliveryStatus: 'idle',
-    deliverySteps: 0,
-    actions: [],
-  }),
+  resetAgent: () => {
+    const state = get();
+    const initialSide = state.difficulty === 'medium' ? 'building_a' :
+                        state.difficulty === 'hard' ? 'street' : 'front';
+    set({
+      agentFloor: 1,
+      agentSide: initialSide,
+      hasPackage: false,
+      isThinking: false,
+      currentPackage: null,
+      deliveryStatus: 'idle',
+      deliverySteps: 0,
+      actions: [],
+      // Reset hard mode grid state
+      agentGridRow: 0,
+      agentGridCol: 0,
+      agentCurrentBuilding: null,
+    });
+  },
 
   resetStats: () => {
     const state = get();
@@ -305,7 +337,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   resetHistory: () => {
     const state = get();
     const currentDifficulty = state.difficulty;
-    const initialSide = currentDifficulty === 'medium' ? 'building_a' : 'front';
+    const initialSide = currentDifficulty === 'medium' ? 'building_a' :
+                        currentDifficulty === 'hard' ? 'street' : 'front';
 
     set({
       statsByDifficulty: {
@@ -321,6 +354,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       agentFloor: 1,
       agentSide: initialSide,
       hasPackage: false,
+      // Reset hard mode grid state
+      agentGridRow: 0,
+      agentGridCol: 0,
+      agentCurrentBuilding: null,
     });
   },
 
@@ -336,11 +373,21 @@ export const useGameStore = create<GameState>((set, get) => ({
     agentFloor: 1,
     agentSide: 'front',
     hasPackage: false,
+    // Reset hard mode grid state
+    agentGridRow: 0,
+    agentGridCol: 0,
+    agentCurrentBuilding: null,
   }),
 
   setAgentPosition: (floor, side) => set({
     agentFloor: floor,
     agentSide: side,
+  }),
+
+  setAgentGridPosition: (row, col, building) => set({
+    agentGridRow: row,
+    agentGridCol: col,
+    agentCurrentBuilding: building,
   }),
 
   setMode: (mode) => set({ mode }),
@@ -353,7 +400,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     const state = get();
     const difficultyHistory = state.statsByDifficulty[difficulty].history;
     const stats = computeStats(difficultyHistory);
-    const initialSide = difficulty === 'medium' ? 'building_a' : 'front';
+    const initialSide = difficulty === 'medium' ? 'building_a' :
+                        difficulty === 'hard' ? 'street' : 'front';
 
     set({
       difficulty,
@@ -368,6 +416,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       agentSide: initialSide,
       hasPackage: false,
       memoryReflect: null,
+      // Reset hard mode grid state
+      agentGridRow: 0,
+      agentGridCol: 0,
+      agentCurrentBuilding: null,
     });
   },
 }));

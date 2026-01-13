@@ -6,7 +6,7 @@ the building and gathering information.
 """
 
 from typing import Callable
-from building import Building, Side, AgentState, get_building
+from building import Building, Side, AgentState, get_building, CITY_GRID, CITY_GRID_ROWS, CITY_GRID_COLS
 
 
 class AgentTools:
@@ -35,25 +35,105 @@ class AgentTools:
         return result
 
     def go_up(self) -> str:
-        """Move up one floor via the elevator. Ends up in the middle (elevator area)."""
+        """Move up one floor via the elevator."""
+        # Hard mode: city grid - must be inside a building
+        if self.building.is_city_grid:
+            if not self.state.current_building:
+                result = "Cannot use elevator on the street. Enter a building first."
+                return self._record_action("go_up", result)
+
+            city_building = self.building.city_grid.get_building_by_name(self.state.current_building)
+            if not city_building:
+                result = "Building not found."
+                return self._record_action("go_up", result)
+
+            if self.state.floor >= city_building.max_floor:
+                result = f"Cannot go up. Already at the top floor (Floor {self.state.floor})."
+                return self._record_action("go_up", result)
+
+            self.state.floor += 1
+            floors_remaining = city_building.max_floor - self.state.floor
+            business = city_building.get_business(self.state.floor)
+            dept_name = business.name if business else "unknown"
+            if floors_remaining > 0:
+                result = f"Took elevator up to Floor {self.state.floor} in {self.state.current_building}. Now at {dept_name}. You can go up {floors_remaining} more floor(s)."
+            else:
+                result = f"Took elevator up to Floor {self.state.floor} in {self.state.current_building}. Now at {dept_name}. This is the top floor."
+            return self._record_action("go_up", result)
+
+        # Easy/Medium mode
         if self.state.floor >= self.building.max_floor:
             result = f"Cannot go up. Already at the top floor (Floor {self.state.floor})."
             return self._record_action("go_up", result)
 
         self.state.floor += 1
-        self.state.side = Side.MIDDLE  # Elevator deposits in the middle
-        result = f"Took elevator up to Floor {self.state.floor}. Now in the middle hallway."
+        floors_remaining_up = self.building.max_floor - self.state.floor
+        if self.building.is_multi_building:
+            # Multi-building: stay in current building, just change floor
+            building_letter = self.state.side.value.replace("building_", "").upper()
+            business = self.building.get_business(self.state.floor, self.state.side)
+            biz_name = business.name if business else "unknown"
+            if floors_remaining_up > 0:
+                result = f"Took elevator up to Floor {self.state.floor} in Building {building_letter}. Now at {biz_name}. You can go up {floors_remaining_up} more floor(s)."
+            else:
+                result = f"Took elevator up to Floor {self.state.floor} in Building {building_letter}. Now at {biz_name}. This is the top floor."
+        else:
+            self.state.side = Side.MIDDLE  # Elevator deposits in the middle
+            if floors_remaining_up > 0:
+                result = f"Took elevator up to Floor {self.state.floor}. Now in the middle hallway. You can go up {floors_remaining_up} more floor(s)."
+            else:
+                result = f"Took elevator up to Floor {self.state.floor}. Now in the middle hallway. This is the top floor."
         return self._record_action("go_up", result)
 
     def go_down(self) -> str:
-        """Move down one floor via the elevator. Ends up in the middle (elevator area)."""
+        """Move down one floor via the elevator."""
+        # Hard mode: city grid - must be inside a building
+        if self.building.is_city_grid:
+            if not self.state.current_building:
+                result = "Cannot use elevator on the street. Enter a building first."
+                return self._record_action("go_down", result)
+
+            city_building = self.building.city_grid.get_building_by_name(self.state.current_building)
+            if not city_building:
+                result = "Building not found."
+                return self._record_action("go_down", result)
+
+            if self.state.floor <= city_building.min_floor:
+                result = f"Cannot go down. Already at the ground floor (Floor {self.state.floor})."
+                return self._record_action("go_down", result)
+
+            self.state.floor -= 1
+            floors_remaining = self.state.floor - city_building.min_floor
+            business = city_building.get_business(self.state.floor)
+            dept_name = business.name if business else "unknown"
+            if floors_remaining > 0:
+                result = f"Took elevator down to Floor {self.state.floor} in {self.state.current_building}. Now at {dept_name}. You can go down {floors_remaining} more floor(s)."
+            else:
+                result = f"Took elevator down to Floor {self.state.floor} in {self.state.current_building}. Now at {dept_name}. This is the ground floor."
+            return self._record_action("go_down", result)
+
+        # Easy/Medium mode
         if self.state.floor <= self.building.min_floor:
             result = f"Cannot go down. Already at the bottom floor (Floor {self.state.floor})."
             return self._record_action("go_down", result)
 
         self.state.floor -= 1
-        self.state.side = Side.MIDDLE  # Elevator deposits in the middle
-        result = f"Took elevator down to Floor {self.state.floor}. Now in the middle hallway."
+        floors_remaining_down = self.state.floor - self.building.min_floor
+        if self.building.is_multi_building:
+            # Multi-building: stay in current building, just change floor
+            building_letter = self.state.side.value.replace("building_", "").upper()
+            business = self.building.get_business(self.state.floor, self.state.side)
+            biz_name = business.name if business else "unknown"
+            if floors_remaining_down > 0:
+                result = f"Took elevator down to Floor {self.state.floor} in Building {building_letter}. Now at {biz_name}. You can go down {floors_remaining_down} more floor(s)."
+            else:
+                result = f"Took elevator down to Floor {self.state.floor} in Building {building_letter}. Now at {biz_name}. This is the ground floor."
+        else:
+            self.state.side = Side.MIDDLE  # Elevator deposits in the middle
+            if floors_remaining_down > 0:
+                result = f"Took elevator down to Floor {self.state.floor}. Now in the middle hallway. You can go down {floors_remaining_down} more floor(s)."
+            else:
+                result = f"Took elevator down to Floor {self.state.floor}. Now in the middle hallway. This is the ground floor."
         return self._record_action("go_down", result)
 
     def go_to_front(self) -> str:
@@ -144,8 +224,159 @@ class AgentTools:
         result = f"Walked through ground passage to Building {target_building.upper()}. Now at {biz_name} on Floor 1."
         return self._record_action("go_to_building", result)
 
+    # Hard mode tools - city grid navigation
+
+    def _get_building_at_position(self):
+        """Get the building name at current grid position."""
+        return CITY_GRID.get((self.state.grid_row, self.state.grid_col))
+
+    def _get_adjacent_info(self) -> str:
+        """Get info about adjacent buildings."""
+        adjacent = []
+        if self.state.grid_row > 0:
+            north = CITY_GRID.get((self.state.grid_row - 1, self.state.grid_col))
+            if north:
+                adjacent.append(f"North: {north}")
+        if self.state.grid_row < CITY_GRID_ROWS - 1:
+            south = CITY_GRID.get((self.state.grid_row + 1, self.state.grid_col))
+            if south:
+                adjacent.append(f"South: {south}")
+        if self.state.grid_col > 0:
+            west = CITY_GRID.get((self.state.grid_row, self.state.grid_col - 1))
+            if west:
+                adjacent.append(f"West: {west}")
+        if self.state.grid_col < CITY_GRID_COLS - 1:
+            east = CITY_GRID.get((self.state.grid_row, self.state.grid_col + 1))
+            if east:
+                adjacent.append(f"East: {east}")
+        return ". ".join(adjacent) if adjacent else "No adjacent buildings"
+
+    def move_north(self) -> str:
+        """Move north on the city grid (toward row 0)."""
+        if self.state.current_building:
+            result = f"Cannot move on street while inside {self.state.current_building}. Exit the building first."
+            return self._record_action("move_north", result)
+
+        if self.state.grid_row <= 0:
+            result = "Cannot move north. Already at the edge of the city."
+            return self._record_action("move_north", result)
+
+        self.state.grid_row -= 1
+        building_name = self._get_building_at_position()
+        result = f"Moved north. Now at {building_name}. {self._get_adjacent_info()}"
+        return self._record_action("move_north", result)
+
+    def move_south(self) -> str:
+        """Move south on the city grid (toward higher rows)."""
+        if self.state.current_building:
+            result = f"Cannot move on street while inside {self.state.current_building}. Exit the building first."
+            return self._record_action("move_south", result)
+
+        if self.state.grid_row >= CITY_GRID_ROWS - 1:
+            result = "Cannot move south. Already at the edge of the city."
+            return self._record_action("move_south", result)
+
+        self.state.grid_row += 1
+        building_name = self._get_building_at_position()
+        result = f"Moved south. Now at {building_name}. {self._get_adjacent_info()}"
+        return self._record_action("move_south", result)
+
+    def move_east(self) -> str:
+        """Move east on the city grid (toward higher columns)."""
+        if self.state.current_building:
+            result = f"Cannot move on street while inside {self.state.current_building}. Exit the building first."
+            return self._record_action("move_east", result)
+
+        if self.state.grid_col >= CITY_GRID_COLS - 1:
+            result = "Cannot move east. Already at the edge of the city."
+            return self._record_action("move_east", result)
+
+        self.state.grid_col += 1
+        building_name = self._get_building_at_position()
+        result = f"Moved east. Now at {building_name}. {self._get_adjacent_info()}"
+        return self._record_action("move_east", result)
+
+    def move_west(self) -> str:
+        """Move west on the city grid (toward column 0)."""
+        if self.state.current_building:
+            result = f"Cannot move on street while inside {self.state.current_building}. Exit the building first."
+            return self._record_action("move_west", result)
+
+        if self.state.grid_col <= 0:
+            result = "Cannot move west. Already at the edge of the city."
+            return self._record_action("move_west", result)
+
+        self.state.grid_col -= 1
+        building_name = self._get_building_at_position()
+        result = f"Moved west. Now at {building_name}. {self._get_adjacent_info()}"
+        return self._record_action("move_west", result)
+
+    def enter_building(self) -> str:
+        """Enter the building at current city grid position."""
+        if self.state.current_building:
+            result = f"Already inside {self.state.current_building}. Exit first to enter a different building."
+            return self._record_action("enter_building", result)
+
+        building_name = self._get_building_at_position()
+        if not building_name:
+            result = "No building at this location to enter."
+            return self._record_action("enter_building", result)
+
+        self.state.current_building = building_name
+        self.state.floor = 1
+        self.state.side = Side.INSIDE
+
+        # Get the business on floor 1
+        city_building = self.building.city_grid.get_building_by_name(building_name)
+        if city_building:
+            business = city_building.get_business(1)
+            dept_name = business.name if business else "Lobby"
+        else:
+            dept_name = "Lobby"
+
+        result = f"Entered {building_name}. Now on Floor 1 at {dept_name}. This building has 5 floors."
+        return self._record_action("enter_building", result)
+
+    def exit_building(self) -> str:
+        """Exit the current building back to the street."""
+        if not self.state.current_building:
+            result = "Not inside any building. Already on the street."
+            return self._record_action("exit_building", result)
+
+        building_name = self.state.current_building
+        self.state.current_building = None
+        self.state.floor = 1
+        self.state.side = Side.STREET
+
+        result = f"Exited {building_name}. Now on the street. {self._get_adjacent_info()}"
+        return self._record_action("exit_building", result)
+
     def get_employee_list(self) -> str:
         """Get the list of employees at the current business."""
+        # Hard mode: city grid
+        if self.building.is_city_grid:
+            if not self.state.current_building:
+                result = "You're on the street. Enter a building to see employees."
+                return self._record_action("get_employee_list", result)
+
+            city_building = self.building.city_grid.get_building_by_name(self.state.current_building)
+            if not city_building:
+                result = "Building not found."
+                return self._record_action("get_employee_list", result)
+
+            business = city_building.get_business(self.state.floor)
+            if not business or not business.employees:
+                result = f"No employees listed on Floor {self.state.floor}."
+                return self._record_action("get_employee_list", result)
+
+            employee_list = "\n".join([
+                f"  - {emp.name} ({emp.role})"
+                for emp in business.employees
+            ])
+            result = f"Employees at {business.name} (Floor {self.state.floor}, {self.state.current_building}):\n{employee_list}"
+            return self._record_action("get_employee_list", result)
+
+        # Easy/Medium mode
         if self.state.side == Side.MIDDLE:
             if self.building.is_multi_building:
                 result = "You're in the elevator area. Go to a building to see employees."
@@ -180,18 +411,49 @@ class AgentTools:
             result = "No package to deliver."
             return self._record_action("deliver_package", result)
 
-        if self.state.side == Side.MIDDLE:
-            if self.building.is_multi_building:
-                result = "FAILED: You're in the elevator area. Go to a building to deliver."
-            else:
-                result = "FAILED: You're in the middle hallway. Go to the front or back side to deliver."
-            return self._record_action("deliver_package", result)
-
         pkg = self.state.current_package
 
         # Verify the agent is delivering to the correct recipient (the one on the package)
         if recipient_name.lower() != pkg.recipient_name.lower():
             result = f"FAILED: Package is addressed to {pkg.recipient_name}, not {recipient_name}. Check the package details."
+            return self._record_action("deliver_package", result)
+
+        # Hard mode: city grid
+        if self.building.is_city_grid:
+            if not self.state.current_building:
+                result = "FAILED: You're on the street. Enter a building to deliver."
+                return self._record_action("deliver_package", result)
+
+            city_building = self.building.city_grid.get_building_by_name(self.state.current_building)
+            if not city_building:
+                result = "FAILED: Building not found."
+                return self._record_action("deliver_package", result)
+
+            business = city_building.get_business(self.state.floor)
+            if not business:
+                result = "FAILED: No business at this location to deliver to."
+                return self._record_action("deliver_package", result)
+
+            recipient_found = any(
+                emp.name.lower() == recipient_name.lower()
+                for emp in business.employees
+            )
+
+            if recipient_found:
+                self.state.packages_delivered += 1
+                self.state.current_package = None
+                result = f"SUCCESS! Package #{pkg.id} delivered to {recipient_name} at {business.name} in {self.state.current_building}!"
+                return self._record_action("deliver_package", result)
+            else:
+                result = f"FAILED: {recipient_name} does not work at {business.name}. Try another floor or building."
+                return self._record_action("deliver_package", result)
+
+        # Easy/Medium mode
+        if self.state.side == Side.MIDDLE:
+            if self.building.is_multi_building:
+                result = "FAILED: You're in the elevator area. Go to a building to deliver."
+            else:
+                result = "FAILED: You're in the middle hallway. Go to the front or back side to deliver."
             return self._record_action("deliver_package", result)
 
         business = self.building.get_business(self.state.floor, self.state.side)
@@ -216,6 +478,24 @@ class AgentTools:
 
     def check_current_location(self) -> str:
         """Check the agent's current location in the building."""
+        # Hard mode: city grid
+        if self.building.is_city_grid:
+            if self.state.current_building:
+                city_building = self.building.city_grid.get_building_by_name(self.state.current_building)
+                if city_building:
+                    business = city_building.get_business(self.state.floor)
+                    dept_name = business.name if business else "unknown"
+                    floors_up = city_building.max_floor - self.state.floor
+                    floors_down = self.state.floor - city_building.min_floor
+                    result = f"Current location: Inside {self.state.current_building}, Floor {self.state.floor}, at {dept_name}. Can go up {floors_up} floor(s), down {floors_down} floor(s)."
+                else:
+                    result = f"Current location: Inside {self.state.current_building}, Floor {self.state.floor}"
+            else:
+                building_name = self._get_building_at_position()
+                result = f"Current location: On the street at {building_name} (row {self.state.grid_row}, col {self.state.grid_col}). {self._get_adjacent_info()}"
+            return self._record_action("check_current_location", result)
+
+        # Easy/Medium mode
         if self.state.side == Side.MIDDLE:
             if self.building.is_multi_building:
                 result = f"Current location: Floor {self.state.floor}, elevator area."
@@ -349,6 +629,58 @@ _MEDIUM_TOOLS = [
     },
 ]
 
+# Hard mode tools - city grid navigation
+_HARD_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "move_north",
+            "description": "Move north on the city grid to the adjacent building.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_south",
+            "description": "Move south on the city grid to the adjacent building.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_east",
+            "description": "Move east on the city grid to the adjacent building.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_west",
+            "description": "Move west on the city grid to the adjacent building.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "enter_building",
+            "description": "Enter the building you are standing in front of.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exit_building",
+            "description": "Exit the current building and return to the street.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+]
+
 # Tool definitions for LLM function calling - legacy (easy mode)
 TOOL_DEFINITIONS = _COMMON_TOOLS + _EASY_TOOLS
 
@@ -357,7 +689,9 @@ def get_tool_definitions(difficulty: str = "easy") -> list:
     """Get the tool definitions for a specific difficulty level."""
     if difficulty == "medium":
         return _COMMON_TOOLS + _MEDIUM_TOOLS
-    # Easy and hard use front/back navigation
+    if difficulty == "hard":
+        return _COMMON_TOOLS + _HARD_TOOLS
+    # Easy uses front/back navigation
     return _COMMON_TOOLS + _EASY_TOOLS
 
 
@@ -382,5 +716,18 @@ def execute_tool(tools: AgentTools, tool_name: str, arguments: dict) -> str:
         return tools.deliver_package(arguments.get("recipient_name", ""))
     elif tool_name == "check_current_location":
         return tools.check_current_location()
+    # Hard mode tools
+    elif tool_name == "move_north":
+        return tools.move_north()
+    elif tool_name == "move_south":
+        return tools.move_south()
+    elif tool_name == "move_east":
+        return tools.move_east()
+    elif tool_name == "move_west":
+        return tools.move_west()
+    elif tool_name == "enter_building":
+        return tools.enter_building()
+    elif tool_name == "exit_building":
+        return tools.exit_building()
     else:
         return f"Unknown tool: {tool_name}"

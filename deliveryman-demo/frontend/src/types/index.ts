@@ -1,7 +1,8 @@
 // Side types
-// 'front' | 'back' | 'middle' for easy/hard mode
+// 'front' | 'back' | 'middle' for easy mode and hard mode building interiors
 // 'building_a' | 'building_b' | 'building_c' for medium mode
-export type Side = 'front' | 'back' | 'middle' | 'building_a' | 'building_b' | 'building_c';
+// 'street' for hard mode city grid navigation
+export type Side = 'front' | 'back' | 'middle' | 'building_a' | 'building_b' | 'building_c' | 'street';
 
 // Employee
 export interface Employee {
@@ -62,6 +63,10 @@ export interface ActionEntry {
   llmDetails?: {
     toolCalls: { name: string; arguments: string }[];
   };
+  // Hard mode city grid fields
+  gridRow?: number;
+  gridCol?: number;
+  currentBuilding?: string | null;
 }
 
 // Delivery result for history

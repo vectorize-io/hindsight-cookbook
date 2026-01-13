@@ -113,11 +113,14 @@ async def run_delivery(
     ensure_bank_exists()
 
     # Set up agent state - starting position depends on difficulty
-    if building.is_multi_building:
+    if building.is_city_grid:
+        # Hard mode: start on street at grid position (0, 0)
+        agent_state = AgentState(floor=1, side=Side.STREET, grid_row=0, grid_col=0, current_building=None)
+    elif building.is_multi_building:
         # Medium mode: start at Building A, Floor 1
         agent_state = AgentState(floor=1, side=Side.BUILDING_A)
     else:
-        # Easy/Hard mode: start at Floor 1, Front
+        # Easy mode: start at Floor 1, Front
         agent_state = AgentState(floor=1, side=Side.FRONT)
     agent_state.current_package = package
 
@@ -208,7 +211,7 @@ async def run_delivery(
                     })
 
                     # Send action event
-                    await websocket.send_json(event(EventType.AGENT_ACTION, {
+                    action_payload = {
                         "step": agent_state.steps_taken,
                         "toolName": tool_name,
                         "toolArgs": arguments,
@@ -217,7 +220,13 @@ async def run_delivery(
                         "floor": agent_state.floor,
                         "side": agent_state.side.value,
                         "timing": timing,
-                    }))
+                    }
+                    # Add hard mode grid position if available
+                    if hasattr(agent_state, 'grid_row'):
+                        action_payload["gridRow"] = agent_state.grid_row
+                        action_payload["gridCol"] = agent_state.grid_col
+                        action_payload["currentBuilding"] = agent_state.current_building
+                    await websocket.send_json(event(EventType.AGENT_ACTION, action_payload))
 
                     await asyncio.sleep(0.1)
 
@@ -252,7 +261,7 @@ async def run_delivery(
             else:
                 # No tool calls - nudge to use tools
                 if message.content:
-                    await websocket.send_json(event(EventType.AGENT_ACTION, {
+                    action_payload = {
                         "step": agent_state.steps_taken,
                         "toolName": "response",
                         "toolArgs": {},
@@ -260,7 +269,13 @@ async def run_delivery(
                         "floor": agent_state.floor,
                         "side": agent_state.side.value,
                         "timing": timing,
-                    }))
+                    }
+                    # Add hard mode grid position if available
+                    if hasattr(agent_state, 'grid_row'):
+                        action_payload["gridRow"] = agent_state.grid_row
+                        action_payload["gridCol"] = agent_state.grid_col
+                        action_payload["currentBuilding"] = agent_state.current_building
+                    await websocket.send_json(event(EventType.AGENT_ACTION, action_payload))
                 messages.append({"role": "assistant", "content": message.content})
                 messages.append({"role": "user", "content": "Use the available tools to complete the delivery."})
 

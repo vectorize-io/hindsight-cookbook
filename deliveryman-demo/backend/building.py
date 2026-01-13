@@ -16,6 +16,7 @@ class Side(Enum):
 
     For easy mode: FRONT/BACK sides of a single building
     For medium mode: BUILDING_A/BUILDING_B/BUILDING_C (3 separate buildings)
+    For hard mode: STREET (on city grid) or INSIDE (inside a building)
     """
     FRONT = "front"
     BACK = "back"
@@ -24,6 +25,9 @@ class Side(Enum):
     BUILDING_A = "building_a"
     BUILDING_B = "building_b"
     BUILDING_C = "building_c"
+    # Hard difficulty: city grid
+    STREET = "street"  # On the street, not inside a building
+    INSIDE = "inside"  # Inside a building
 
 
 @dataclass
@@ -66,24 +70,165 @@ class AgentState:
     packages_delivered: int = 0
     steps_taken: int = 0
     current_package: Optional[Package] = None
+    # Hard mode: city grid position
+    grid_row: int = 0  # Row in city grid (0 = top)
+    grid_col: int = 0  # Column in city grid (0 = left)
+    current_building: Optional[str] = None  # Name of building agent is inside (None if on street)
 
     def position_str(self) -> str:
+        if self.current_building:
+            return f"Inside {self.current_building}, Floor {self.floor}"
+        elif self.side == Side.STREET:
+            return f"On street at ({self.grid_row}, {self.grid_col})"
         return f"Floor {self.floor}, {self.side.value} side"
+
+
+class CityBuilding:
+    """A single building in the city grid (for hard mode)."""
+
+    def __init__(self, name: str, row: int, col: int, floors_data: list):
+        self.name = name
+        self.row = row
+        self.col = col
+        self.floors: dict[int, Business] = {}
+        self.all_employees: dict[str, tuple[Business, Employee]] = {}
+
+        # Build floors from data: [(floor_num, dept_name, [(emp_name, role), ...]), ...]
+        for floor_num, dept_name, employees_data in floors_data:
+            employees = [Employee(name=name, role=role) for name, role in employees_data]
+            business = Business(
+                name=dept_name,
+                floor=floor_num,
+                side=Side.INSIDE,
+                employees=employees
+            )
+            self.floors[floor_num] = business
+            for emp in employees:
+                self.all_employees[emp.name] = (business, emp)
+
+    @property
+    def num_floors(self) -> int:
+        return len(self.floors)
+
+    @property
+    def min_floor(self) -> int:
+        return min(self.floors.keys()) if self.floors else 1
+
+    @property
+    def max_floor(self) -> int:
+        return max(self.floors.keys()) if self.floors else 1
+
+    def get_business(self, floor: int) -> Optional[Business]:
+        return self.floors.get(floor)
+
+    def find_employee(self, name: str) -> Optional[tuple[Business, Employee]]:
+        return self.all_employees.get(name)
+
+
+class CityGrid:
+    """City grid for hard mode - contains multiple buildings."""
+
+    def __init__(self):
+        self.rows = CITY_GRID_ROWS
+        self.cols = CITY_GRID_COLS
+        self.buildings: dict[str, CityBuilding] = {}
+        self.grid: dict[tuple[int, int], CityBuilding] = {}
+        self.all_employees: dict[str, tuple[str, Business, Employee]] = {}  # emp_name -> (building_name, business, emp)
+        self._setup_city()
+
+    def _setup_city(self):
+        """Initialize the city with buildings."""
+        for (row, col), building_name in CITY_GRID.items():
+            floors_data = CITY_BUILDINGS_DATA.get(building_name, [])
+            building = CityBuilding(building_name, row, col, floors_data)
+            self.buildings[building_name] = building
+            self.grid[(row, col)] = building
+            # Index all employees with building reference
+            for emp_name, (business, emp) in building.all_employees.items():
+                self.all_employees[emp_name] = (building_name, business, emp)
+
+    def get_building_at(self, row: int, col: int) -> Optional[CityBuilding]:
+        """Get the building at a grid position."""
+        return self.grid.get((row, col))
+
+    def get_building_by_name(self, name: str) -> Optional[CityBuilding]:
+        """Get a building by name."""
+        return self.buildings.get(name)
+
+    def find_employee(self, name: str) -> Optional[tuple[str, Business, Employee]]:
+        """Find an employee anywhere in the city. Returns (building_name, business, employee)."""
+        return self.all_employees.get(name)
+
+    def get_adjacent_buildings(self, row: int, col: int) -> dict[str, Optional[str]]:
+        """Get building names in adjacent directions."""
+        adjacent = {}
+        if row > 0:
+            b = self.get_building_at(row - 1, col)
+            adjacent["north"] = b.name if b else None
+        else:
+            adjacent["north"] = None
+        if row < self.rows - 1:
+            b = self.get_building_at(row + 1, col)
+            adjacent["south"] = b.name if b else None
+        else:
+            adjacent["south"] = None
+        if col > 0:
+            b = self.get_building_at(row, col - 1)
+            adjacent["west"] = b.name if b else None
+        else:
+            adjacent["west"] = None
+        if col < self.cols - 1:
+            b = self.get_building_at(row, col + 1)
+            adjacent["east"] = b.name if b else None
+        else:
+            adjacent["east"] = None
+        return adjacent
+
+    def generate_package(self, include_business: bool = None) -> Package:
+        """Generate a random package for delivery."""
+        emp_name = random.choice(list(self.all_employees.keys()))
+        building_name, business, employee = self.all_employees[emp_name]
+
+        if include_business is None:
+            include_business = random.choice([True, False])
+
+        package_id = f"{random.randint(1000, 9999)}"
+        # For hard mode, business_name includes the building
+        if include_business:
+            business_str = f"{business.name} at {building_name}"
+        else:
+            business_str = None
+
+        return Package(
+            id=package_id,
+            recipient_name=employee.name,
+            business_name=business_str
+        )
 
 
 class Building:
     """
     A building with multiple floors, each with two businesses (front and back).
+    For hard mode, this wraps a CityGrid instead.
     """
 
     def __init__(self, difficulty: str = "easy"):
         self.difficulty = difficulty
         self.floors: dict[int, dict[Side, Business]] = {}
         self.all_employees: dict[str, tuple[Business, Employee]] = {}
+        self.city_grid: Optional[CityGrid] = None  # Only for hard mode
         self._setup_building()
 
     def _setup_building(self):
         """Initialize the building with businesses and employees."""
+        # Hard mode uses city grid instead
+        if self.difficulty == "hard":
+            self.city_grid = CityGrid()
+            # Copy all employees to building-level for compatibility
+            for emp_name, (building_name, business, emp) in self.city_grid.all_employees.items():
+                self.all_employees[emp_name] = (business, emp)
+            return
+
         building_data = BUILDING_DATA.get(self.difficulty, BUILDING_DATA["easy"])
 
         for floor_num, side, business_name, employees_data in building_data:
@@ -105,15 +250,21 @@ class Building:
 
     @property
     def num_floors(self) -> int:
+        if self.is_city_grid:
+            return 5  # All city buildings have 5 floors
         return len(self.floors)
 
     @property
     def min_floor(self) -> int:
-        return min(self.floors.keys())
+        if self.is_city_grid:
+            return 1
+        return min(self.floors.keys()) if self.floors else 1
 
     @property
     def max_floor(self) -> int:
-        return max(self.floors.keys())
+        if self.is_city_grid:
+            return 5
+        return max(self.floors.keys()) if self.floors else 1
 
     @property
     def is_multi_building(self) -> bool:
@@ -121,8 +272,15 @@ class Building:
         return self.difficulty == "medium"
 
     @property
+    def is_city_grid(self) -> bool:
+        """Check if this is a city grid layout (hard difficulty)."""
+        return self.difficulty == "hard" and self.city_grid is not None
+
+    @property
     def available_positions(self) -> list[Side]:
         """Get the available side/building positions for this difficulty."""
+        if self.is_city_grid:
+            return [Side.STREET, Side.INSIDE]
         if self.is_multi_building:
             return [Side.BUILDING_A, Side.BUILDING_B, Side.BUILDING_C]
         return [Side.FRONT, Side.BACK]
@@ -154,6 +312,10 @@ class Building:
 
     def generate_package(self, include_business: bool = None) -> Package:
         """Generate a random package for delivery."""
+        # Hard mode uses city_grid to generate packages
+        if self.is_city_grid:
+            return self.city_grid.generate_package(include_business)
+
         # Pick a random employee
         emp_name = random.choice(list(self.all_employees.keys()))
         business, employee = self.all_employees[emp_name]
@@ -314,91 +476,121 @@ BUILDING_DATA = {
             ("Kevin O'Brien", "Recruiter"),
         ]),
     ],
-    "hard": [
-        # Floor 1 - Main Entrance
-        (1, Side.FRONT, "Reception Hall", [
-            ("Jorge Ramirez", "Head Receptionist"),
-            ("Priya Sharma", "Guest Services"),
-            ("Michael Okonkwo", "Doorman"),
-        ]),
-        (1, Side.BACK, "Package Center", [
-            ("Hannah Schmidt", "Logistics Coordinator"),
-            ("Darius Jackson", "Package Clerk"),
-            ("Yuki Tanaka", "Inventory Manager"),
-        ]),
-        # Floor 2 - Administrative
-        (2, Side.FRONT, "Administration", [
-            ("Catherine Bell", "Admin Director"),
-            ("Ryan Murphy", "Office Manager"),
-            ("Fatima Al-Hassan", "Executive Secretary"),
-            ("Sean O'Connor", "Facilities Coordinator"),
-        ]),
-        (2, Side.BACK, "IT Support", [
-            ("Brandon Lee", "IT Manager"),
-            ("Zoe Anderson", "Help Desk Lead"),
-            ("Raj Gupta", "System Administrator"),
-        ]),
-        # Floor 3 - Creative
-        (3, Side.FRONT, "Advertising Agency", [
-            ("Monica Reyes", "Creative Director"),
-            ("Jason Park", "Art Director"),
-            ("Stephanie Collins", "Copywriter"),
-            ("Andre Williams", "Media Buyer"),
-        ]),
-        (3, Side.BACK, "Photography Studio", [
-            ("Natasha Volkov", "Lead Photographer"),
-            ("Marcus Thompson", "Photo Editor"),
-            ("Chelsea Green", "Studio Assistant"),
-        ]),
-        # Floor 4 - Professional Services
-        (4, Side.FRONT, "Law Firm", [
-            ("Richard Goldstein", "Senior Partner"),
-            ("Victoria Chang", "Associate Attorney"),
-            ("Daniel Martinez", "Paralegal"),
-            ("Rebecca Hughes", "Legal Secretary"),
-        ]),
-        (4, Side.BACK, "Consulting Group", [
-            ("Alexandra Foster", "Managing Consultant"),
-            ("Thomas Wright", "Strategy Analyst"),
-            ("Jennifer Liu", "Business Analyst"),
-        ]),
-        # Floor 5 - Technology
-        (5, Side.FRONT, "Software Company", [
-            ("David Kim", "CTO"),
-            ("Emily Watson", "Product Manager"),
-            ("Christopher Lee", "Senior Developer"),
-            ("Amanda Brown", "QA Lead"),
-            ("Nicholas Chen", "Junior Developer"),
-        ]),
-        (5, Side.BACK, "Data Science Lab", [
-            ("Sarah Johnson", "Data Science Director"),
-            ("Kevin Patel", "Machine Learning Engineer"),
-            ("Laura Garcia", "Data Analyst"),
-        ]),
-        # Floor 6 - Media
-        (6, Side.FRONT, "News Station", [
-            ("James Morrison", "News Director"),
-            ("Angela Davis", "Anchor"),
-            ("Robert Taylor", "Producer"),
-            ("Michelle Wong", "Reporter"),
-        ]),
-        (6, Side.BACK, "Podcast Studio", [
-            ("Brian O'Neill", "Studio Manager"),
-            ("Jessica Kim", "Audio Engineer"),
-            ("Mark Stevens", "Host"),
-        ]),
-        # Floor 7 - Executive
-        (7, Side.FRONT, "Corporate Headquarters", [
-            ("Elizabeth Blackwell", "CEO"),
-            ("Jonathan Pierce", "President"),
-            ("Margaret Chen", "Board Secretary"),
-            ("Douglas Hamilton", "Chief of Staff"),
-        ]),
-        (7, Side.BACK, "Investor Relations", [
-            ("Katherine Ross", "IR Director"),
-            ("Paul Anderson", "Financial Analyst"),
-            ("Linda Martinez", "Communications Manager"),
-        ]),
+    # Hard mode uses CITY_GRID_DATA instead (see below)
+    "hard": [],
+}
+
+# Hard mode: City grid with 12 buildings, each with 5 floors
+# Grid layout (4 columns x 3 rows):
+#   Row 0: Tech Corp, City Bank, Law Office, Medical
+#   Row 1: Real Estate, News Studio, Accounting, Insurance Co
+#   Row 2: Marketing, Consulting, Engineering, Data Center
+
+CITY_GRID = {
+    # (row, col): building_name
+    (0, 0): "Tech Corp",
+    (0, 1): "City Bank",
+    (0, 2): "Law Office",
+    (0, 3): "Medical",
+    (1, 0): "Real Estate",
+    (1, 1): "News Studio",
+    (1, 2): "Accounting",
+    (1, 3): "Insurance Co",
+    (2, 0): "Marketing",
+    (2, 1): "Consulting",
+    (2, 2): "Engineering",
+    (2, 3): "Data Center",
+}
+
+CITY_GRID_ROWS = 3
+CITY_GRID_COLS = 4
+
+# Each building has 5 floors with employees
+# Format: building_name -> [(floor, department_name, [(employee_name, role), ...]), ...]
+CITY_BUILDINGS_DATA = {
+    "Tech Corp": [
+        (1, "Lobby", [("Amy Chen", "Receptionist"), ("Mike Ross", "Security")]),
+        (2, "Engineering", [("David Kim", "CTO"), ("Sarah Lee", "Senior Engineer")]),
+        (3, "Product", [("Emily Watson", "Product Manager"), ("Chris Park", "Designer")]),
+        (4, "QA", [("Amanda Brown", "QA Lead"), ("Tom Chen", "QA Engineer")]),
+        (5, "Executive", [("James Wilson", "CEO"), ("Lisa Wang", "CFO")]),
+    ],
+    "City Bank": [
+        (1, "Teller Hall", [("Maria Garcia", "Head Teller"), ("John Smith", "Teller")]),
+        (2, "Loans", [("Robert Johnson", "Loan Officer"), ("Patricia White", "Analyst")]),
+        (3, "Investments", [("Michael Brown", "Investment Advisor"), ("Jennifer Lee", "Trader")]),
+        (4, "Compliance", [("William Davis", "Compliance Officer"), ("Elizabeth Moore", "Auditor")]),
+        (5, "Management", [("Richard Taylor", "Branch Manager"), ("Susan Anderson", "VP Operations")]),
+    ],
+    "Law Office": [
+        (1, "Reception", [("Nancy Drew", "Legal Secretary"), ("Frank Hardy", "Paralegal")]),
+        (2, "Family Law", [("Victoria Chang", "Family Attorney"), ("Daniel Martinez", "Associate")]),
+        (3, "Corporate", [("Richard Goldstein", "Corporate Partner"), ("Rachel Green", "Associate")]),
+        (4, "Criminal", [("Harvey Specter", "Criminal Defense"), ("Mike Ross", "Associate")]),
+        (5, "Partners", [("Jessica Pearson", "Managing Partner"), ("Louis Litt", "Senior Partner")]),
+    ],
+    "Medical": [
+        (1, "Admissions", [("Grace Kim", "Admin Coordinator"), ("Henry Park", "Records Clerk")]),
+        (2, "General Practice", [("Dr. Sarah Chen", "GP"), ("Nurse Betty", "RN")]),
+        (3, "Specialists", [("Dr. James House", "Diagnostician"), ("Dr. Lisa Cuddy", "Administrator")]),
+        (4, "Surgery", [("Dr. Derek Shepherd", "Surgeon"), ("Dr. Meredith Grey", "Resident")]),
+        (5, "Administration", [("Dr. Miranda Bailey", "Chief of Medicine"), ("Dr. Richard Webber", "Board Member")]),
+    ],
+    "Real Estate": [
+        (1, "Welcome Center", [("Phil Dunphy", "Agent"), ("Claire Dunphy", "Manager")]),
+        (2, "Residential", [("Gloria Pritchett", "Luxury Agent"), ("Jay Pritchett", "Commercial")]),
+        (3, "Commercial", [("Mitchell Pritchett", "Office Leasing"), ("Cameron Tucker", "Retail")]),
+        (4, "Property Mgmt", [("Luke Dunphy", "Property Manager"), ("Alex Dunphy", "Analyst")]),
+        (5, "Executive", [("Haley Dunphy", "Marketing Director"), ("Dylan Marshall", "Tech Lead")]),
+    ],
+    "News Studio": [
+        (1, "Lobby", [("Kent Brockman", "Anchor"), ("Robin Scherbatsky", "Reporter")]),
+        (2, "Newsroom", [("Ted Mosby", "Editor"), ("Marshall Eriksen", "Writer")]),
+        (3, "Production", [("Barney Stinson", "Producer"), ("Lily Aldrin", "Director")]),
+        (4, "Technical", [("Brian O'Neill", "Tech Director"), ("Jessica Kim", "Engineer")]),
+        (5, "Management", [("James Morrison", "News Director"), ("Angela Davis", "VP Content")]),
+    ],
+    "Accounting": [
+        (1, "Reception", [("Oscar Martinez", "Receptionist"), ("Kevin Malone", "Greeter")]),
+        (2, "Tax Services", [("Angela Martin", "Tax Manager"), ("Stanley Hudson", "Tax Prep")]),
+        (3, "Audit", [("Dwight Schrute", "Audit Manager"), ("Jim Halpert", "Senior Auditor")]),
+        (4, "Advisory", [("Andy Bernard", "Advisory Lead"), ("Erin Hannon", "Associate")]),
+        (5, "Partners", [("Michael Scott", "Regional Manager"), ("Toby Flenderson", "HR")]),
+    ],
+    "Insurance Co": [
+        (1, "Claims", [("Flo", "Claims Agent"), ("Jake", "Senior Agent")]),
+        (2, "Underwriting", [("Dennis Nedry", "Underwriter"), ("Ray Arnold", "Analyst")]),
+        (3, "Sales", [("Gil Gunderson", "Sales Rep"), ("Lionel Hutz", "Agent")]),
+        (4, "Risk", [("Troy McClure", "Risk Analyst"), ("Dr. Nick", "Medical Review")]),
+        (5, "Executive", [("Mr. Burns", "CEO"), ("Waylon Smithers", "Executive Assistant")]),
+    ],
+    "Marketing": [
+        (1, "Creative Hub", [("Don Draper", "Creative Director"), ("Peggy Olson", "Copywriter")]),
+        (2, "Digital", [("Pete Campbell", "Digital Lead"), ("Ken Cosgrove", "Accounts")]),
+        (3, "Strategy", [("Joan Holloway", "Strategy Director"), ("Lane Pryce", "Planning")]),
+        (4, "Media", [("Roger Sterling", "Media Director"), ("Bert Cooper", "Consultant")]),
+        (5, "Executive", [("Diana Cross", "CMO"), ("Tyler Ross", "VP Marketing")]),
+    ],
+    "Consulting": [
+        (1, "Reception", [("Donna Paulsen", "Executive Assistant"), ("Harold Gunderson", "Concierge")]),
+        (2, "Strategy", [("Alexandra Foster", "Strategy Lead"), ("Thomas Wright", "Analyst")]),
+        (3, "Operations", [("Jennifer Liu", "Ops Consultant"), ("Brian Kim", "Process Expert")]),
+        (4, "Technology", [("Raj Koothrappali", "Tech Consultant"), ("Howard Wolowitz", "Systems")]),
+        (5, "Partners", [("Sheldon Cooper", "Senior Partner"), ("Leonard Hofstadter", "Partner")]),
+    ],
+    "Engineering": [
+        (1, "Workshop", [("Tony Stark", "Chief Engineer"), ("Bruce Banner", "R&D Lead")]),
+        (2, "Mechanical", [("Hank Pym", "Mechanical Eng"), ("Janet Van Dyne", "Design Eng")]),
+        (3, "Electrical", [("Reed Richards", "Electrical Lead"), ("Sue Storm", "Systems Eng")]),
+        (4, "Software", [("Peter Parker", "Software Eng"), ("Gwen Stacy", "QA Engineer")]),
+        (5, "Management", [("Nick Fury", "Director"), ("Maria Hill", "Deputy Director")]),
+    ],
+    "Data Center": [
+        (1, "Operations", [("Neo Anderson", "Ops Manager"), ("Trinity", "Senior Ops")]),
+        (2, "Infrastructure", [("Morpheus", "Infrastructure Lead"), ("Tank", "Systems Admin")]),
+        (3, "Security", [("Agent Smith", "Security Lead"), ("Agent Brown", "Analyst")]),
+        (4, "Cloud Services", [("Cypher", "Cloud Architect"), ("Mouse", "Developer")]),
+        (5, "Management", [("The Oracle", "Director"), ("The Architect", "Chief Architect")]),
     ],
 }
 

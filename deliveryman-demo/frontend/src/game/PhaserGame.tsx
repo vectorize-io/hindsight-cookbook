@@ -12,6 +12,10 @@ interface PhaserGameProps {
   deliveryFailed: boolean;
   lastActionTool?: string;  // Tool name of the most recent action
   difficulty?: 'easy' | 'medium' | 'hard';
+  // Hard mode city grid props
+  gridRow?: number;
+  gridCol?: number;
+  currentBuilding?: string | null;
 }
 
 interface MoveCommand {
@@ -19,7 +23,14 @@ interface MoveCommand {
   side: string;
 }
 
-export function PhaserGame({ floor, side, isThinking, packageText, deliverySuccess, deliveryFailed, lastActionTool, difficulty = 'easy' }: PhaserGameProps) {
+interface GridCommand {
+  type: 'move_grid' | 'enter_building' | 'exit_building';
+  row?: number;
+  col?: number;
+  buildingName?: string;
+}
+
+export function PhaserGame({ floor, side, isThinking, packageText, deliverySuccess, deliveryFailed, lastActionTool, difficulty = 'easy', gridRow = 0, gridCol = 0, currentBuilding = null }: PhaserGameProps) {
   const gameRef = useRef<Phaser.Game | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastFloorRef = useRef(floor);
@@ -28,14 +39,42 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   const lastFailedRef = useRef(false);
   const setAnimating = useGameStore((state) => state.setAnimating);
 
+  // Hard mode grid refs
+  const lastGridRowRef = useRef(gridRow);
+  const lastGridColRef = useRef(gridCol);
+  const lastBuildingRef = useRef<string | null>(currentBuilding);
+
   // Animation queues
   const moveQueueRef = useRef<MoveCommand[]>([]);
+  const gridQueueRef = useRef<GridCommand[]>([]);  // For city grid animations
   const effectQueueRef = useRef<string[]>([]);  // For non-movement animations
   const isAnimatingRef = useRef(false);
 
   // Process next move in queue
   const processNextMove = useCallback(() => {
-    // First check move queue
+    // First check grid queue (hard mode city navigation)
+    if (gridQueueRef.current.length > 0) {
+      isAnimatingRef.current = true;
+      setAnimating(true);
+      const gridCmd = gridQueueRef.current.shift()!;
+
+      if (gridCmd.type === 'move_grid') {
+        window.dispatchEvent(new CustomEvent('game-event', {
+          detail: { type: 'move_agent_grid', payload: { row: gridCmd.row, col: gridCmd.col } }
+        }));
+      } else if (gridCmd.type === 'enter_building') {
+        window.dispatchEvent(new CustomEvent('game-event', {
+          detail: { type: 'enter_building', payload: { buildingName: gridCmd.buildingName } }
+        }));
+      } else if (gridCmd.type === 'exit_building') {
+        window.dispatchEvent(new CustomEvent('game-event', {
+          detail: { type: 'exit_building', payload: {} }
+        }));
+      }
+      return;
+    }
+
+    // Then check move queue (building navigation)
     if (moveQueueRef.current.length > 0) {
       isAnimatingRef.current = true;
       setAnimating(true);
@@ -187,6 +226,52 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
       }));
     }
   }, [difficulty]);
+
+  // Handle hard mode grid position changes
+  useEffect(() => {
+    if (difficulty !== 'hard') return;
+
+    // Check if building state changed (entering or exiting building)
+    if (currentBuilding !== lastBuildingRef.current) {
+      if (currentBuilding && !lastBuildingRef.current) {
+        // Entering a building
+        gridQueueRef.current.push({
+          type: 'enter_building',
+          buildingName: currentBuilding,
+        });
+
+        if (!isAnimatingRef.current) {
+          processNextMove();
+        }
+      } else if (!currentBuilding && lastBuildingRef.current) {
+        // Exiting a building
+        gridQueueRef.current.push({
+          type: 'exit_building',
+        });
+
+        if (!isAnimatingRef.current) {
+          processNextMove();
+        }
+      }
+      lastBuildingRef.current = currentBuilding;
+    }
+
+    // Check if grid position changed (while on street)
+    if (!currentBuilding && (gridRow !== lastGridRowRef.current || gridCol !== lastGridColRef.current)) {
+      gridQueueRef.current.push({
+        type: 'move_grid',
+        row: gridRow,
+        col: gridCol,
+      });
+
+      if (!isAnimatingRef.current) {
+        processNextMove();
+      }
+
+      lastGridRowRef.current = gridRow;
+      lastGridColRef.current = gridCol;
+    }
+  }, [gridRow, gridCol, currentBuilding, difficulty, processNextMove]);
 
   // Handle special action animations (like reading employee list)
   const lastActionToolRef = useRef<string | undefined>(undefined);

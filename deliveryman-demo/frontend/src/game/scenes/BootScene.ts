@@ -36,10 +36,13 @@ export class BootScene extends Phaser.Scene {
     // Load building sprites for all difficulties
     this.load.image('building_easy', '/sprites/building_easy.png');
     this.load.image('building_medium', '/sprites/building_medium.png');
-    // this.load.image('building_hard', '/sprites/building_hard.png'); // TODO: Add when available
+    // Hard mode: city grid view and building interior
+    this.load.image('city_grid', '/sprites/city_grid.png');
+    this.load.image('building_hard', '/sprites/building_hard.png');
 
     // Load agent sprites
     this.load.image('agent', '/sprites/agent_transparent.png');
+    this.load.image('agent_icon', '/sprites/agent_icon.png');  // City grid view icon
     // Load walk animation spritesheet (6 frames, 256x1024 each)
     this.load.spritesheet('agent_walk', '/sprites/delivery_walk.png', {
       frameWidth: 256,

@@ -30,6 +30,14 @@ export interface DifficultyConfig {
   businesses: Record<string, string>;
   buildingImage: string;
   isMultiBuilding: boolean;
+  // Hard mode city grid properties
+  isCityGrid?: boolean;
+  cityGridRows?: number;
+  cityGridCols?: number;
+  cityGridPositions?: Record<string, { x: number; y: number }>;
+  cityBuildings?: Record<string, string>;
+  buildingInteriorImage?: string;
+  agentIconSize?: number;
 }
 
 // Easy mode: 3 floors, front/back layout
@@ -62,10 +70,10 @@ const EASY_CONFIG: DifficultyConfig = {
 const MEDIUM_CONFIG: DifficultyConfig = {
   numFloors: 4,
   floorY: {
-    1: 505,  // Ground floor (Lobby/Storage/IT Support)
-    2: 425,  // Second floor (Game Studio/Archives/Accounting)
-    3: 370,  // Third floor - bridge level (Exec Suite/Marketing/Sales)
-    4: 290,  // Top floor (Reception/Cafe/HR Dept)
+    1: 510,  // Ground floor (Lobby/Storage/IT Support)
+    2: 395,  // Second floor (Game Studio/Archives/Accounting)
+    3: 290,  // Third floor - bridge level (Exec Suite/Marketing/Sales)
+    4: 195,  // Top floor (Reception/Cafe/HR Dept)
   },
   sideX: {
     building_a: 175,   // Left building (Lobby column)
@@ -90,41 +98,68 @@ const MEDIUM_CONFIG: DifficultyConfig = {
   isMultiBuilding: true,
 };
 
-// Hard mode: 7 floors, front/back layout
+// Hard mode: City grid with 12 buildings (4 rows x 3 cols)
+// Agent navigates streets, enters buildings, then delivers on 5 floors
 const HARD_CONFIG: DifficultyConfig = {
-  numFloors: 7,
+  // Building interior config (when inside a building)
+  numFloors: 5,
   floorY: {
-    1: 480,
-    2: 425,
-    3: 370,
-    4: 315,
-    5: 260,
-    6: 205,
-    7: 150,
+    1: 460,  // Ground floor
+    2: 365,  // Second floor
+    3: 275,  // Third floor
+    4: 185,  // Fourth floor
+    5: 95,   // Fifth floor (top)
   },
   sideX: {
-    front: 155,
+    front: 250,
     middle: 400,
-    back: 645,
+    back: 550,
   },
-  businesses: {
-    '1_front': 'Reception Hall',
-    '1_back': 'Package Center',
-    '2_front': 'Administration',
-    '2_back': 'IT Support',
-    '3_front': 'Advertising Agency',
-    '3_back': 'Photography Studio',
-    '4_front': 'Law Firm',
-    '4_back': 'Consulting Group',
-    '5_front': 'Software Company',
-    '5_back': 'Data Science Lab',
-    '6_front': 'News Station',
-    '6_back': 'Podcast Studio',
-    '7_front': 'Corporate Headquarters',
-    '7_back': 'Investor Relations',
-  },
-  buildingImage: 'building_easy',  // TODO: Add building_hard.png
+  // Business names are dynamic based on which building is entered
+  businesses: {},
+  buildingImage: 'city_grid',
+  buildingInteriorImage: 'building_hard',
   isMultiBuilding: false,
+
+  // City grid configuration
+  isCityGrid: true,
+  cityGridRows: 4,
+  cityGridCols: 3,
+  agentIconSize: 40,
+
+  // City grid positions (center of each building cell)
+  // Grid is 800x533, divided into 4 rows x 3 cols
+  // Each cell is roughly 267x133 pixels
+  cityGridPositions: {
+    '0_0': { x: 133, y: 67 },   // Row 0, Col 0
+    '0_1': { x: 400, y: 67 },   // Row 0, Col 1
+    '0_2': { x: 667, y: 67 },   // Row 0, Col 2
+    '1_0': { x: 133, y: 200 },  // Row 1, Col 0
+    '1_1': { x: 400, y: 200 },  // Row 1, Col 1
+    '1_2': { x: 667, y: 200 },  // Row 1, Col 2
+    '2_0': { x: 133, y: 333 },  // Row 2, Col 0
+    '2_1': { x: 400, y: 333 },  // Row 2, Col 1
+    '2_2': { x: 667, y: 333 },  // Row 2, Col 2
+    '3_0': { x: 133, y: 466 },  // Row 3, Col 0
+    '3_1': { x: 400, y: 466 },  // Row 3, Col 1
+    '3_2': { x: 667, y: 466 },  // Row 3, Col 2
+  },
+
+  // Building names at each grid position (matches backend CITY_GRID)
+  cityBuildings: {
+    '0_0': 'Tech Corp',
+    '0_1': 'City Bank',
+    '0_2': 'Law Office',
+    '1_0': 'Medical',
+    '1_1': 'Real Estate',
+    '1_2': 'News Studio',
+    '2_0': 'Accounting',
+    '2_1': 'Insurance Co',
+    '2_2': 'Marketing',
+    '3_0': 'Consulting',
+    '3_1': 'Engineering',
+    '3_2': 'Data Center',
+  },
 };
 
 export const DIFFICULTY_CONFIGS: Record<Difficulty, DifficultyConfig> = {

@@ -127,6 +127,11 @@ function App() {
     bankId: storeBankId,
     setBankId: setStoreBankId,
     setDifficulty: setStoreDifficulty,
+    setAgentPosition,
+    // Hard mode grid state
+    agentGridRow,
+    agentGridCol,
+    agentCurrentBuilding,
   } = useGameStore();
 
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -869,7 +874,83 @@ function App() {
                 deliveryFailed={deliveryStatus === 'failed'}
                 lastActionTool={actions.length > 0 ? actions[actions.length - 1].toolName : undefined}
                 difficulty={difficulty}
+                // Hard mode grid props
+                gridRow={agentGridRow}
+                gridCol={agentGridCol}
+                currentBuilding={agentCurrentBuilding}
               />
+
+              {/* FOR ANIMATION TESTING - Animation test buttons */}
+              <div className="mt-4 p-3 bg-yellow-900/20 border border-yellow-600/30 rounded-lg">
+                <div className="text-xs text-yellow-500 uppercase tracking-wider mb-2">Animation Testing</div>
+                <div className="flex flex-wrap gap-2">
+                  {/* Floor navigation */}
+                  <button
+                    onClick={() => setAgentPosition(Math.min(agentFloor + 1, difficulty === 'medium' ? 4 : difficulty === 'hard' ? 7 : 3), agentSide)}
+                    className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded"
+                  >
+                    ⬆️ Go Up
+                  </button>
+                  <button
+                    onClick={() => setAgentPosition(Math.max(agentFloor - 1, 1), agentSide)}
+                    className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded"
+                  >
+                    ⬇️ Go Down
+                  </button>
+
+                  {/* Building/Side navigation */}
+                  {difficulty === 'medium' ? (
+                    <>
+                      <button
+                        onClick={() => setAgentPosition(agentFloor, 'building_a')}
+                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'building_a' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
+                      >
+                        Building A
+                      </button>
+                      <button
+                        onClick={() => setAgentPosition(agentFloor, 'building_b')}
+                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'building_b' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
+                      >
+                        Building B
+                      </button>
+                      <button
+                        onClick={() => setAgentPosition(agentFloor, 'building_c')}
+                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'building_c' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
+                      >
+                        Building C
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => setAgentPosition(agentFloor, 'front')}
+                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'front' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
+                      >
+                        Front
+                      </button>
+                      <button
+                        onClick={() => setAgentPosition(agentFloor, 'back')}
+                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'back' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
+                      >
+                        Back
+                      </button>
+                    </>
+                  )}
+
+                  {/* Quick position jumps */}
+                  <span className="text-slate-500 text-xs self-center mx-2">|</span>
+                  <button
+                    onClick={() => setAgentPosition(1, difficulty === 'medium' ? 'building_a' : 'front')}
+                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded"
+                  >
+                    Reset F1
+                  </button>
+                </div>
+                <div className="text-xs text-slate-500 mt-2">
+                  Current: Floor {agentFloor}, {agentSide}
+                </div>
+              </div>
+              {/* END ANIMATION TESTING */}
 
               {/* Status Bar */}
               <div className="flex items-center justify-between mt-4 pt-4 border-t border-slate-700">
