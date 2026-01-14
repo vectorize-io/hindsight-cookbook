@@ -243,7 +243,13 @@ async def run_delivery(
                 messages.extend(tool_results)
 
                 if success:
-                    # Store memory (if enabled)
+                    # Send success event FIRST so animation can start immediately
+                    await websocket.send_json(event(EventType.DELIVERY_SUCCESS, {
+                        "message": result,
+                        "steps": agent_state.steps_taken
+                    }))
+
+                    # Store memory in background (if enabled) - don't block the animation
                     if store_conversations:
                         await websocket.send_json(event(EventType.MEMORY_STORING))
                         final_convo = format_messages_for_retain(messages, success=True, steps=agent_state.steps_taken)
@@ -252,10 +258,6 @@ async def run_delivery(
                         store_timing = time.time() - t_store
                         await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
 
-                    await websocket.send_json(event(EventType.DELIVERY_SUCCESS, {
-                        "message": result,
-                        "steps": agent_state.steps_taken
-                    }))
                     return
 
             else:
@@ -279,7 +281,13 @@ async def run_delivery(
                 messages.append({"role": "assistant", "content": message.content})
                 messages.append({"role": "user", "content": "Use the available tools to complete the delivery."})
 
-        # Step limit reached - store failed delivery (if enabled)
+        # Step limit reached - send failure event FIRST so animation can start immediately
+        await websocket.send_json(event(EventType.STEP_LIMIT_REACHED, {
+            "message": f"Exceeded {max_steps} step limit",
+            "steps": agent_state.steps_taken
+        }))
+
+        # Store failed delivery in background (if enabled) - don't block the animation
         if store_conversations:
             await websocket.send_json(event(EventType.MEMORY_STORING))
             final_convo = format_messages_for_retain(messages, success=False, steps=agent_state.steps_taken)
@@ -287,11 +295,6 @@ async def run_delivery(
             await retain_async(final_convo)
             store_timing = time.time() - t_store
             await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
-
-        await websocket.send_json(event(EventType.STEP_LIMIT_REACHED, {
-            "message": f"Exceeded {max_steps} step limit",
-            "steps": agent_state.steps_taken
-        }))
 
     except asyncio.CancelledError:
         await websocket.send_json(event(EventType.CANCELLED, {"message": "Delivery cancelled"}))

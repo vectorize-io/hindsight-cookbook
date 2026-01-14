@@ -30,6 +30,7 @@ interface GameState {
   isThinking: boolean;
   thinkingText: string | null;
   isAnimating: boolean;
+  isStoringMemory: boolean;  // True while Hindsight retain is in progress
 
   // Hard mode city grid state
   agentGridRow: number;
@@ -105,6 +106,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   isThinking: false,
   thinkingText: null,
   isAnimating: false,
+  isStoringMemory: false,
 
   // Hard mode city grid initial state - start at road (0, 0) top-left corner
   agentGridRow: 0,
@@ -200,11 +202,11 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
 
       case 'memory_storing':
-        set({ isThinking: true });
+        set({ isThinking: true, isStoringMemory: true });
         break;
 
       case 'memory_stored':
-        set({ isThinking: false });
+        set({ isThinking: false, isStoringMemory: false });
         break;
 
       case 'delivery_success': {

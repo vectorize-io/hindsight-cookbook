@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useGameStore } from './stores/gameStore';
 import { PhaserGame } from './game/PhaserGame';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import type { Employee } from './types';
 
 // Demo config type
@@ -31,6 +31,20 @@ interface BuildingInfo {
   }[];
   isMultiBuilding?: boolean;
   difficulty?: string;
+  // Hard mode city grid
+  isCityGrid?: boolean;
+  cityBuildings?: {
+    name: string;
+    row: number;
+    col: number;
+    floors: {
+      floor: number;
+      name: string;
+      employees: { name: string; role: string }[];
+    }[];
+  }[];
+  gridRows?: number;
+  gridCols?: number;
 }
 
 function ActionLogEntry({ action, expanded, onToggle }: {
@@ -110,6 +124,7 @@ function App() {
     agentSide,
     isThinking,
     isAnimating,
+    isStoringMemory,
     thinkingText,
     deliveryStatus,
     deliverySteps,
@@ -143,6 +158,7 @@ function App() {
   const [showDemoSettings, setShowDemoSettings] = useState(false);
   const [showAvailableTools, setShowAvailableTools] = useState(false);
   const [showBuildingLayout, setShowBuildingLayout] = useState(false);
+  const [expandedCityBuildings, setExpandedCityBuildings] = useState<Set<string>>(new Set());
 
   // Difficulty state
   const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard'>('easy');
@@ -353,14 +369,34 @@ function App() {
         return;
       }
 
-      // Start next delivery after a short delay
+      // Start next delivery after a short delay (wait for memory to finish storing)
       setTimeout(() => {
-        if (!trainingAbortRef.current && trainingRunning) {
+        if (!trainingAbortRef.current && trainingRunning && !isStoringMemory) {
           startRandomTrainingDelivery();
         }
       }, 100);  // Minimal delay - just enough for state to settle
     }
-  }, [history.length, trainingRunning, trainingTarget, viewMode, startRandomTrainingDelivery]);
+  }, [history.length, trainingRunning, trainingTarget, viewMode, startRandomTrainingDelivery, isStoringMemory]);
+
+  // Training mode: continue when memory storage completes
+  const wasStoringRef = useRef(false);
+  useEffect(() => {
+    // Track when storage completes
+    if (isStoringMemory) {
+      wasStoringRef.current = true;
+    } else if (wasStoringRef.current) {
+      // Storage just completed
+      wasStoringRef.current = false;
+
+      // If training is running and we're not already delivering, start next
+      if (trainingRunning && deliveryStatus !== 'running' && !trainingAbortRef.current) {
+        const completedInSession = history.length - trainingStartHistoryRef.current;
+        if (completedInSession < trainingTarget) {
+          startRandomTrainingDelivery();
+        }
+      }
+    }
+  }, [isStoringMemory, trainingRunning, deliveryStatus, history.length, trainingTarget, startRandomTrainingDelivery]);
 
   // Start training
   const handleStartTraining = useCallback(() => {
@@ -698,147 +734,212 @@ function App() {
                   <span className={`transition-transform text-[10px] ${showBuildingLayout ? 'rotate-90' : ''}`}>
                     ▶
                   </span>
-                  <span>Building Layout</span>
+                  <span>{buildingInfo?.isCityGrid ? 'City Layout' : 'Building Layout'}</span>
                 </button>
 
                 {showBuildingLayout && buildingInfo && (
                   <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700 space-y-4">
-                    <div className="text-sm text-slate-400 mb-2">
-                      {buildingInfo.floors} floors • {buildingInfo.businesses.length} businesses • {buildingInfo.businesses.reduce((acc, b) => acc + b.employees.length, 0)} employees
-                      {buildingInfo.isMultiBuilding && <span className="ml-2 text-yellow-400">(3 buildings)</span>}
-                    </div>
-
-                    {/* Render floors from top to bottom */}
-                    {[...Array(buildingInfo.floors)].map((_, i) => {
-                      const floorNum = buildingInfo.floors - i;
-                      const floorBusinesses = buildingInfo.businesses.filter(b => b.floor === floorNum);
-
-                      // Multi-building layout (medium difficulty)
-                      if (buildingInfo.isMultiBuilding) {
-                        const buildingABiz = floorBusinesses.find(b => b.side === 'building_a');
-                        const buildingBBiz = floorBusinesses.find(b => b.side === 'building_b');
-                        const buildingCBiz = floorBusinesses.find(b => b.side === 'building_c');
-
-                        return (
-                          <div key={floorNum} className="border border-slate-700 rounded-lg overflow-hidden">
-                            <div className="bg-slate-700/50 px-3 py-1.5 text-xs font-medium text-slate-300">
-                              Floor {floorNum}
-                            </div>
-                            <div className="grid grid-cols-3 divide-x divide-slate-700">
-                              {/* Building A */}
-                              <div className="p-2">
-                                <div className="text-xs text-slate-500 uppercase mb-1">Building A</div>
-                                {buildingABiz ? (
-                                  <div>
-                                    <div className="text-sm font-medium text-cyan-400">{buildingABiz.name}</div>
-                                    <div className="mt-1 space-y-0.5">
-                                      {buildingABiz.employees.map(emp => (
-                                        <div key={emp.name} className="text-xs text-slate-400">
-                                          <span className="text-slate-300">{emp.name}</span>
-                                          <span className="text-slate-500"> • {emp.role}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="text-xs text-slate-500 italic">Empty</div>
-                                )}
-                              </div>
-                              {/* Building B */}
-                              <div className="p-2">
-                                <div className="text-xs text-slate-500 uppercase mb-1">Building B</div>
-                                {buildingBBiz ? (
-                                  <div>
-                                    <div className="text-sm font-medium text-cyan-400">{buildingBBiz.name}</div>
-                                    <div className="mt-1 space-y-0.5">
-                                      {buildingBBiz.employees.map(emp => (
-                                        <div key={emp.name} className="text-xs text-slate-400">
-                                          <span className="text-slate-300">{emp.name}</span>
-                                          <span className="text-slate-500"> • {emp.role}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="text-xs text-slate-500 italic">Empty</div>
-                                )}
-                              </div>
-                              {/* Building C */}
-                              <div className="p-2">
-                                <div className="text-xs text-slate-500 uppercase mb-1">Building C</div>
-                                {buildingCBiz ? (
-                                  <div>
-                                    <div className="text-sm font-medium text-cyan-400">{buildingCBiz.name}</div>
-                                    <div className="mt-1 space-y-0.5">
-                                      {buildingCBiz.employees.map(emp => (
-                                        <div key={emp.name} className="text-xs text-slate-400">
-                                          <span className="text-slate-300">{emp.name}</span>
-                                          <span className="text-slate-500"> • {emp.role}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="text-xs text-slate-500 italic">Empty</div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      // Single building layout (easy/hard difficulty)
-                      const frontBiz = floorBusinesses.find(b => b.side === 'front');
-                      const backBiz = floorBusinesses.find(b => b.side === 'back');
-
-                      return (
-                        <div key={floorNum} className="border border-slate-700 rounded-lg overflow-hidden">
-                          <div className="bg-slate-700/50 px-3 py-1.5 text-xs font-medium text-slate-300">
-                            Floor {floorNum}
-                          </div>
-                          <div className="grid grid-cols-2 divide-x divide-slate-700">
-                            {/* Front side */}
-                            <div className="p-2">
-                              <div className="text-xs text-slate-500 uppercase mb-1">Front</div>
-                              {frontBiz ? (
-                                <div>
-                                  <div className="text-sm font-medium text-cyan-400">{frontBiz.name}</div>
-                                  <div className="mt-1 space-y-0.5">
-                                    {frontBiz.employees.map(emp => (
-                                      <div key={emp.name} className="text-xs text-slate-400">
-                                        <span className="text-slate-300">{emp.name}</span>
-                                        <span className="text-slate-500"> • {emp.role}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="text-xs text-slate-500 italic">Empty</div>
-                              )}
-                            </div>
-                            {/* Back side */}
-                            <div className="p-2">
-                              <div className="text-xs text-slate-500 uppercase mb-1">Back</div>
-                              {backBiz ? (
-                                <div>
-                                  <div className="text-sm font-medium text-cyan-400">{backBiz.name}</div>
-                                  <div className="mt-1 space-y-0.5">
-                                    {backBiz.employees.map(emp => (
-                                      <div key={emp.name} className="text-xs text-slate-400">
-                                        <span className="text-slate-300">{emp.name}</span>
-                                        <span className="text-slate-500"> • {emp.role}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="text-xs text-slate-500 italic">Empty</div>
-                              )}
-                            </div>
-                          </div>
+                    {/* City Grid Layout (hard mode) */}
+                    {buildingInfo.isCityGrid && buildingInfo.cityBuildings ? (
+                      <>
+                        <div className="text-sm text-slate-400 mb-2">
+                          12 buildings • {buildingInfo.cityBuildings.reduce((acc, b) => acc + b.floors.reduce((facc, f) => facc + f.employees.length, 0), 0)} employees
+                          <span className="ml-2 text-orange-400">(City Grid)</span>
                         </div>
-                      );
-                    })}
+                        {/* Group buildings by row */}
+                        {[0, 1, 2].map((rowNum) => {
+                          const rowBuildings = buildingInfo.cityBuildings!.filter(b => b.row === rowNum);
+                          return (
+                            <div key={rowNum} className="space-y-2">
+                              <div className="text-xs text-slate-500 uppercase">Row {rowNum + 1}</div>
+                              <div className="grid grid-cols-2 gap-2">
+                                {rowBuildings.map((building) => {
+                                  const isExpanded = expandedCityBuildings.has(building.name);
+                                  const toggleExpand = () => {
+                                    const newSet = new Set(expandedCityBuildings);
+                                    if (isExpanded) {
+                                      newSet.delete(building.name);
+                                    } else {
+                                      newSet.add(building.name);
+                                    }
+                                    setExpandedCityBuildings(newSet);
+                                  };
+                                  return (
+                                    <div key={building.name} className="border border-slate-700 rounded-lg overflow-hidden">
+                                      <button
+                                        onClick={toggleExpand}
+                                        className="w-full bg-slate-700/50 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-700 transition-colors flex items-center justify-between"
+                                      >
+                                        <span>{building.name}</span>
+                                        <span className={`transition-transform text-[10px] ${isExpanded ? 'rotate-90' : ''}`}>
+                                          ▶
+                                        </span>
+                                      </button>
+                                      {isExpanded && (
+                                        <div className="p-2 space-y-2">
+                                          {building.floors.map((floor) => (
+                                            <div key={floor.floor} className="border-l-2 border-cyan-500/30 pl-2">
+                                              <div className="text-xs text-slate-500">Floor {floor.floor}: <span className="text-cyan-400">{floor.name}</span></div>
+                                              <div className="mt-0.5 space-y-0.5">
+                                                {floor.employees.map(emp => (
+                                                  <div key={emp.name} className="text-xs text-slate-400 pl-2">
+                                                    <span className="text-slate-300">{emp.name}</span>
+                                                    <span className="text-slate-500"> • {emp.role}</span>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-sm text-slate-400 mb-2">
+                          {buildingInfo.floors} floors • {buildingInfo.businesses.length} businesses • {buildingInfo.businesses.reduce((acc, b) => acc + b.employees.length, 0)} employees
+                          {buildingInfo.isMultiBuilding && <span className="ml-2 text-yellow-400">(3 buildings)</span>}
+                        </div>
+
+                        {/* Render floors from top to bottom */}
+                        {[...Array(buildingInfo.floors)].map((_, i) => {
+                          const floorNum = buildingInfo.floors - i;
+                          const floorBusinesses = buildingInfo.businesses.filter(b => b.floor === floorNum);
+
+                          // Multi-building layout (medium difficulty)
+                          if (buildingInfo.isMultiBuilding) {
+                            const buildingABiz = floorBusinesses.find(b => b.side === 'building_a');
+                            const buildingBBiz = floorBusinesses.find(b => b.side === 'building_b');
+                            const buildingCBiz = floorBusinesses.find(b => b.side === 'building_c');
+
+                            return (
+                              <div key={floorNum} className="border border-slate-700 rounded-lg overflow-hidden">
+                                <div className="bg-slate-700/50 px-3 py-1.5 text-xs font-medium text-slate-300">
+                                  Floor {floorNum}
+                                </div>
+                                <div className="grid grid-cols-3 divide-x divide-slate-700">
+                                  {/* Building A */}
+                                  <div className="p-2">
+                                    <div className="text-xs text-slate-500 uppercase mb-1">Building A</div>
+                                    {buildingABiz ? (
+                                      <div>
+                                        <div className="text-sm font-medium text-cyan-400">{buildingABiz.name}</div>
+                                        <div className="mt-1 space-y-0.5">
+                                          {buildingABiz.employees.map(emp => (
+                                            <div key={emp.name} className="text-xs text-slate-400">
+                                              <span className="text-slate-300">{emp.name}</span>
+                                              <span className="text-slate-500"> • {emp.role}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="text-xs text-slate-500 italic">Empty</div>
+                                    )}
+                                  </div>
+                                  {/* Building B */}
+                                  <div className="p-2">
+                                    <div className="text-xs text-slate-500 uppercase mb-1">Building B</div>
+                                    {buildingBBiz ? (
+                                      <div>
+                                        <div className="text-sm font-medium text-cyan-400">{buildingBBiz.name}</div>
+                                        <div className="mt-1 space-y-0.5">
+                                          {buildingBBiz.employees.map(emp => (
+                                            <div key={emp.name} className="text-xs text-slate-400">
+                                              <span className="text-slate-300">{emp.name}</span>
+                                              <span className="text-slate-500"> • {emp.role}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="text-xs text-slate-500 italic">Empty</div>
+                                    )}
+                                  </div>
+                                  {/* Building C */}
+                                  <div className="p-2">
+                                    <div className="text-xs text-slate-500 uppercase mb-1">Building C</div>
+                                    {buildingCBiz ? (
+                                      <div>
+                                        <div className="text-sm font-medium text-cyan-400">{buildingCBiz.name}</div>
+                                        <div className="mt-1 space-y-0.5">
+                                          {buildingCBiz.employees.map(emp => (
+                                            <div key={emp.name} className="text-xs text-slate-400">
+                                              <span className="text-slate-300">{emp.name}</span>
+                                              <span className="text-slate-500"> • {emp.role}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="text-xs text-slate-500 italic">Empty</div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          // Single building layout (easy difficulty)
+                          const frontBiz = floorBusinesses.find(b => b.side === 'front');
+                          const backBiz = floorBusinesses.find(b => b.side === 'back');
+
+                          return (
+                            <div key={floorNum} className="border border-slate-700 rounded-lg overflow-hidden">
+                              <div className="bg-slate-700/50 px-3 py-1.5 text-xs font-medium text-slate-300">
+                                Floor {floorNum}
+                              </div>
+                              <div className="grid grid-cols-2 divide-x divide-slate-700">
+                                {/* Front side */}
+                                <div className="p-2">
+                                  <div className="text-xs text-slate-500 uppercase mb-1">Front</div>
+                                  {frontBiz ? (
+                                    <div>
+                                      <div className="text-sm font-medium text-cyan-400">{frontBiz.name}</div>
+                                      <div className="mt-1 space-y-0.5">
+                                        {frontBiz.employees.map(emp => (
+                                          <div key={emp.name} className="text-xs text-slate-400">
+                                            <span className="text-slate-300">{emp.name}</span>
+                                            <span className="text-slate-500"> • {emp.role}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="text-xs text-slate-500 italic">Empty</div>
+                                  )}
+                                </div>
+                                {/* Back side */}
+                                <div className="p-2">
+                                  <div className="text-xs text-slate-500 uppercase mb-1">Back</div>
+                                  {backBiz ? (
+                                    <div>
+                                      <div className="text-sm font-medium text-cyan-400">{backBiz.name}</div>
+                                      <div className="mt-1 space-y-0.5">
+                                        {backBiz.employees.map(emp => (
+                                          <div key={emp.name} className="text-xs text-slate-400">
+                                            <span className="text-slate-300">{emp.name}</span>
+                                            <span className="text-slate-500"> • {emp.role}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="text-xs text-slate-500 italic">Empty</div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1020,7 +1121,6 @@ function App() {
                         fontSize: '12px',
                       }}
                     />
-                    <ReferenceLine y={3} stroke="#4ade80" strokeDasharray="3 3" label={{ value: 'Optimal', fill: '#4ade80', fontSize: 10 }} />
                     <Line
                       type="monotone"
                       dataKey="steps"
@@ -1106,10 +1206,10 @@ function App() {
               <div className="flex gap-2">
                 <button
                   onClick={handleStartDelivery}
-                  disabled={!connected || !selectedRecipient || deliveryStatus === 'running'}
+                  disabled={!connected || !selectedRecipient || deliveryStatus === 'running' || isStoringMemory}
                   className="flex-1 bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-400 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-all shadow-lg shadow-green-500/20 disabled:shadow-none"
                 >
-                  {deliveryStatus === 'running' ? 'Running...' : 'Start Delivery'}
+                  {deliveryStatus === 'running' ? 'Running...' : isStoringMemory ? 'Storing...' : 'Start Delivery'}
                 </button>
                 <button
                   onClick={cancelDelivery}
@@ -1123,7 +1223,7 @@ function App() {
               {/* Random Delivery Button */}
               <button
                 onClick={handleRandomDelivery}
-                disabled={!connected || deliveryStatus === 'running' || employees.length === 0}
+                disabled={!connected || deliveryStatus === 'running' || employees.length === 0 || isStoringMemory}
                 className="w-full mt-2 bg-gradient-to-r from-purple-600 to-blue-500 hover:from-purple-500 hover:to-blue-400 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-all shadow-lg shadow-purple-500/20 disabled:shadow-none"
               >
                 Random Delivery
@@ -1384,7 +1484,6 @@ function App() {
                         fontSize: '12px',
                       }}
                     />
-                    <ReferenceLine y={3} stroke="#4ade80" strokeDasharray="3 3" label={{ value: 'Optimal', fill: '#4ade80', fontSize: 10 }} />
                     <Line
                       type="monotone"
                       dataKey="steps"
