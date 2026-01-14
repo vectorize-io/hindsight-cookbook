@@ -132,6 +132,7 @@ function App() {
     agentGridRow,
     agentGridCol,
     agentCurrentBuilding,
+    setAgentGridPosition,
   } = useGameStore();
 
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -880,77 +881,71 @@ function App() {
                 currentBuilding={agentCurrentBuilding}
               />
 
-              {/* FOR ANIMATION TESTING - Animation test buttons */}
+              {/* FOR ANIMATION TESTING - Animation test buttons
               <div className="mt-4 p-3 bg-yellow-900/20 border border-yellow-600/30 rounded-lg">
                 <div className="text-xs text-yellow-500 uppercase tracking-wider mb-2">Animation Testing</div>
-                <div className="flex flex-wrap gap-2">
-                  {/* Floor navigation */}
-                  <button
-                    onClick={() => setAgentPosition(Math.min(agentFloor + 1, difficulty === 'medium' ? 4 : difficulty === 'hard' ? 7 : 3), agentSide)}
-                    className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded"
-                  >
-                    ⬆️ Go Up
-                  </button>
-                  <button
-                    onClick={() => setAgentPosition(Math.max(agentFloor - 1, 1), agentSide)}
-                    className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded"
-                  >
-                    ⬇️ Go Down
-                  </button>
 
-                  {/* Building/Side navigation */}
-                  {difficulty === 'medium' ? (
-                    <>
-                      <button
-                        onClick={() => setAgentPosition(agentFloor, 'building_a')}
-                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'building_a' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
-                      >
-                        Building A
-                      </button>
-                      <button
-                        onClick={() => setAgentPosition(agentFloor, 'building_b')}
-                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'building_b' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
-                      >
-                        Building B
-                      </button>
-                      <button
-                        onClick={() => setAgentPosition(agentFloor, 'building_c')}
-                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'building_c' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
-                      >
-                        Building C
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => setAgentPosition(agentFloor, 'front')}
-                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'front' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
-                      >
-                        Front
-                      </button>
-                      <button
-                        onClick={() => setAgentPosition(agentFloor, 'back')}
-                        className={`px-3 py-1.5 text-xs rounded ${agentSide === 'back' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}
-                      >
-                        Back
-                      </button>
-                    </>
-                  )}
+                {difficulty === 'hard' && !agentCurrentBuilding && (
+                  <div className="space-y-2">
+                    <div className="text-xs text-slate-400 mb-1">City Grid (3x7) - Buildings at even cols, roads at odd cols</div>
+                    <div className="flex flex-wrap gap-2">
+                      {(() => {
+                        const buildings: Record<string, string> = {
+                          '0_0': 'Tech Corp', '0_2': 'City Bank', '0_4': 'Law Office', '0_6': 'Medical',
+                          '1_0': 'Real Estate', '1_2': 'News Studio', '1_4': 'Accounting', '1_6': 'Insurance Co',
+                          '2_0': 'Marketing', '2_2': 'Consulting', '2_4': 'Engineering', '2_6': 'Data Center',
+                        };
+                        const isAtBuilding = agentGridCol % 2 === 0;
+                        const currentBuilding = buildings[`${agentGridRow}_${agentGridCol}`];
+                        return (
+                          <>
+                            <button onClick={() => setAgentGridPosition(agentGridRow - 1, agentGridCol, null)} disabled={agentGridRow === 0 || isAtBuilding} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-xs rounded">⬆️ North</button>
+                            <button onClick={() => setAgentGridPosition(agentGridRow + 1, agentGridCol, null)} disabled={agentGridRow === 2 || isAtBuilding} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-xs rounded">⬇️ South</button>
+                            <button onClick={() => setAgentGridPosition(agentGridRow, agentGridCol - 1, null)} disabled={agentGridCol === 0} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-xs rounded">⬅️ West</button>
+                            <button onClick={() => setAgentGridPosition(agentGridRow, agentGridCol + 1, null)} disabled={agentGridCol === 6} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-xs rounded">➡️ East</button>
+                            <span className="text-slate-500 text-xs self-center mx-2">|</span>
+                            <button onClick={() => { if (currentBuilding) { setAgentGridPosition(agentGridRow, agentGridCol, currentBuilding); } }} disabled={!isAtBuilding} className="px-3 py-1.5 bg-green-600 hover:bg-green-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-xs rounded">🏢 Enter Building</button>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
 
-                  {/* Quick position jumps */}
-                  <span className="text-slate-500 text-xs self-center mx-2">|</span>
-                  <button
-                    onClick={() => setAgentPosition(1, difficulty === 'medium' ? 'building_a' : 'front')}
-                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded"
-                  >
-                    Reset F1
-                  </button>
-                </div>
-                <div className="text-xs text-slate-500 mt-2">
-                  Current: Floor {agentFloor}, {agentSide}
-                </div>
+                {difficulty === 'hard' && agentCurrentBuilding && (
+                  <div className="space-y-2">
+                    <div className="text-xs text-slate-400 mb-1">Inside: {agentCurrentBuilding}</div>
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => setAgentPosition(Math.min(agentFloor + 1, 4), agentSide)} disabled={agentFloor === 4} className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-xs rounded">⬆️ Go Up</button>
+                      <button onClick={() => setAgentPosition(Math.max(agentFloor - 1, 1), agentSide)} disabled={agentFloor === 1} className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-xs rounded">⬇️ Go Down</button>
+                      <span className="text-slate-500 text-xs self-center mx-2">|</span>
+                      <button onClick={() => setAgentGridPosition(agentGridRow, agentGridCol, null)} className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs rounded">🚪 Exit Building</button>
+                    </div>
+                  </div>
+                )}
+
+                {difficulty !== 'hard' && (
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => setAgentPosition(Math.min(agentFloor + 1, difficulty === 'medium' ? 4 : 3), agentSide)} className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded">⬆️ Go Up</button>
+                    <button onClick={() => setAgentPosition(Math.max(agentFloor - 1, 1), agentSide)} className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded">⬇️ Go Down</button>
+                    {difficulty === 'medium' ? (
+                      <>
+                        <button onClick={() => setAgentPosition(agentFloor, 'building_a')} className={`px-3 py-1.5 text-xs rounded ${agentSide === 'building_a' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}>Building A</button>
+                        <button onClick={() => setAgentPosition(agentFloor, 'building_b')} className={`px-3 py-1.5 text-xs rounded ${agentSide === 'building_b' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}>Building B</button>
+                        <button onClick={() => setAgentPosition(agentFloor, 'building_c')} className={`px-3 py-1.5 text-xs rounded ${agentSide === 'building_c' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}>Building C</button>
+                      </>
+                    ) : (
+                      <>
+                        <button onClick={() => setAgentPosition(agentFloor, 'front')} className={`px-3 py-1.5 text-xs rounded ${agentSide === 'front' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}>Front</button>
+                        <button onClick={() => setAgentPosition(agentFloor, 'back')} className={`px-3 py-1.5 text-xs rounded ${agentSide === 'back' ? 'bg-green-600' : 'bg-slate-600 hover:bg-slate-500'} text-white`}>Back</button>
+                      </>
+                    )}
+                    <span className="text-slate-500 text-xs self-center mx-2">|</span>
+                    <button onClick={() => setAgentPosition(1, difficulty === 'medium' ? 'building_a' : 'front')} className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded">Reset F1</button>
+                  </div>
+                )}
               </div>
-              {/* END ANIMATION TESTING */}
+              END ANIMATION TESTING */}
 
               {/* Status Bar */}
               <div className="flex items-center justify-between mt-4 pt-4 border-t border-slate-700">

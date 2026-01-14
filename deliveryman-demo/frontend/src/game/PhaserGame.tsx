@@ -118,7 +118,10 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   // Listen for animation complete events from Phaser
   useEffect(() => {
     const handleAnimationComplete = () => {
-      processNextMove();
+      // Small delay between animations for smoother visual flow
+      setTimeout(() => {
+        processNextMove();
+      }, 250);
     };
 
     window.addEventListener('animation-complete', handleAnimationComplete);

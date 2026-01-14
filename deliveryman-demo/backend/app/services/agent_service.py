@@ -114,7 +114,7 @@ async def run_delivery(
 
     # Set up agent state - starting position depends on difficulty
     if building.is_city_grid:
-        # Hard mode: start on street at grid position (0, 0)
+        # Hard mode: start on road at (0, 0) - top-left corner, in front of Tech Corp
         agent_state = AgentState(floor=1, side=Side.STREET, grid_row=0, grid_col=0, current_building=None)
     elif building.is_multi_building:
         # Medium mode: start at Building A, Floor 1

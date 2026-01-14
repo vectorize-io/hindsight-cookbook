@@ -486,111 +486,140 @@ BUILDING_DATA = {
 #   Row 1: Real Estate, News Studio, Accounting, Insurance Co
 #   Row 2: Marketing, Consulting, Engineering, Data Center
 
+# Simple grid: 3 rows x 7 cols
+# Buildings at EVEN columns (0, 2, 4, 6) - agent stands "in front of door"
+# Roads at ODD columns (1, 3, 5) - vertical roads between buildings
+#
+# Grid layout:
+# Col:  0          1      2          3      4           5      6
+# Row 0: Tech Corp  road   City Bank  road   Law Office  road   Medical
+# Row 1: Real Est   road   News Std   road   Accounting  road   Ins Co
+# Row 2: Marketing  road   Consulting road   Engineering road   Data Ctr
+
 CITY_GRID = {
-    # (row, col): building_name
+    # (row, col): building_name - buildings at EVEN columns
     (0, 0): "Tech Corp",
-    (0, 1): "City Bank",
-    (0, 2): "Law Office",
-    (0, 3): "Medical",
+    (0, 2): "City Bank",
+    (0, 4): "Law Office",
+    (0, 6): "Medical",
     (1, 0): "Real Estate",
-    (1, 1): "News Studio",
-    (1, 2): "Accounting",
-    (1, 3): "Insurance Co",
+    (1, 2): "News Studio",
+    (1, 4): "Accounting",
+    (1, 6): "Insurance Co",
     (2, 0): "Marketing",
-    (2, 1): "Consulting",
-    (2, 2): "Engineering",
-    (2, 3): "Data Center",
+    (2, 2): "Consulting",
+    (2, 4): "Engineering",
+    (2, 6): "Data Center",
 }
 
 CITY_GRID_ROWS = 3
-CITY_GRID_COLS = 4
+CITY_GRID_COLS = 7
 
-# Each building has 5 floors with employees
+def is_road_cell(row: int, col: int) -> bool:
+    """Check if a grid position is a road (odd column)."""
+    return col % 2 == 1
+
+def is_building_cell(row: int, col: int) -> bool:
+    """Check if a grid position is a building (even column)."""
+    return col % 2 == 0
+
+def is_intersection(row: int, col: int) -> bool:
+    """Check if a grid position is a road (roads are at odd columns)."""
+    return col % 2 == 1
+
+def get_adjacent_buildings(row: int, col: int) -> dict:
+    """Get buildings adjacent to a road position."""
+    adjacent = {}
+    directions = [("north", -1, 0), ("south", 1, 0), ("east", 0, 1), ("west", 0, -1)]
+    for direction, dr, dc in directions:
+        nr, nc = row + dr, col + dc
+        if (nr, nc) in CITY_GRID:
+            adjacent[direction] = CITY_GRID[(nr, nc)]
+    return adjacent
+
+def get_cell_description(row: int, col: int) -> str:
+    """Get a description of what's at a grid position."""
+    if (row, col) in CITY_GRID:
+        return CITY_GRID[(row, col)]
+    elif is_intersection(row, col):
+        return "intersection"
+    else:
+        return "road"
+
+# Each building has 4 floors with employees
 # Format: building_name -> [(floor, department_name, [(employee_name, role), ...]), ...]
 CITY_BUILDINGS_DATA = {
     "Tech Corp": [
         (1, "Lobby", [("Amy Chen", "Receptionist"), ("Mike Ross", "Security")]),
         (2, "Engineering", [("David Kim", "CTO"), ("Sarah Lee", "Senior Engineer")]),
         (3, "Product", [("Emily Watson", "Product Manager"), ("Chris Park", "Designer")]),
-        (4, "QA", [("Amanda Brown", "QA Lead"), ("Tom Chen", "QA Engineer")]),
-        (5, "Executive", [("James Wilson", "CEO"), ("Lisa Wang", "CFO")]),
+        (4, "Executive", [("James Wilson", "CEO"), ("Lisa Wang", "CFO")]),
     ],
     "City Bank": [
         (1, "Teller Hall", [("Maria Garcia", "Head Teller"), ("John Smith", "Teller")]),
         (2, "Loans", [("Robert Johnson", "Loan Officer"), ("Patricia White", "Analyst")]),
         (3, "Investments", [("Michael Brown", "Investment Advisor"), ("Jennifer Lee", "Trader")]),
-        (4, "Compliance", [("William Davis", "Compliance Officer"), ("Elizabeth Moore", "Auditor")]),
-        (5, "Management", [("Richard Taylor", "Branch Manager"), ("Susan Anderson", "VP Operations")]),
+        (4, "Management", [("Richard Taylor", "Branch Manager"), ("Susan Anderson", "VP Operations")]),
     ],
     "Law Office": [
         (1, "Reception", [("Nancy Drew", "Legal Secretary"), ("Frank Hardy", "Paralegal")]),
         (2, "Family Law", [("Victoria Chang", "Family Attorney"), ("Daniel Martinez", "Associate")]),
         (3, "Corporate", [("Richard Goldstein", "Corporate Partner"), ("Rachel Green", "Associate")]),
-        (4, "Criminal", [("Harvey Specter", "Criminal Defense"), ("Mike Ross", "Associate")]),
-        (5, "Partners", [("Jessica Pearson", "Managing Partner"), ("Louis Litt", "Senior Partner")]),
+        (4, "Partners", [("Jessica Pearson", "Managing Partner"), ("Louis Litt", "Senior Partner")]),
     ],
     "Medical": [
         (1, "Admissions", [("Grace Kim", "Admin Coordinator"), ("Henry Park", "Records Clerk")]),
         (2, "General Practice", [("Dr. Sarah Chen", "GP"), ("Nurse Betty", "RN")]),
         (3, "Specialists", [("Dr. James House", "Diagnostician"), ("Dr. Lisa Cuddy", "Administrator")]),
         (4, "Surgery", [("Dr. Derek Shepherd", "Surgeon"), ("Dr. Meredith Grey", "Resident")]),
-        (5, "Administration", [("Dr. Miranda Bailey", "Chief of Medicine"), ("Dr. Richard Webber", "Board Member")]),
     ],
     "Real Estate": [
         (1, "Welcome Center", [("Phil Dunphy", "Agent"), ("Claire Dunphy", "Manager")]),
         (2, "Residential", [("Gloria Pritchett", "Luxury Agent"), ("Jay Pritchett", "Commercial")]),
         (3, "Commercial", [("Mitchell Pritchett", "Office Leasing"), ("Cameron Tucker", "Retail")]),
-        (4, "Property Mgmt", [("Luke Dunphy", "Property Manager"), ("Alex Dunphy", "Analyst")]),
-        (5, "Executive", [("Haley Dunphy", "Marketing Director"), ("Dylan Marshall", "Tech Lead")]),
+        (4, "Executive", [("Haley Dunphy", "Marketing Director"), ("Dylan Marshall", "Tech Lead")]),
     ],
     "News Studio": [
         (1, "Lobby", [("Kent Brockman", "Anchor"), ("Robin Scherbatsky", "Reporter")]),
         (2, "Newsroom", [("Ted Mosby", "Editor"), ("Marshall Eriksen", "Writer")]),
         (3, "Production", [("Barney Stinson", "Producer"), ("Lily Aldrin", "Director")]),
-        (4, "Technical", [("Brian O'Neill", "Tech Director"), ("Jessica Kim", "Engineer")]),
-        (5, "Management", [("James Morrison", "News Director"), ("Angela Davis", "VP Content")]),
+        (4, "Management", [("James Morrison", "News Director"), ("Angela Davis", "VP Content")]),
     ],
     "Accounting": [
         (1, "Reception", [("Oscar Martinez", "Receptionist"), ("Kevin Malone", "Greeter")]),
         (2, "Tax Services", [("Angela Martin", "Tax Manager"), ("Stanley Hudson", "Tax Prep")]),
         (3, "Audit", [("Dwight Schrute", "Audit Manager"), ("Jim Halpert", "Senior Auditor")]),
-        (4, "Advisory", [("Andy Bernard", "Advisory Lead"), ("Erin Hannon", "Associate")]),
-        (5, "Partners", [("Michael Scott", "Regional Manager"), ("Toby Flenderson", "HR")]),
+        (4, "Partners", [("Michael Scott", "Regional Manager"), ("Toby Flenderson", "HR")]),
     ],
     "Insurance Co": [
         (1, "Claims", [("Flo", "Claims Agent"), ("Jake", "Senior Agent")]),
         (2, "Underwriting", [("Dennis Nedry", "Underwriter"), ("Ray Arnold", "Analyst")]),
         (3, "Sales", [("Gil Gunderson", "Sales Rep"), ("Lionel Hutz", "Agent")]),
-        (4, "Risk", [("Troy McClure", "Risk Analyst"), ("Dr. Nick", "Medical Review")]),
-        (5, "Executive", [("Mr. Burns", "CEO"), ("Waylon Smithers", "Executive Assistant")]),
+        (4, "Executive", [("Mr. Burns", "CEO"), ("Waylon Smithers", "Executive Assistant")]),
     ],
     "Marketing": [
         (1, "Creative Hub", [("Don Draper", "Creative Director"), ("Peggy Olson", "Copywriter")]),
         (2, "Digital", [("Pete Campbell", "Digital Lead"), ("Ken Cosgrove", "Accounts")]),
         (3, "Strategy", [("Joan Holloway", "Strategy Director"), ("Lane Pryce", "Planning")]),
-        (4, "Media", [("Roger Sterling", "Media Director"), ("Bert Cooper", "Consultant")]),
-        (5, "Executive", [("Diana Cross", "CMO"), ("Tyler Ross", "VP Marketing")]),
+        (4, "Executive", [("Diana Cross", "CMO"), ("Tyler Ross", "VP Marketing")]),
     ],
     "Consulting": [
         (1, "Reception", [("Donna Paulsen", "Executive Assistant"), ("Harold Gunderson", "Concierge")]),
         (2, "Strategy", [("Alexandra Foster", "Strategy Lead"), ("Thomas Wright", "Analyst")]),
         (3, "Operations", [("Jennifer Liu", "Ops Consultant"), ("Brian Kim", "Process Expert")]),
-        (4, "Technology", [("Raj Koothrappali", "Tech Consultant"), ("Howard Wolowitz", "Systems")]),
-        (5, "Partners", [("Sheldon Cooper", "Senior Partner"), ("Leonard Hofstadter", "Partner")]),
+        (4, "Partners", [("Sheldon Cooper", "Senior Partner"), ("Leonard Hofstadter", "Partner")]),
     ],
     "Engineering": [
         (1, "Workshop", [("Tony Stark", "Chief Engineer"), ("Bruce Banner", "R&D Lead")]),
         (2, "Mechanical", [("Hank Pym", "Mechanical Eng"), ("Janet Van Dyne", "Design Eng")]),
         (3, "Electrical", [("Reed Richards", "Electrical Lead"), ("Sue Storm", "Systems Eng")]),
-        (4, "Software", [("Peter Parker", "Software Eng"), ("Gwen Stacy", "QA Engineer")]),
-        (5, "Management", [("Nick Fury", "Director"), ("Maria Hill", "Deputy Director")]),
+        (4, "Management", [("Nick Fury", "Director"), ("Maria Hill", "Deputy Director")]),
     ],
     "Data Center": [
         (1, "Operations", [("Neo Anderson", "Ops Manager"), ("Trinity", "Senior Ops")]),
         (2, "Infrastructure", [("Morpheus", "Infrastructure Lead"), ("Tank", "Systems Admin")]),
         (3, "Security", [("Agent Smith", "Security Lead"), ("Agent Brown", "Analyst")]),
-        (4, "Cloud Services", [("Cypher", "Cloud Architect"), ("Mouse", "Developer")]),
-        (5, "Management", [("The Oracle", "Director"), ("The Architect", "Chief Architect")]),
+        (4, "Management", [("The Oracle", "Director"), ("The Architect", "Chief Architect")]),
     ],
 }
 

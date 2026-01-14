@@ -6,7 +6,11 @@ the building and gathering information.
 """
 
 from typing import Callable
-from building import Building, Side, AgentState, get_building, CITY_GRID, CITY_GRID_ROWS, CITY_GRID_COLS
+from building import (
+    Building, Side, AgentState, get_building,
+    CITY_GRID, CITY_GRID_ROWS, CITY_GRID_COLS,
+    is_road_cell, is_building_cell, is_intersection, get_adjacent_buildings, get_cell_description
+)
 
 
 class AgentTools:
@@ -224,102 +228,133 @@ class AgentTools:
         result = f"Walked through ground passage to Building {target_building.upper()}. Now at {biz_name} on Floor 1."
         return self._record_action("go_to_building", result)
 
-    # Hard mode tools - city grid navigation
+    # Hard mode tools - road-based city grid navigation
+    # Agent moves on roads between buildings, not directly to buildings
 
-    def _get_building_at_position(self):
-        """Get the building name at current grid position."""
-        return CITY_GRID.get((self.state.grid_row, self.state.grid_col))
+    def _get_surroundings(self) -> str:
+        """Get a description of what's in each direction from current position."""
+        row, col = self.state.grid_row, self.state.grid_col
+        directions = []
 
-    def _get_adjacent_info(self) -> str:
-        """Get info about adjacent buildings."""
-        adjacent = []
-        if self.state.grid_row > 0:
-            north = CITY_GRID.get((self.state.grid_row - 1, self.state.grid_col))
-            if north:
-                adjacent.append(f"North: {north}")
-        if self.state.grid_row < CITY_GRID_ROWS - 1:
-            south = CITY_GRID.get((self.state.grid_row + 1, self.state.grid_col))
-            if south:
-                adjacent.append(f"South: {south}")
-        if self.state.grid_col > 0:
-            west = CITY_GRID.get((self.state.grid_row, self.state.grid_col - 1))
-            if west:
-                adjacent.append(f"West: {west}")
-        if self.state.grid_col < CITY_GRID_COLS - 1:
-            east = CITY_GRID.get((self.state.grid_row, self.state.grid_col + 1))
-            if east:
-                adjacent.append(f"East: {east}")
-        return ". ".join(adjacent) if adjacent else "No adjacent buildings"
+        # North
+        if row > 0:
+            directions.append(f"North: {get_cell_description(row - 1, col)}")
+        else:
+            directions.append("North: edge")
+
+        # South
+        if row < CITY_GRID_ROWS - 1:
+            directions.append(f"South: {get_cell_description(row + 1, col)}")
+        else:
+            directions.append("South: edge")
+
+        # East
+        if col < CITY_GRID_COLS - 1:
+            directions.append(f"East: {get_cell_description(row, col + 1)}")
+        else:
+            directions.append("East: edge")
+
+        # West
+        if col > 0:
+            directions.append(f"West: {get_cell_description(row, col - 1)}")
+        else:
+            directions.append("West: edge")
+
+        return " | ".join(directions)
+
+    def _get_current_location_desc(self) -> str:
+        """Get description of current location."""
+        row, col = self.state.grid_row, self.state.grid_col
+        if is_building_cell(row, col):
+            building_name = CITY_GRID.get((row, col), "Unknown")
+            return f"in front of {building_name}"
+        else:
+            return "on road"
 
     def move_north(self) -> str:
-        """Move north on the city grid (toward row 0)."""
+        """Move north on the city grid (toward row 0). Only works from road positions."""
         if self.state.current_building:
-            result = f"Cannot move on street while inside {self.state.current_building}. Exit the building first."
+            result = f"Cannot move while inside {self.state.current_building}. Exit the building first."
+            return self._record_action("move_north", result)
+
+        # Can only move north/south from road positions (odd columns)
+        if is_building_cell(self.state.grid_row, self.state.grid_col):
+            building_name = CITY_GRID.get((self.state.grid_row, self.state.grid_col), "building")
+            result = f"Cannot move north from {building_name}. Move east or west to the road first."
             return self._record_action("move_north", result)
 
         if self.state.grid_row <= 0:
-            result = "Cannot move north. Already at the edge of the city."
+            result = "Cannot move north. Already at the northern edge of the city."
             return self._record_action("move_north", result)
 
         self.state.grid_row -= 1
-        building_name = self._get_building_at_position()
-        result = f"Moved north. Now at {building_name}. {self._get_adjacent_info()}"
+        result = f"Moved north. Now {self._get_current_location_desc()} at ({self.state.grid_row}, {self.state.grid_col}). {self._get_surroundings()}"
         return self._record_action("move_north", result)
 
     def move_south(self) -> str:
-        """Move south on the city grid (toward higher rows)."""
+        """Move south on the city grid (toward higher rows). Only works from road positions."""
         if self.state.current_building:
-            result = f"Cannot move on street while inside {self.state.current_building}. Exit the building first."
+            result = f"Cannot move while inside {self.state.current_building}. Exit the building first."
+            return self._record_action("move_south", result)
+
+        # Can only move north/south from road positions (odd columns)
+        if is_building_cell(self.state.grid_row, self.state.grid_col):
+            building_name = CITY_GRID.get((self.state.grid_row, self.state.grid_col), "building")
+            result = f"Cannot move south from {building_name}. Move east or west to the road first."
             return self._record_action("move_south", result)
 
         if self.state.grid_row >= CITY_GRID_ROWS - 1:
-            result = "Cannot move south. Already at the edge of the city."
+            result = "Cannot move south. Already at the southern edge of the city."
             return self._record_action("move_south", result)
 
         self.state.grid_row += 1
-        building_name = self._get_building_at_position()
-        result = f"Moved south. Now at {building_name}. {self._get_adjacent_info()}"
+        result = f"Moved south. Now {self._get_current_location_desc()} at ({self.state.grid_row}, {self.state.grid_col}). {self._get_surroundings()}"
         return self._record_action("move_south", result)
 
     def move_east(self) -> str:
         """Move east on the city grid (toward higher columns)."""
         if self.state.current_building:
-            result = f"Cannot move on street while inside {self.state.current_building}. Exit the building first."
+            result = f"Cannot move while inside {self.state.current_building}. Exit the building first."
             return self._record_action("move_east", result)
 
         if self.state.grid_col >= CITY_GRID_COLS - 1:
-            result = "Cannot move east. Already at the edge of the city."
+            result = "Cannot move east. Already at the eastern edge of the city."
             return self._record_action("move_east", result)
 
         self.state.grid_col += 1
-        building_name = self._get_building_at_position()
-        result = f"Moved east. Now at {building_name}. {self._get_adjacent_info()}"
+        result = f"Moved east. Now {self._get_current_location_desc()} at ({self.state.grid_row}, {self.state.grid_col}). {self._get_surroundings()}"
         return self._record_action("move_east", result)
 
     def move_west(self) -> str:
         """Move west on the city grid (toward column 0)."""
         if self.state.current_building:
-            result = f"Cannot move on street while inside {self.state.current_building}. Exit the building first."
+            result = f"Cannot move while inside {self.state.current_building}. Exit the building first."
             return self._record_action("move_west", result)
 
         if self.state.grid_col <= 0:
-            result = "Cannot move west. Already at the edge of the city."
+            result = "Cannot move west. Already at the western edge of the city."
             return self._record_action("move_west", result)
 
         self.state.grid_col -= 1
-        building_name = self._get_building_at_position()
-        result = f"Moved west. Now at {building_name}. {self._get_adjacent_info()}"
+        result = f"Moved west. Now {self._get_current_location_desc()} at ({self.state.grid_row}, {self.state.grid_col}). {self._get_surroundings()}"
         return self._record_action("move_west", result)
 
     def enter_building(self) -> str:
-        """Enter the building at current city grid position."""
+        """Enter the building you are standing in front of."""
         if self.state.current_building:
             result = f"Already inside {self.state.current_building}. Exit first to enter a different building."
             return self._record_action("enter_building", result)
 
-        building_name = self._get_building_at_position()
+        row, col = self.state.grid_row, self.state.grid_col
+
+        # Must be at a building position (even column) to enter
+        if not is_building_cell(row, col):
+            result = f"Not in front of a building. Move to a building first (even column positions). {self._get_surroundings()}"
+            return self._record_action("enter_building", result)
+
+        building_name = CITY_GRID.get((row, col))
         if not building_name:
-            result = "No building at this location to enter."
+            result = "No building found at this position."
             return self._record_action("enter_building", result)
 
         self.state.current_building = building_name
@@ -334,7 +369,7 @@ class AgentTools:
         else:
             dept_name = "Lobby"
 
-        result = f"Entered {building_name}. Now on Floor 1 at {dept_name}. This building has 5 floors."
+        result = f"Entered {building_name}. Now on Floor 1 at {dept_name}. This building has 4 floors."
         return self._record_action("enter_building", result)
 
     def exit_building(self) -> str:
@@ -348,7 +383,7 @@ class AgentTools:
         self.state.floor = 1
         self.state.side = Side.STREET
 
-        result = f"Exited {building_name}. Now on the street. {self._get_adjacent_info()}"
+        result = f"Exited {building_name}. Now {self._get_current_location_desc()} at ({self.state.grid_row}, {self.state.grid_col}). {self._get_surroundings()}"
         return self._record_action("exit_building", result)
 
     def get_employee_list(self) -> str:
@@ -491,8 +526,7 @@ class AgentTools:
                 else:
                     result = f"Current location: Inside {self.state.current_building}, Floor {self.state.floor}"
             else:
-                building_name = self._get_building_at_position()
-                result = f"Current location: On the street at {building_name} (row {self.state.grid_row}, col {self.state.grid_col}). {self._get_adjacent_info()}"
+                result = f"Current location: {self._get_current_location_desc()} at ({self.state.grid_row}, {self.state.grid_col}). {self._get_surroundings()}"
             return self._record_action("check_current_location", result)
 
         # Easy/Medium mode
@@ -635,7 +669,7 @@ _HARD_TOOLS = [
         "type": "function",
         "function": {
             "name": "move_north",
-            "description": "Move north on the city grid to the adjacent building.",
+            "description": "Move north to the adjacent row (toward row 0).",
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
@@ -643,7 +677,7 @@ _HARD_TOOLS = [
         "type": "function",
         "function": {
             "name": "move_south",
-            "description": "Move south on the city grid to the adjacent building.",
+            "description": "Move south to the adjacent row (toward row 2).",
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
@@ -651,7 +685,7 @@ _HARD_TOOLS = [
         "type": "function",
         "function": {
             "name": "move_east",
-            "description": "Move east on the city grid to the adjacent building.",
+            "description": "Move east to the adjacent column. Buildings at even columns, roads at odd columns.",
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
@@ -659,7 +693,7 @@ _HARD_TOOLS = [
         "type": "function",
         "function": {
             "name": "move_west",
-            "description": "Move west on the city grid to the adjacent building.",
+            "description": "Move west to the adjacent column. Buildings at even columns, roads at odd columns.",
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
@@ -667,7 +701,7 @@ _HARD_TOOLS = [
         "type": "function",
         "function": {
             "name": "enter_building",
-            "description": "Enter the building you are standing in front of.",
+            "description": "Enter the building you are standing in front of. Must be at a building position (even column).",
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },

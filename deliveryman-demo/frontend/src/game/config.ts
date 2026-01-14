@@ -98,22 +98,27 @@ const MEDIUM_CONFIG: DifficultyConfig = {
   isMultiBuilding: true,
 };
 
-// Hard mode: City grid with 12 buildings (4 rows x 3 cols)
-// Agent navigates streets, enters buildings, then delivers on 5 floors
+// Hard mode: Simple city grid (3 rows x 7 cols)
+// Buildings at EVEN columns (0, 2, 4, 6) - agent stands "in front of door"
+// Roads at ODD columns (1, 3, 5) - vertical roads between buildings
+// Grid layout:
+// Col:  0          1      2          3      4           5      6
+// Row 0: Tech Corp  road   City Bank  road   Law Office  road   Medical
+// Row 1: Real Est   road   News Std   road   Accounting  road   Ins Co
+// Row 2: Marketing  road   Consulting road   Engineering road   Data Ctr
 const HARD_CONFIG: DifficultyConfig = {
   // Building interior config (when inside a building)
-  numFloors: 5,
+  numFloors: 4,
   floorY: {
-    1: 460,  // Ground floor
-    2: 365,  // Second floor
-    3: 275,  // Third floor
-    4: 185,  // Fourth floor
-    5: 95,   // Fifth floor (top)
+    1: 480,  // Ground floor (sidewalk)
+    2: 390,  // Second floor (first balcony)
+    3: 290,  // Third floor (second balcony)
+    4: 180,  // Fourth floor (top)
   },
   sideX: {
-    front: 250,
-    middle: 400,
-    back: 550,
+    front: 330,
+    middle: 475,
+    back: 620,
   },
   // Business names are dynamic based on which building is entered
   businesses: {},
@@ -121,44 +126,56 @@ const HARD_CONFIG: DifficultyConfig = {
   buildingInteriorImage: 'building_hard',
   isMultiBuilding: false,
 
-  // City grid configuration
+  // City grid configuration (3 rows x 7 cols)
   isCityGrid: true,
-  cityGridRows: 4,
-  cityGridCols: 3,
-  agentIconSize: 40,
+  cityGridRows: 3,
+  cityGridCols: 7,
+  agentIconSize: 80,
 
-  // City grid positions (center of each building cell)
-  // Grid is 800x533, divided into 4 rows x 3 cols
-  // Each cell is roughly 267x133 pixels
+  // City grid positions for ALL cells (3 rows x 7 cols)
+  // Buildings at EVEN columns (0, 2, 4, 6), roads at ODD columns (1, 3, 5)
+  // Positions measured from the city_grid.png image scaled to 800x533
   cityGridPositions: {
-    '0_0': { x: 133, y: 67 },   // Row 0, Col 0
-    '0_1': { x: 400, y: 67 },   // Row 0, Col 1
-    '0_2': { x: 667, y: 67 },   // Row 0, Col 2
-    '1_0': { x: 133, y: 200 },  // Row 1, Col 0
-    '1_1': { x: 400, y: 200 },  // Row 1, Col 1
-    '1_2': { x: 667, y: 200 },  // Row 1, Col 2
-    '2_0': { x: 133, y: 333 },  // Row 2, Col 0
-    '2_1': { x: 400, y: 333 },  // Row 2, Col 1
-    '2_2': { x: 667, y: 333 },  // Row 2, Col 2
-    '3_0': { x: 133, y: 466 },  // Row 3, Col 0
-    '3_1': { x: 400, y: 466 },  // Row 3, Col 1
-    '3_2': { x: 667, y: 466 },  // Row 3, Col 2
+    // Row 0: Tech Corp, road, City Bank, road, Law Office, road, Medical
+    '0_0': { x: 150, y: 125 },  // Tech Corp
+    '0_1': { x: 230, y: 125 },  // road
+    '0_2': { x: 315, y: 125 },  // City Bank
+    '0_3': { x: 400, y: 125 },  // road
+    '0_4': { x: 480, y: 125 },  // Law Office
+    '0_5': { x: 565, y: 125 },  // road
+    '0_6': { x: 645, y: 125 },  // Medical
+    // Row 1: Real Estate, road, News Studio, road, Accounting, road, Insurance Co
+    '1_0': { x: 150, y: 275 },  // Real Estate
+    '1_1': { x: 230, y: 275 },  // road
+    '1_2': { x: 315, y: 275 },  // News Studio
+    '1_3': { x: 400, y: 275 },  // road
+    '1_4': { x: 480, y: 275 },  // Accounting
+    '1_5': { x: 565, y: 275 },  // road
+    '1_6': { x: 645, y: 275 },  // Insurance Co
+    // Row 2: Marketing, road, Consulting, road, Engineering, road, Data Center
+    '2_0': { x: 150, y: 430 },  // Marketing
+    '2_1': { x: 230, y: 430 },  // road
+    '2_2': { x: 315, y: 430 },  // Consulting
+    '2_3': { x: 400, y: 430 },  // road
+    '2_4': { x: 480, y: 430 },  // Engineering
+    '2_5': { x: 565, y: 430 },  // road
+    '2_6': { x: 645, y: 430 },  // Data Center
   },
 
-  // Building names at each grid position (matches backend CITY_GRID)
+  // Building names at each grid position (EVEN columns only)
   cityBuildings: {
     '0_0': 'Tech Corp',
-    '0_1': 'City Bank',
-    '0_2': 'Law Office',
-    '1_0': 'Medical',
-    '1_1': 'Real Estate',
+    '0_2': 'City Bank',
+    '0_4': 'Law Office',
+    '0_6': 'Medical',
+    '1_0': 'Real Estate',
     '1_2': 'News Studio',
-    '2_0': 'Accounting',
-    '2_1': 'Insurance Co',
-    '2_2': 'Marketing',
-    '3_0': 'Consulting',
-    '3_1': 'Engineering',
-    '3_2': 'Data Center',
+    '1_4': 'Accounting',
+    '1_6': 'Insurance Co',
+    '2_0': 'Marketing',
+    '2_2': 'Consulting',
+    '2_4': 'Engineering',
+    '2_6': 'Data Center',
   },
 };
 

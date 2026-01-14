@@ -106,7 +106,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   thinkingText: null,
   isAnimating: false,
 
-  // Hard mode city grid initial state
+  // Hard mode city grid initial state - start at road (0, 0) top-left corner
   agentGridRow: 0,
   agentGridCol: 0,
   agentCurrentBuilding: null,
@@ -312,7 +312,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       deliveryStatus: 'idle',
       deliverySteps: 0,
       actions: [],
-      // Reset hard mode grid state
+      // Reset hard mode grid state - start at road (0, 0) top-left corner
       agentGridRow: 0,
       agentGridCol: 0,
       agentCurrentBuilding: null,
@@ -354,7 +354,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       agentFloor: 1,
       agentSide: initialSide,
       hasPackage: false,
-      // Reset hard mode grid state
+      // Reset hard mode grid state - start at road (0, 0) top-left corner
       agentGridRow: 0,
       agentGridCol: 0,
       agentCurrentBuilding: null,
@@ -373,9 +373,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     agentFloor: 1,
     agentSide: 'front',
     hasPackage: false,
-    // Reset hard mode grid state
-    agentGridRow: 0,
-    agentGridCol: 0,
+    // Reset hard mode grid state - start at road intersection (1, 1)
+    agentGridRow: 1,
+    agentGridCol: 1,
     agentCurrentBuilding: null,
   }),
 
@@ -416,7 +416,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       agentSide: initialSide,
       hasPackage: false,
       memoryReflect: null,
-      // Reset hard mode grid state
+      // Reset hard mode grid state - start at road (0, 0) top-left corner
       agentGridRow: 0,
       agentGridCol: 0,
       agentCurrentBuilding: null,
