@@ -16,7 +16,11 @@ interface DemoConfig {
     useReflect: boolean;
   };
   tools: { name: string; description: string }[];
+  difficulty?: string;
 }
+
+// Difficulty type
+type Difficulty = 'easy' | 'medium' | 'hard';
 
 // Building info type
 interface BuildingInfo {
@@ -27,6 +31,17 @@ interface BuildingInfo {
     side: string;
     employees: { name: string; role: string }[];
   }[];
+  isMultiBuilding?: boolean;
+  isCityGrid?: boolean;
+  difficulty?: string;
+  cityBuildings?: {
+    name: string;
+    row: number;
+    col: number;
+    floors: { floor: number; name: string; employees: { name: string; role: string }[] }[];
+  }[];
+  gridRows?: number;
+  gridCols?: number;
 }
 
 function ActionLogEntry({ action, expanded, onToggle }: {
@@ -161,6 +176,11 @@ function App() {
     setIncludeBusiness,
     setMaxSteps,
     resetHistory,
+    memoryReflect,
+    // Hard mode city grid state
+    agentGridRow,
+    agentGridCol,
+    agentCurrentBuilding,
   } = useGameStore();
 
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -169,13 +189,22 @@ function App() {
   const [demoConfig, setDemoConfig] = useState<DemoConfig | null>(null);
   const [buildingInfo, setBuildingInfo] = useState<BuildingInfo | null>(null);
   const [showDemoSettings, setShowDemoSettings] = useState(false);
+  const [showAgentModel, setShowAgentModel] = useState(false);
   const [showBuildingLayout, setShowBuildingLayout] = useState(false);
-  const [selectedModel, setSelectedModel] = useState('openai/gpt-4o-mini');
+  const [selectedModel, setSelectedModel] = useState('openai/gpt-4o');
+  const [difficulty, setDifficulty] = useState<Difficulty>('easy');
 
   // Hindsight settings
   const [hindsightInject, setHindsightInject] = useState(true);
   const [hindsightReflect, setHindsightReflect] = useState(false);
   const [hindsightStore, setHindsightStore] = useState(true);
+  const [hindsightQuery, setHindsightQuery] = useState('');
+  const [hindsightBackground, setHindsightBackground] = useState('');
+
+  // Bank management state
+  const [bankHistory, setBankHistory] = useState<string[]>([]);
+  const [currentBankId, setCurrentBankId] = useState<string | null>(null);
+  const [bankInput, setBankInput] = useState('');
 
   // Available models
   const modelOptions = [
@@ -207,8 +236,8 @@ function App() {
     }
   };
 
-  // View mode state (UI vs Fast-Forward)
-  const [viewMode, setViewMode] = useState<'ui' | 'ff'>('ui');
+  // View mode state (UI vs Benchmark)
+  const [viewMode, setViewMode] = useState<'ui' | 'benchmark'>('ui');
 
   // Evaluation configuration type
   interface EvalResult {
@@ -235,6 +264,9 @@ function App() {
     color: string;
     enabled: boolean;
     results: EvalResult[];
+    // Hindsight settings
+    query: string;  // Memory query template (use {recipient} placeholder)
+    background: string;  // Bank background for memory extraction
   }
 
   // Generate short random ID for bank names
@@ -252,31 +284,45 @@ function App() {
     '#ec4899', // pink
   ];
 
-  // Evaluation configs state
-  const [evalConfigs, setEvalConfigs] = useState<EvalConfig[]>(() => [
-    {
-      id: 'baseline-gpt4o-mini',
-      name: 'Baseline (GPT-4o Mini)',
-      model: 'openai/gpt-4o-mini',
-      memoryMode: 'baseline',
-      bankId: `baseline-${Math.random().toString(36).slice(2, 8)}`,
-      color: configColors[0],
-      enabled: true,
-      results: [],
-    },
-    {
-      id: 'recall-gpt4o-mini',
-      name: 'Recall (GPT-4o Mini)',
-      model: 'openai/gpt-4o-mini',
-      memoryMode: 'recall',
-      bankId: `recall-${Math.random().toString(36).slice(2, 8)}`,
-      color: configColors[4],
-      enabled: true,
-      results: [],
-    },
-  ]);
+  // Default query and background
+  const DEFAULT_QUERY = "Where does {recipient} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries.";
+  const DEFAULT_BACKGROUND = "Delivery agent. Remember employee locations, building layout, and optimal paths.";
 
-  // Fast-forward state
+  // Config counter for naming
+  const configCounterRef = useRef(0);
+
+  // Evaluation configs state
+  const [evalConfigs, setEvalConfigs] = useState<EvalConfig[]>(() => {
+    configCounterRef.current = 2;
+    return [
+      {
+        id: 'config-1',
+        name: 'Config-1',
+        model: 'openai/gpt-4o',
+        memoryMode: 'baseline',
+        bankId: `baseline-${Math.random().toString(36).slice(2, 8)}`,
+        color: configColors[0],
+        enabled: true,
+        results: [],
+        query: DEFAULT_QUERY,
+        background: DEFAULT_BACKGROUND,
+      },
+      {
+        id: 'config-2',
+        name: 'Config-2',
+        model: 'openai/gpt-4o',
+        memoryMode: 'recall',
+        bankId: `recall-${Math.random().toString(36).slice(2, 8)}`,
+        color: configColors[4],
+        enabled: true,
+        results: [],
+        query: DEFAULT_QUERY,
+        background: DEFAULT_BACKGROUND,
+      },
+    ];
+  });
+
+  // Benchmark state
   const [ffLoopCount, setFfLoopCount] = useState(10);
   const [ffRunning, setFfRunning] = useState(false);
   const [ffProgress, setFfProgress] = useState(0);
@@ -306,6 +352,8 @@ function App() {
       color: configColors[colorIndex],
       enabled: true,
       results: [],
+      query: DEFAULT_QUERY,
+      background: DEFAULT_BACKGROUND,
     };
     setUiConfigs(prev => [...prev, newConfig]);
     return newConfig;
@@ -323,23 +371,113 @@ function App() {
     return `ui-${selectedModel}-${memoryMode}-${Date.now()}`;
   }, [currentUiConfig, selectedModel, memoryMode]);
 
-  // Fetch employees, demo config, and building info on mount
-  useEffect(() => {
+  // Refresh building data function
+  const refreshBuildingData = useCallback(() => {
+    fetch('/api/building')
+      .then(res => res.json())
+      .then(data => setBuildingInfo(data))
+      .catch(console.error);
+
     fetch('/api/building/employees')
       .then(res => res.json())
-      .then(data => setEmployees(data.employees))
+      .then(data => {
+        setEmployees(data.employees);
+        setSelectedRecipient(''); // Clear selection when building changes
+      })
       .catch(console.error);
 
     fetch('/api/demo-config')
       .then(res => res.json())
       .then(data => setDemoConfig(data))
       .catch(console.error);
-
-    fetch('/api/building')
-      .then(res => res.json())
-      .then(data => setBuildingInfo(data))
-      .catch(console.error);
   }, []);
+
+  // Fetch bank history and current bank
+  const refreshBankHistory = useCallback(async () => {
+    try {
+      const res = await fetch('/api/memory/bank/history');
+      const data = await res.json();
+      setBankHistory(data.history || []);
+      setCurrentBankId(data.currentBankId || null);
+    } catch (err) {
+      console.error('Failed to fetch bank history:', err);
+    }
+  }, []);
+
+  // Switch to an existing bank
+  const switchToBank = useCallback(async (bankId: string) => {
+    try {
+      const res = await fetch('/api/memory/bank', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bankId }),
+      });
+      if (res.ok) {
+        setCurrentBankId(bankId);
+        refreshBankHistory();
+      }
+    } catch (err) {
+      console.error('Failed to switch bank:', err);
+    }
+  }, [refreshBankHistory]);
+
+  // Generate a new bank
+  const generateNewBank = useCallback(async () => {
+    try {
+      const res = await fetch('/api/memory/bank/new', { method: 'POST' });
+      const data = await res.json();
+      if (data.bankId) {
+        setCurrentBankId(data.bankId);
+        refreshBankHistory();
+      }
+    } catch (err) {
+      console.error('Failed to generate new bank:', err);
+    }
+  }, [refreshBankHistory]);
+
+  // Set an existing bank by ID
+  const setExistingBank = useCallback(async () => {
+    if (!bankInput.trim()) return;
+    await switchToBank(bankInput.trim());
+    setBankInput('');
+  }, [bankInput, switchToBank]);
+
+  // Fetch employees, demo config, difficulty, building info, and bank history on mount
+  useEffect(() => {
+    fetch('/api/difficulty')
+      .then(res => res.json())
+      .then(data => {
+        const diff = data.difficulty as Difficulty;
+        setDifficulty(diff);
+      })
+      .catch(console.error);
+
+    refreshBuildingData();
+    refreshBankHistory();
+  }, [refreshBuildingData, refreshBankHistory]);
+
+  // Change difficulty handler
+  const changeDifficulty = useCallback(async (newDifficulty: Difficulty) => {
+    if (newDifficulty === difficulty) return;
+    try {
+      const res = await fetch('/api/difficulty', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ difficulty: newDifficulty }),
+      });
+      if (res.ok) {
+        setDifficulty(newDifficulty);
+        // Dispatch event to Phaser game to update scene
+        window.dispatchEvent(new CustomEvent('game-event', {
+          detail: { type: 'set_difficulty', payload: { difficulty: newDifficulty } }
+        }));
+        // Refresh building data for new difficulty
+        refreshBuildingData();
+      }
+    } catch (err) {
+      console.error('Failed to change difficulty:', err);
+    }
+  }, [difficulty, refreshBuildingData]);
 
   // Auto-expand latest action when it changes
   useEffect(() => {
@@ -357,8 +495,10 @@ function App() {
       reflect: hindsightReflect,
       store: hindsightStore,
       bankId: config.bankId,
+      query: hindsightQuery || undefined,  // Custom memory query (optional)
+      background: hindsightBackground || undefined,  // Bank background context (optional)
     };
-  }, [getOrCreateUiConfig, selectedModel, memoryMode, hindsightInject, hindsightReflect, hindsightStore]);
+  }, [getOrCreateUiConfig, selectedModel, memoryMode, hindsightInject, hindsightReflect, hindsightStore, hindsightQuery, hindsightBackground]);
 
   const handleStartDelivery = () => {
     if (selectedRecipient) {
@@ -415,23 +555,8 @@ function App() {
       clearAllResults();
       setUiConfigs([]); // Clear UI mode tracking configs
       lastHistoryLength.current = 0;
-    }
-  };
-
-  // Reset demo - generates fresh bank IDs for all configs
-  const handleResetDemo = () => {
-    if (confirm('This will reset all memory banks to fresh state and clear results. Continue?')) {
-      // Reset UI mode configs with new bank IDs
-      setUiConfigs([]);
-      lastHistoryLength.current = 0;
-      resetHistory();
-
-      // Reset FF mode configs with new bank IDs
-      setEvalConfigs(prev => prev.map(c => ({
-        ...c,
-        bankId: `${c.memoryMode}-${shortId()}`,
-        results: [],
-      })));
+      // Refresh bank history after WebSocket sends reset event
+      setTimeout(() => refreshBankHistory(), 500);
     }
   };
 
@@ -441,7 +566,7 @@ function App() {
     return preset ? { inject: preset.inject, reflect: preset.reflect, store: preset.store } : { inject: false, reflect: false, store: false };
   };
 
-  // Fast-forward handlers - runs all enabled configs IN PARALLEL
+  // Benchmark handlers - runs all enabled configs IN PARALLEL
   const runFastForward = useCallback(async (count: number) => {
     setFfRunning(true);
     setFfProgress(0);
@@ -473,6 +598,8 @@ function App() {
               reflect: hs.reflect,
               store: hs.store,
               bankId: config.bankId,
+              query: config.query || undefined,
+              background: config.background || undefined,
             },
           }),
         });
@@ -499,7 +626,7 @@ function App() {
           return c;
         }));
       } catch (err) {
-        console.error('Fast-forward error:', err);
+        console.error('Benchmark error:', err);
       }
 
       completed++;
@@ -524,17 +651,20 @@ function App() {
 
   // Add a new config
   const addEvalConfig = useCallback(() => {
-    const newId = `config-${shortId()}`;
+    configCounterRef.current += 1;
+    const configNum = configCounterRef.current;
     const colorIndex = evalConfigs.length % configColors.length;
     setEvalConfigs(prev => [...prev, {
-      id: newId,
-      name: 'Recall (GPT-4o Mini)',
-      model: 'openai/gpt-4o-mini',
+      id: `config-${configNum}`,
+      name: `Config-${configNum}`,
+      model: 'openai/gpt-4o',
       memoryMode: 'recall',
       bankId: `recall-${shortId()}`,
       color: configColors[colorIndex],
       enabled: true,
       results: [],
+      query: DEFAULT_QUERY,
+      background: DEFAULT_BACKGROUND,
     }]);
   }, [evalConfigs.length]);
 
@@ -623,21 +753,17 @@ function App() {
       {/* Header */}
       <header className="bg-slate-900/50 border-b border-slate-700 px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-400 font-mono">
-              DELIVERY AGENT DEMO
-            </h1>
-            <p className="text-slate-500 text-sm">
-              AI agent learning with Hindsight memory
-            </p>
+          <div className="flex items-center gap-6">
+            <div>
+              <h1 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-400 font-mono">
+                DELIVERY AGENT DEMO
+              </h1>
+              <p className="text-slate-500 text-sm">
+                AI agent learning with Hindsight memory
+              </p>
+            </div>
           </div>
           <div className="flex items-center gap-4">
-            <button
-              onClick={handleResetDemo}
-              className="text-xs bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 px-3 py-1.5 rounded transition-colors"
-            >
-              Reset Demo
-            </button>
             <div className="flex items-center gap-2">
               <div className={`w-2 h-2 rounded-full ${
                 connected ? 'bg-green-500 shadow-lg shadow-green-500/50' :
@@ -647,11 +773,94 @@ function App() {
                 {connected ? 'Connected' : isConnecting ? 'Connecting...' : 'Disconnected'}
               </span>
             </div>
-            {/* Show current bank ID in UI mode only (FF mode shows per-config) */}
-            {viewMode === 'ui' && currentUiBankId && (
-              <code className="text-xs bg-slate-800 px-2 py-1 rounded text-slate-400">
-                {currentUiBankId}
-              </code>
+            {/* Bank Management - UI mode only */}
+            {viewMode === 'ui' && (
+              <div className="relative group flex items-center gap-1">
+                <button className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 px-3 py-1.5 rounded-lg transition-colors">
+                  <span className="text-xs text-slate-400">Bank:</span>
+                  <code className="text-xs text-purple-400 font-mono">{currentBankId || 'None'}</code>
+                  <svg className="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {currentBankId && (
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(currentBankId);
+                    }}
+                    className="p-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg transition-colors"
+                    title="Copy bank ID to clipboard"
+                  >
+                    <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </button>
+                )}
+                {/* Dropdown */}
+                <div className="absolute right-0 top-full mt-1 w-64 bg-slate-800 border border-slate-600 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                  <div className="p-3 space-y-3">
+                    {/* Generate New Bank */}
+                    <button
+                      onClick={generateNewBank}
+                      disabled={deliveryStatus === 'running'}
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-purple-600/20 hover:bg-purple-600/30 disabled:bg-slate-700 disabled:cursor-not-allowed border border-purple-500/30 rounded text-sm text-purple-300 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                      New Bank
+                    </button>
+
+                    {/* Bank History */}
+                    {bankHistory.length > 0 && (
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">Recent Banks</label>
+                        <div className="space-y-1 max-h-32 overflow-y-auto">
+                          {bankHistory.map((bankId) => (
+                            <button
+                              key={bankId}
+                              onClick={() => switchToBank(bankId)}
+                              className={`w-full text-left px-2 py-1.5 text-xs font-mono rounded transition-colors flex items-center justify-between ${
+                                bankId === currentBankId
+                                  ? 'bg-purple-600/30 text-purple-300 cursor-default'
+                                  : 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                              }`}
+                              disabled={bankId === currentBankId}
+                            >
+                              <span className="truncate">{bankId}</span>
+                              {bankId === currentBankId && (
+                                <span className="text-[10px] text-purple-400 ml-2">current</span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Use Existing Bank */}
+                    <div className="border-t border-slate-700 pt-2">
+                      <label className="block text-xs text-slate-500 mb-1">Use Existing Bank</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={bankInput}
+                          onChange={(e) => setBankInput(e.target.value)}
+                          placeholder="bench-xxxxxxxx"
+                          className="flex-1 bg-slate-700/50 border border-slate-600 rounded px-2 py-1 text-xs text-white focus:border-purple-500 focus:outline-none"
+                          onKeyDown={(e) => e.key === 'Enter' && setExistingBank()}
+                        />
+                        <button
+                          onClick={setExistingBank}
+                          disabled={!bankInput.trim()}
+                          className="px-2 py-1 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-600 disabled:cursor-not-allowed text-white text-xs rounded transition-colors"
+                        >
+                          Set
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -660,32 +869,62 @@ function App() {
       {/* Main Content */}
       <main className="p-6 max-w-7xl mx-auto">
         {/* View Mode Tabs */}
-        <div className="mb-6">
-          <div className="flex gap-2 p-1 bg-slate-800/50 rounded-lg inline-flex">
-            <button
-              onClick={() => setViewMode('ui')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
-                viewMode === 'ui'
-                  ? 'bg-gradient-to-r from-green-600 to-green-500 text-white shadow-lg'
-                  : 'text-slate-400 hover:text-slate-300'
-              }`}
-            >
-              UI Mode
-            </button>
-            <button
-              onClick={() => setViewMode('ff')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
-                viewMode === 'ff'
-                  ? 'bg-gradient-to-r from-yellow-600 to-orange-500 text-white shadow-lg'
-                  : 'text-slate-400 hover:text-slate-300'
-              }`}
-            >
-              Fast-Forward
-            </button>
+        <div className="mb-6 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="flex gap-2 p-1 bg-slate-800/50 rounded-lg inline-flex">
+              <button
+                onClick={() => setViewMode('ui')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                  viewMode === 'ui'
+                    ? 'bg-gradient-to-r from-green-600 to-green-500 text-white shadow-lg'
+                    : 'text-slate-400 hover:text-slate-300'
+                }`}
+              >
+                UI Mode
+              </button>
+              <button
+                onClick={() => setViewMode('benchmark')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                  viewMode === 'benchmark'
+                    ? 'bg-gradient-to-r from-yellow-600 to-orange-500 text-white shadow-lg'
+                    : 'text-slate-400 hover:text-slate-300'
+                }`}
+              >
+                Benchmark
+              </button>
+            </div>
+
+            {/* Difficulty selector - UI mode only */}
+            {viewMode === 'ui' && (
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1 bg-slate-800/50 rounded-lg p-1">
+                  {(['easy', 'medium', 'hard'] as Difficulty[]).map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => changeDifficulty(d)}
+                      disabled={deliveryStatus === 'running'}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                        difficulty === d
+                          ? d === 'easy' ? 'bg-green-600 text-white'
+                            : d === 'medium' ? 'bg-yellow-600 text-white'
+                            : 'bg-red-600 text-white'
+                          : 'text-slate-400 hover:text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      {d.charAt(0).toUpperCase() + d.slice(1)}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-xs text-slate-500">
+                  {difficulty === 'easy' ? '3 floors' : difficulty === 'medium' ? '3 buildings' : '12 buildings'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Demo Settings Collapsible */}
+        {/* Demo Settings Collapsible - UI mode only */}
+        {viewMode === 'ui' && (
         <div className="mb-6">
           <button
             onClick={() => setShowDemoSettings(!showDemoSettings)}
@@ -699,35 +938,59 @@ function App() {
 
           {showDemoSettings && (
             <div className="mt-3 bg-slate-800/50 rounded-xl p-4 border border-slate-700 space-y-4">
-              {/* Model Selection - UI mode only */}
+              {/* Model Selection - UI mode only, collapsible */}
               {viewMode === 'ui' && (
                 <div>
-                  <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-3">Agent Model</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {modelOptions.map(model => (
-                      <button
-                        key={model.id}
-                        onClick={() => setSelectedModel(model.id)}
-                        className={`text-left p-3 rounded-lg border transition-all ${
-                          selectedModel === model.id
-                            ? 'bg-blue-500/20 border-blue-500/50 ring-1 ring-blue-500/30'
-                            : 'bg-slate-900/50 border-slate-700 hover:border-slate-600'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <div className={`w-3 h-3 rounded-full ${
-                            selectedModel === model.id ? 'bg-blue-400' : 'bg-slate-600'
-                          }`} />
-                          <span className={`font-medium ${
-                            selectedModel === model.id ? 'text-blue-300' : 'text-slate-300'
-                          }`}>
-                            {model.name}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-500 mt-1 ml-5">{model.description}</p>
-                      </button>
-                    ))}
-                  </div>
+                  <button
+                    onClick={() => setShowAgentModel(!showAgentModel)}
+                    className="flex items-center gap-2 text-xs text-slate-500 uppercase tracking-wider mb-2 hover:text-slate-400 transition-colors"
+                  >
+                    <span className={`transition-transform ${showAgentModel ? 'rotate-90' : ''}`}>
+                      ▶
+                    </span>
+                    <span>Agent Model</span>
+                    <span className="text-slate-600 normal-case">({modelOptions.find(m => m.id === selectedModel)?.name || selectedModel})</span>
+                  </button>
+                  {showAgentModel && (
+                    <>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {modelOptions.map(model => (
+                          <button
+                            key={model.id}
+                            onClick={() => setSelectedModel(model.id)}
+                            className={`text-left p-3 rounded-lg border transition-all ${
+                              selectedModel === model.id
+                                ? 'bg-blue-500/20 border-blue-500/50 ring-1 ring-blue-500/30'
+                                : 'bg-slate-900/50 border-slate-700 hover:border-slate-600'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className={`w-3 h-3 rounded-full ${
+                                selectedModel === model.id ? 'bg-blue-400' : 'bg-slate-600'
+                              }`} />
+                              <span className={`font-medium ${
+                                selectedModel === model.id ? 'text-blue-300' : 'text-slate-300'
+                              }`}>
+                                {model.name}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-1 ml-5">{model.description}</p>
+                          </button>
+                        ))}
+                      </div>
+                      {/* Custom Model Input */}
+                      <div className="mt-3">
+                        <label className="text-xs text-slate-400 block mb-1">Custom Model (overrides selection above)</label>
+                        <input
+                          type="text"
+                          value={selectedModel}
+                          onChange={(e) => setSelectedModel(e.target.value)}
+                          placeholder="e.g., anthropic/claude-3-5-sonnet"
+                          className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -740,6 +1003,13 @@ function App() {
                       <code className="text-green-400 text-sm font-mono whitespace-pre-wrap">
                         {demoConfig.systemPrompt}
                       </code>
+                      {memoryMode !== 'baseline' && (
+                        <div className="mt-2 pt-2 border-t border-slate-700">
+                          <code className={`text-sm font-mono whitespace-pre-wrap ${memoryMode === 'recall' ? 'text-purple-400' : 'text-cyan-400'}`}>
+                            {'\n'}# Relevant Memory{'\n'}{'<memory from hindsight query>'}
+                          </code>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -748,7 +1018,7 @@ function App() {
                     <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-2">User Prompt</h3>
                     <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700">
                       <code className="text-blue-400 text-sm font-mono whitespace-pre-wrap">
-                        Please deliver this package: Package #{"<id>"}: To {"<recipient_name>"} [at {"<business_name>"}]
+                        Please deliver this package: Package #{"<id>"}: To {"<recipient_name>"} {includeBusiness ? '[at <business_name>]' : ''}
                       </code>
                     </div>
                   </div>
@@ -797,31 +1067,96 @@ function App() {
                     {hindsightPresets.find(p => p.id === memoryMode)?.description}
                   </p>
 
-                  <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700 space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-slate-400">Inject Memories</span>
-                      <span className={hindsightInject ? 'text-green-400' : 'text-slate-500'}>
-                        {hindsightInject ? 'Enabled' : 'Disabled'}
-                      </span>
+                  {/* Individual Toggle Controls */}
+                  <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-sm text-slate-300">Inject Memories</span>
+                        <p className="text-xs text-slate-500">Add relevant memories to LLM context</p>
+                      </div>
+                      <button
+                        onClick={() => setHindsightInject(!hindsightInject)}
+                        className={`w-12 h-6 rounded-full transition-all ${
+                          hindsightInject ? 'bg-green-500' : 'bg-slate-600'
+                        }`}
+                      >
+                        <div className={`w-5 h-5 rounded-full bg-white shadow transform transition-transform ${
+                          hindsightInject ? 'translate-x-6' : 'translate-x-0.5'
+                        }`} />
+                      </button>
                     </div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-slate-400">Use Reflect</span>
-                      <span className={hindsightReflect ? 'text-green-400' : 'text-slate-500'}>
-                        {hindsightReflect ? 'Enabled' : 'Disabled'}
-                      </span>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-sm text-slate-300">Use Reflect</span>
+                        <p className="text-xs text-slate-500">Use AI-synthesized insights instead of raw facts</p>
+                      </div>
+                      <button
+                        onClick={() => setHindsightReflect(!hindsightReflect)}
+                        className={`w-12 h-6 rounded-full transition-all ${
+                          hindsightReflect ? 'bg-cyan-500' : 'bg-slate-600'
+                        }`}
+                      >
+                        <div className={`w-5 h-5 rounded-full bg-white shadow transform transition-transform ${
+                          hindsightReflect ? 'translate-x-6' : 'translate-x-0.5'
+                        }`} />
+                      </button>
                     </div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-slate-400">Store Deliveries</span>
-                      <span className={hindsightStore ? 'text-green-400' : 'text-slate-500'}>
-                        {hindsightStore ? 'Enabled' : 'Disabled'}
-                      </span>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-sm text-slate-300">Store Deliveries</span>
+                        <p className="text-xs text-slate-500">Save delivery outcomes to memory bank</p>
+                      </div>
+                      <button
+                        onClick={() => setHindsightStore(!hindsightStore)}
+                        className={`w-12 h-6 rounded-full transition-all ${
+                          hindsightStore ? 'bg-purple-500' : 'bg-slate-600'
+                        }`}
+                      >
+                        <div className={`w-5 h-5 rounded-full bg-white shadow transform transition-transform ${
+                          hindsightStore ? 'translate-x-6' : 'translate-x-0.5'
+                        }`} />
+                      </button>
                     </div>
                     {demoConfig && (
-                      <div className="flex items-center justify-between text-sm pt-2 border-t border-slate-700">
-                        <span className="text-slate-400">API URL</span>
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-700">
+                        <span className="text-sm text-slate-400">API URL</span>
                         <code className="text-purple-400 font-mono text-xs">{demoConfig.hindsight.apiUrl}</code>
                       </div>
                     )}
+                  </div>
+
+                  {/* Memory Query Input */}
+                  <div className="mt-3">
+                    <label className="text-xs text-slate-400 block mb-1">
+                      Memory Query (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={hindsightQuery}
+                      onChange={(e) => setHindsightQuery(e.target.value)}
+                      placeholder="Where does {recipient} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries."
+                      className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Use {'{recipient}'} as a placeholder. Default query asks about recipient location.
+                    </p>
+                  </div>
+
+                  {/* Bank Background Input */}
+                  <div className="mt-3">
+                    <label className="text-xs text-slate-400 block mb-1">
+                      Bank Background (optional)
+                    </label>
+                    <textarea
+                      value={hindsightBackground}
+                      onChange={(e) => setHindsightBackground(e.target.value)}
+                      placeholder="Delivery agent. Remember employee locations, building layout, and optimal paths."
+                      rows={3}
+                      className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500 resize-none"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Guides memory extraction - tells Hindsight what facts to focus on when storing memories.
+                    </p>
                   </div>
                 </div>
               )}
@@ -925,6 +1260,7 @@ function App() {
             </div>
           )}
         </div>
+        )}
 
         {/* UI Mode Content */}
         {viewMode === 'ui' && (
@@ -954,6 +1290,10 @@ function App() {
                 deliverySuccess={deliveryStatus === 'success'}
                 deliveryFailed={deliveryStatus === 'failed'}
                 lastActionTool={actions.length > 0 ? actions[actions.length - 1].toolName : undefined}
+                difficulty={difficulty}
+                gridRow={agentGridRow}
+                gridCol={agentGridCol}
+                currentBuilding={agentCurrentBuilding}
               />
 
               {/* Status Bar */}
@@ -1135,7 +1475,7 @@ function App() {
                   <option value="">Choose a recipient...</option>
                   {employees.map(emp => (
                     <option key={emp.name} value={emp.name}>
-                      F{emp.floor} {emp.side} | {emp.business} | {emp.name}
+                      {emp.building ? `${emp.building} ` : ''}F{emp.floor} {emp.side} | {emp.business} | {emp.name}
                     </option>
                   ))}
                 </select>
@@ -1228,6 +1568,76 @@ function App() {
               </div>
             </div>
 
+            {/* Hindsight Memory */}
+            {memoryReflect && (
+              <div className="bg-purple-900/20 rounded-xl p-4 border border-purple-500/30">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-lg font-semibold text-purple-300">Hindsight Memory</h2>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${
+                    memoryReflect.method === 'reflect'
+                      ? 'bg-purple-600/30 text-purple-300'
+                      : 'bg-blue-600/30 text-blue-300'
+                  }`}>
+                    {memoryReflect.method}
+                  </span>
+                </div>
+                <div className="space-y-3">
+                  {/* Query */}
+                  <div>
+                    <div className="text-purple-400 text-xs uppercase mb-1">Query</div>
+                    <div className="text-purple-200 text-sm font-mono bg-purple-950/50 rounded p-2">
+                      {memoryReflect.query}
+                    </div>
+                  </div>
+                  {/* Memory Content */}
+                  <div>
+                    <div className="text-purple-400 text-xs uppercase mb-1">
+                      {memoryReflect.method === 'reflect' ? 'Synthesized Memory' : `Raw Facts (${memoryReflect.count})`}
+                    </div>
+                    {memoryReflect.context ? (
+                      <div className="text-purple-100 text-sm whitespace-pre-wrap bg-purple-950/50 rounded p-2 max-h-40 overflow-y-auto">
+                        {memoryReflect.context}
+                      </div>
+                    ) : memoryReflect.error ? (
+                      <div className="text-red-400 text-sm bg-red-950/50 rounded p-2">
+                        Error: {memoryReflect.error}
+                      </div>
+                    ) : (
+                      <div className="text-slate-400 text-sm italic bg-purple-950/50 rounded p-2">
+                        No relevant memories found
+                      </div>
+                    )}
+                  </div>
+                  {/* Raw memories for recall mode */}
+                  {memoryReflect.method === 'recall' && memoryReflect.memories && memoryReflect.memories.length > 0 && (
+                    <div>
+                      <div className="text-purple-400 text-xs uppercase mb-1">Individual Facts</div>
+                      <div className="space-y-1 max-h-32 overflow-y-auto">
+                        {memoryReflect.memories.map((fact, i) => (
+                          <div key={i} className="text-xs bg-purple-950/30 rounded px-2 py-1 flex items-start gap-2">
+                            <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                              fact.type === 'world' ? 'bg-blue-600/30 text-blue-300' :
+                              fact.type === 'experience' ? 'bg-green-600/30 text-green-300' :
+                              'bg-yellow-600/30 text-yellow-300'
+                            }`}>
+                              {fact.type}
+                            </span>
+                            <span className="text-purple-200">{fact.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* Timing */}
+                  {memoryReflect.timing !== undefined && (
+                    <div className="text-purple-400/60 text-xs">
+                      Retrieved in {(memoryReflect.timing * 1000).toFixed(0)}ms
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Action Log */}
             <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
               <div className="flex items-center justify-between mb-4">
@@ -1260,119 +1670,369 @@ function App() {
         </div>
         )}
 
-        {/* Fast-Forward Mode */}
-        {viewMode === 'ff' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left Column - Chart & Controls */}
-            <div className="lg:col-span-2 space-y-4">
-              {/* Run Controls */}
-              <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-                <h2 className="text-lg font-semibold text-slate-300 mb-4">Evaluation Run</h2>
-                <p className="text-slate-500 text-sm mb-4">
-                  Run deliveries across all enabled configurations to compare performance.
-                </p>
-
-                <div className="grid grid-cols-2 gap-4 mb-4">
-                  <div>
-                    <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
-                      Deliveries per Config
-                    </label>
-                    <input
-                      type="number"
-                      value={ffLoopCount}
-                      onChange={(e) => setFfLoopCount(parseInt(e.target.value) || 1)}
-                      min={1}
-                      max={100}
-                      className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
-                      disabled={ffRunning}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
-                      Max Steps
-                    </label>
-                    <input
-                      type="number"
-                      value={maxSteps ?? 150}
-                      onChange={(e) => setMaxSteps(parseInt(e.target.value) || 150)}
-                      min={1}
-                      className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
-                      disabled={ffRunning}
-                    />
+        {/* Benchmark Mode */}
+        {viewMode === 'benchmark' && (
+          <div className="space-y-6">
+            {/* Top Section: Run Settings */}
+            <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-4">
+                  <h2 className="text-lg font-semibold text-slate-300">Run Settings</h2>
+                  {/* Difficulty selector */}
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1 bg-slate-700/50 rounded-lg p-1">
+                      {(['easy', 'medium', 'hard'] as Difficulty[]).map((d) => (
+                        <button
+                          key={d}
+                          onClick={() => changeDifficulty(d)}
+                          disabled={ffRunning}
+                          className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                            difficulty === d
+                              ? d === 'easy' ? 'bg-green-600 text-white'
+                                : d === 'medium' ? 'bg-yellow-600 text-white'
+                                : 'bg-red-600 text-white'
+                              : 'text-slate-400 hover:text-slate-300 hover:bg-slate-600'
+                          }`}
+                        >
+                          {d.charAt(0).toUpperCase() + d.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="text-xs text-slate-500">
+                      {difficulty === 'easy' ? '3 floors' : difficulty === 'medium' ? '3 buildings' : '12 buildings'}
+                    </span>
                   </div>
                 </div>
-
-                <label className="flex items-center gap-3 cursor-pointer group mb-2">
-                  <input
-                    type="checkbox"
-                    checked={includeBusiness}
-                    onChange={(e) => setIncludeBusiness(e.target.checked)}
-                    className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-yellow-500 focus:ring-yellow-500 focus:ring-offset-0"
-                    disabled={ffRunning}
-                  />
-                  <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
-                    Include business name in prompt
-                  </span>
-                </label>
-
-                <label className="flex items-center gap-3 cursor-pointer group mb-4">
-                  <input
-                    type="checkbox"
-                    checked={saveAllSteps}
-                    onChange={(e) => setSaveAllSteps(e.target.checked)}
-                    className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
-                    disabled={ffRunning}
-                  />
-                  <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
-                    Save all steps (detailed logs for export)
-                  </span>
-                </label>
-
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => runFastForward(ffLoopCount)}
-                    disabled={ffRunning || evalConfigs.filter(c => c.enabled).length === 0}
-                    className="flex-1 bg-gradient-to-r from-yellow-600 to-orange-500 hover:from-yellow-500 hover:to-orange-400 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-all shadow-lg shadow-yellow-500/20 disabled:shadow-none"
-                  >
-                    {ffRunning ? `Running ${ffCurrentConfig ? evalConfigs.find(c => c.id === ffCurrentConfig)?.name : ''}...` : `Run ${ffLoopCount} x ${evalConfigs.filter(c => c.enabled).length} configs`}
-                  </button>
-                  <button
-                    onClick={stopFastForward}
-                    disabled={!ffRunning}
-                    className="bg-red-600/80 hover:bg-red-600 disabled:bg-slate-600/50 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-colors"
-                  >
-                    Stop
-                  </button>
-                </div>
-
-                {/* Progress Bar */}
                 {ffRunning && (
-                  <div className="mt-4">
-                    <div className="flex justify-between text-xs text-slate-400 mb-1">
-                      <span>Progress</span>
-                      <span>{Math.round(ffProgress)}%</span>
-                    </div>
-                    <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-yellow-500 to-orange-500 transition-all duration-300"
-                        style={{ width: `${ffProgress}%` }}
-                      />
-                    </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" />
+                    <span className="text-sm text-yellow-400">Running...</span>
                   </div>
                 )}
               </div>
 
-              {/* Multi-Series Learning Curve Chart */}
-              {evalConfigs.some(c => c.results.length >= 2) && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                <div>
+                  <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
+                    Deliveries per Config
+                  </label>
+                  <input
+                    type="number"
+                    value={ffLoopCount}
+                    onChange={(e) => setFfLoopCount(parseInt(e.target.value) || 1)}
+                    min={1}
+                    max={100}
+                    className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
+                    disabled={ffRunning}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
+                    Max Steps
+                  </label>
+                  <input
+                    type="number"
+                    value={maxSteps ?? 150}
+                    onChange={(e) => setMaxSteps(parseInt(e.target.value) || 150)}
+                    min={1}
+                    className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
+                    disabled={ffRunning}
+                  />
+                </div>
+                <div className="flex flex-col justify-end">
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input
+                      type="checkbox"
+                      checked={includeBusiness}
+                      onChange={(e) => setIncludeBusiness(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-yellow-500 focus:ring-yellow-500 focus:ring-offset-0"
+                      disabled={ffRunning}
+                    />
+                    <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
+                      Include business name
+                    </span>
+                  </label>
+                </div>
+                <div className="flex flex-col justify-end">
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input
+                      type="checkbox"
+                      checked={saveAllSteps}
+                      onChange={(e) => setSaveAllSteps(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                      disabled={ffRunning}
+                    />
+                    <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
+                      Save detailed logs
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => runFastForward(ffLoopCount)}
+                  disabled={ffRunning || evalConfigs.filter(c => c.enabled).length === 0}
+                  className="flex-1 bg-gradient-to-r from-yellow-600 to-orange-500 hover:from-yellow-500 hover:to-orange-400 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-all shadow-lg shadow-yellow-500/20 disabled:shadow-none"
+                >
+                  {ffRunning ? `Running...` : `Run ${ffLoopCount} deliveries × ${evalConfigs.filter(c => c.enabled).length} configs`}
+                </button>
+                <button
+                  onClick={stopFastForward}
+                  disabled={!ffRunning}
+                  className="bg-red-600/80 hover:bg-red-600 disabled:bg-slate-600/50 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-colors"
+                >
+                  Stop
+                </button>
+                <button
+                  onClick={clearAllResults}
+                  disabled={ffRunning || !evalConfigs.some(c => c.results.length > 0)}
+                  className="bg-slate-700/50 hover:bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-300 disabled:bg-slate-800 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-colors"
+                >
+                  Clear
+                </button>
+                <button
+                  onClick={exportResults}
+                  disabled={!evalConfigs.some(c => c.results.length > 0)}
+                  className="bg-blue-600/50 hover:bg-blue-600 border border-blue-500/50 text-blue-300 hover:text-white disabled:bg-slate-800 disabled:border-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-colors"
+                >
+                  Export
+                </button>
+              </div>
+
+              {/* Progress Bar */}
+              {ffRunning && (
+                <div className="mt-4">
+                  <div className="flex justify-between text-xs text-slate-400 mb-1">
+                    <span>{ffCurrentConfig ? evalConfigs.find(c => c.id === ffCurrentConfig)?.name : 'Starting...'}</span>
+                    <span>{Math.round(ffProgress)}%</span>
+                  </div>
+                  <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-yellow-500 to-orange-500 transition-all duration-300"
+                      style={{ width: `${ffProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Middle Section: Configurations */}
+            <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-slate-300">Configurations</h2>
+                <div className="flex gap-2">
+                  {['baseline', 'recall', 'reflect'].map(mode => (
+                    <button
+                      key={mode}
+                      onClick={() => {
+                        configCounterRef.current += 1;
+                        const configNum = configCounterRef.current;
+                        const colorIndex = evalConfigs.length % configColors.length;
+                        setEvalConfigs(prev => [...prev, {
+                          id: `config-${configNum}`,
+                          name: `Config-${configNum}`,
+                          model: 'openai/gpt-4o',
+                          memoryMode: mode as 'baseline' | 'recall' | 'reflect',
+                          bankId: `${mode}-${shortId()}`,
+                          color: configColors[colorIndex],
+                          enabled: true,
+                          results: [],
+                          query: DEFAULT_QUERY,
+                          background: DEFAULT_BACKGROUND,
+                        }]);
+                      }}
+                      disabled={ffRunning}
+                      className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                        mode === 'baseline' ? 'border-slate-500 text-slate-400 hover:bg-slate-700' :
+                        mode === 'recall' ? 'border-purple-500/50 text-purple-400 hover:bg-purple-900/30' :
+                        'border-cyan-500/50 text-cyan-400 hover:bg-cyan-900/30'
+                      }`}
+                    >
+                      + {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {evalConfigs.map(config => (
+                  <div
+                    key={config.id}
+                    className={`p-4 rounded-lg border transition-all ${
+                      config.enabled
+                        ? 'bg-slate-700/50 border-slate-600'
+                        : 'bg-slate-800/50 border-slate-700 opacity-60'
+                    }`}
+                  >
+                    {/* Header */}
+                    <div className="flex items-center gap-2 mb-3">
+                      <input
+                        type="checkbox"
+                        checked={config.enabled}
+                        onChange={(e) => updateEvalConfig(config.id, { enabled: e.target.checked })}
+                        disabled={ffRunning}
+                        className="w-4 h-4 rounded"
+                      />
+                      <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: config.color }} />
+                      <span className="flex-1 text-slate-300 text-sm font-medium truncate">
+                        {config.name}
+                      </span>
+                      {evalConfigs.length > 1 && (
+                        <button
+                          onClick={() => removeEvalConfig(config.id)}
+                          disabled={ffRunning}
+                          className="text-slate-500 hover:text-red-400 disabled:cursor-not-allowed text-sm"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Model Selection */}
+                    <div className="mb-2">
+                      <label className="block text-xs text-slate-500 mb-1">Model</label>
+                      <select
+                        value={config.model}
+                        onChange={(e) => {
+                          const newModel = e.target.value;
+                          const modelName = modelOptions.find(m => m.id === newModel)?.name || newModel;
+                          const modeName = config.memoryMode.charAt(0).toUpperCase() + config.memoryMode.slice(1);
+                          updateEvalConfig(config.id, {
+                            model: newModel,
+                            name: `${modeName} (${modelName})`,
+                          });
+                        }}
+                        disabled={ffRunning}
+                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-slate-300"
+                      >
+                        {modelOptions.map(m => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Memory Mode */}
+                    <div className="mb-3">
+                      <label className="block text-xs text-slate-500 mb-1">Memory Mode</label>
+                      <div className="flex gap-1">
+                        {(['baseline', 'recall', 'reflect'] as const).map(mode => (
+                          <button
+                            key={mode}
+                            onClick={() => {
+                              const modelName = modelOptions.find(m => m.id === config.model)?.name || config.model;
+                              const modeName = mode.charAt(0).toUpperCase() + mode.slice(1);
+                              updateEvalConfig(config.id, {
+                                memoryMode: mode,
+                                name: `${modeName} (${modelName})`,
+                                bankId: `${mode}-${shortId()}`
+                              });
+                            }}
+                            disabled={ffRunning}
+                            className={`flex-1 px-2 py-1 text-xs rounded transition-colors disabled:cursor-not-allowed ${
+                              config.memoryMode === mode
+                                ? mode === 'baseline' ? 'bg-slate-600 text-white'
+                                  : mode === 'recall' ? 'bg-purple-600 text-white'
+                                  : 'bg-cyan-600 text-white'
+                                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                            }`}
+                          >
+                            {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Memory Settings - only for recall/reflect modes */}
+                    {config.memoryMode !== 'baseline' && (
+                      <div className="space-y-2 mb-3">
+                        {/* Query */}
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">Memory Query</label>
+                          <textarea
+                            value={config.query}
+                            onChange={(e) => updateEvalConfig(config.id, { query: e.target.value })}
+                            placeholder={DEFAULT_QUERY}
+                            rows={2}
+                            disabled={ffRunning}
+                            className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
+                          />
+                        </div>
+                        {/* Background */}
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">Bank Background</label>
+                          <textarea
+                            value={config.background}
+                            onChange={(e) => updateEvalConfig(config.id, { background: e.target.value })}
+                            placeholder={DEFAULT_BACKGROUND}
+                            rows={2}
+                            disabled={ffRunning}
+                            className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Bank ID */}
+                    <div className="pt-2 border-t border-slate-600">
+                      <label className="block text-xs text-slate-500 mb-1">Bank ID</label>
+                      <div className="flex gap-1">
+                        <input
+                          type="text"
+                          value={config.bankId}
+                          onChange={(e) => updateEvalConfig(config.id, { bankId: e.target.value })}
+                          disabled={ffRunning}
+                          className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-slate-400 font-mono disabled:opacity-50"
+                        />
+                        <button
+                          onClick={() => updateEvalConfig(config.id, { bankId: `${config.memoryMode}-${shortId()}` })}
+                          disabled={ffRunning}
+                          className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-400 text-[10px] rounded disabled:opacity-50"
+                          title="Generate new bank ID"
+                        >
+                          New
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Results Summary */}
+                    {config.results.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-slate-600 grid grid-cols-3 gap-2 text-center">
+                        <div>
+                          <div className="text-sm font-bold text-slate-300">{config.results.length}</div>
+                          <div className="text-[10px] text-slate-500">runs</div>
+                        </div>
+                        <div>
+                          <div className="text-sm font-bold text-green-400">
+                            {Math.round(config.results.filter(r => r.success).length / config.results.length * 100)}%
+                          </div>
+                          <div className="text-[10px] text-slate-500">success</div>
+                        </div>
+                        <div>
+                          <div className="text-sm font-bold text-blue-400">
+                            {(config.results.reduce((s, r) => s + r.steps, 0) / config.results.length).toFixed(1)}
+                          </div>
+                          <div className="text-[10px] text-slate-500">avg steps</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Bottom Section: Results */}
+            {evalConfigs.some(c => c.results.length > 0) && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Learning Curve Chart */}
                 <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="text-lg font-semibold text-slate-300">Learning Curves</h2>
-                    {/* Legend */}
-                    <div className="flex flex-wrap gap-3">
+                    <div className="flex flex-wrap gap-2">
                       {evalConfigs.filter(c => c.results.length > 0).map(config => (
-                        <div key={config.id} className="flex items-center gap-1.5">
-                          <div className="w-3 h-3 rounded-full" style={{ backgroundColor: config.color }} />
-                          <span className="text-xs text-slate-400">{config.name}</span>
+                        <div key={config.id} className="flex items-center gap-1">
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: config.color }} />
+                          <span className="text-[10px] text-slate-400">{config.name}</span>
                         </div>
                       ))}
                     </div>
@@ -1413,10 +2073,8 @@ function App() {
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
-              )}
 
-              {/* Stats Comparison Table */}
-              {evalConfigs.some(c => c.results.length > 0) && (
+                {/* Results Table */}
                 <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
                   <h2 className="text-lg font-semibold text-slate-300 mb-4">Results Comparison</h2>
                   <div className="overflow-x-auto">
@@ -1426,7 +2084,7 @@ function App() {
                           <th className="text-left py-2 px-3">Config</th>
                           <th className="text-center py-2 px-3">Runs</th>
                           <th className="text-center py-2 px-3">Success</th>
-                          <th className="text-center py-2 px-3">Avg Steps</th>
+                          <th className="text-center py-2 px-3">Avg</th>
                           <th className="text-center py-2 px-3">Min</th>
                           <th className="text-center py-2 px-3">Max</th>
                         </tr>
@@ -1441,8 +2099,8 @@ function App() {
                             <tr key={config.id} className="border-t border-slate-700">
                               <td className="py-2 px-3">
                                 <div className="flex items-center gap-2">
-                                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: config.color }} />
-                                  <span className="text-slate-300">{config.name}</span>
+                                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: config.color }} />
+                                  <span className="text-slate-300 text-xs">{config.name}</span>
                                 </div>
                               </td>
                               <td className="text-center py-2 px-3 text-slate-400">{config.results.length}</td>
@@ -1461,161 +2119,8 @@ function App() {
                     </table>
                   </div>
                 </div>
-              )}
-            </div>
-
-            {/* Right Column - Config Management */}
-            <div className="space-y-4">
-              {/* Configurations */}
-              <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold text-slate-300">Configurations</h2>
-                  <button
-                    onClick={addEvalConfig}
-                    disabled={ffRunning}
-                    className="text-xs bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed px-2 py-1 rounded text-slate-300"
-                  >
-                    + Add
-                  </button>
-                </div>
-
-                <div className="space-y-3">
-                  {evalConfigs.map(config => (
-                    <div
-                      key={config.id}
-                      className={`p-3 rounded-lg border transition-all ${
-                        config.enabled
-                          ? 'bg-slate-700/50 border-slate-600'
-                          : 'bg-slate-800/50 border-slate-700 opacity-60'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <input
-                          type="checkbox"
-                          checked={config.enabled}
-                          onChange={(e) => updateEvalConfig(config.id, { enabled: e.target.checked })}
-                          disabled={ffRunning}
-                          className="w-4 h-4 rounded"
-                        />
-                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: config.color }} />
-                        <span className="flex-1 text-slate-300 text-sm font-medium truncate">
-                          {config.name}
-                        </span>
-                        {evalConfigs.length > 1 && (
-                          <button
-                            onClick={() => removeEvalConfig(config.id)}
-                            disabled={ffRunning}
-                            className="text-slate-500 hover:text-red-400 disabled:cursor-not-allowed text-xs"
-                          >
-                            ✕
-                          </button>
-                        )}
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 text-xs">
-                        <select
-                          value={config.model}
-                          onChange={(e) => {
-                            const newModel = e.target.value;
-                            const modelName = modelOptions.find(m => m.id === newModel)?.name || newModel;
-                            const modeName = config.memoryMode.charAt(0).toUpperCase() + config.memoryMode.slice(1);
-                            updateEvalConfig(config.id, {
-                              model: newModel,
-                              name: `${modeName} (${modelName})`,
-                            });
-                          }}
-                          disabled={ffRunning}
-                          className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-300"
-                        >
-                          {modelOptions.map(m => (
-                            <option key={m.id} value={m.id}>{m.name}</option>
-                          ))}
-                        </select>
-                        <select
-                          value={config.memoryMode}
-                          onChange={(e) => {
-                            const newMode = e.target.value as 'baseline' | 'recall' | 'reflect';
-                            const modelName = modelOptions.find(m => m.id === config.model)?.name || config.model;
-                            const modeName = newMode.charAt(0).toUpperCase() + newMode.slice(1);
-                            updateEvalConfig(config.id, {
-                              memoryMode: newMode,
-                              name: `${modeName} (${modelName})`,
-                              bankId: `${newMode}-${shortId()}`
-                            });
-                          }}
-                          disabled={ffRunning}
-                          className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-300"
-                        >
-                          <option value="baseline">Baseline</option>
-                          <option value="recall">Recall</option>
-                          <option value="reflect">Reflect</option>
-                        </select>
-                      </div>
-
-                      {/* Bank ID */}
-                      <div className="mt-2 pt-2 border-t border-slate-600">
-                        <code className="text-[10px] text-slate-500 font-mono">{config.bankId}</code>
-                      </div>
-
-                      {config.results.length > 0 && (
-                        <div className="mt-1 flex justify-between text-xs text-slate-500">
-                          <span>{config.results.length} runs</span>
-                          <span>Avg: {(config.results.reduce((s, r) => s + r.steps, 0) / config.results.length).toFixed(1)} steps</span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Clear Results & Export */}
-                <div className="flex gap-2 mt-4">
-                  <button
-                    onClick={clearAllResults}
-                    disabled={ffRunning || !evalConfigs.some(c => c.results.length > 0)}
-                    className="flex-1 bg-slate-700/50 hover:bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-300 disabled:bg-slate-800 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm transition-colors"
-                  >
-                    Clear Results
-                  </button>
-                  <button
-                    onClick={exportResults}
-                    disabled={!evalConfigs.some(c => c.results.length > 0)}
-                    className="flex-1 bg-blue-600/50 hover:bg-blue-600 border border-blue-500/50 text-blue-300 hover:text-white disabled:bg-slate-800 disabled:border-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm transition-colors"
-                  >
-                    Export JSON
-                  </button>
-                </div>
               </div>
-
-              {/* Quick Add Presets */}
-              <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-                <h2 className="text-sm font-semibold text-slate-400 mb-3">Quick Add</h2>
-                <div className="grid grid-cols-1 gap-2">
-                  {['baseline', 'recall', 'reflect'].map(mode => (
-                    <button
-                      key={mode}
-                      onClick={() => {
-                        const newId = `${mode}-${shortId()}`;
-                        const colorIndex = evalConfigs.length % configColors.length;
-                        setEvalConfigs(prev => [...prev, {
-                          id: newId,
-                          name: `${mode.charAt(0).toUpperCase() + mode.slice(1)} (GPT-4o Mini)`,
-                          model: 'openai/gpt-4o-mini',
-                          memoryMode: mode as 'baseline' | 'recall' | 'reflect',
-                          bankId: `${mode}-${shortId()}`,
-                          color: configColors[colorIndex],
-                          enabled: true,
-                          results: [],
-                        }]);
-                      }}
-                      disabled={ffRunning}
-                      className="text-left text-xs bg-slate-700/50 hover:bg-slate-700 disabled:bg-slate-800 disabled:cursor-not-allowed px-3 py-2 rounded border border-slate-600 text-slate-400"
-                    >
-                      + Add {mode.charAt(0).toUpperCase() + mode.slice(1)} config
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
+            )}
           </div>
         )}
 

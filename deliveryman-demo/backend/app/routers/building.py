@@ -73,16 +73,30 @@ async def get_employees():
     building = get_building()
     employees = []
 
-    for emp_name, (business, employee) in building.all_employees.items():
-        employees.append({
-            "name": employee.name,
-            "role": employee.role,
-            "business": business.name,
-            "floor": business.floor,
-            "side": business.side.value
-        })
-
-    # Sort by floor (desc) then business name
-    employees.sort(key=lambda e: (-e["floor"], e["business"], e["name"]))
+    # For hard mode (city grid), include building name
+    if building.is_city_grid and building.city_grid:
+        for emp_name, (building_name, business, employee) in building.city_grid.all_employees.items():
+            employees.append({
+                "name": employee.name,
+                "role": employee.role,
+                "business": business.name,
+                "floor": business.floor,
+                "side": business.side.value,
+                "building": building_name
+            })
+        # Sort by building then floor (desc) then business name
+        employees.sort(key=lambda e: (e["building"], -e["floor"], e["business"], e["name"]))
+    else:
+        for emp_name, (business, employee) in building.all_employees.items():
+            employees.append({
+                "name": employee.name,
+                "role": employee.role,
+                "business": business.name,
+                "floor": business.floor,
+                "side": business.side.value,
+                "building": None
+            })
+        # Sort by floor (desc) then business name
+        employees.sort(key=lambda e: (-e["floor"], e["business"], e["name"]))
 
     return {"employees": employees}

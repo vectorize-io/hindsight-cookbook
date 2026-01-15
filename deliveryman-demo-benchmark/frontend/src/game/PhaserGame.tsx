@@ -11,6 +11,11 @@ interface PhaserGameProps {
   deliverySuccess: boolean;
   deliveryFailed: boolean;
   lastActionTool?: string;  // Tool name of the most recent action
+  difficulty?: 'easy' | 'medium' | 'hard';
+  // Hard mode city grid props
+  gridRow?: number;
+  gridCol?: number;
+  currentBuilding?: string | null;
 }
 
 interface MoveCommand {
@@ -18,7 +23,14 @@ interface MoveCommand {
   side: string;
 }
 
-export function PhaserGame({ floor, side, isThinking, packageText, deliverySuccess, deliveryFailed, lastActionTool }: PhaserGameProps) {
+interface GridCommand {
+  type: 'move_grid' | 'enter_building' | 'exit_building';
+  row?: number;
+  col?: number;
+  buildingName?: string;
+}
+
+export function PhaserGame({ floor, side, isThinking, packageText, deliverySuccess, deliveryFailed, lastActionTool, difficulty = 'easy', gridRow = 0, gridCol = 0, currentBuilding = null }: PhaserGameProps) {
   const gameRef = useRef<Phaser.Game | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastFloorRef = useRef(floor);
@@ -27,14 +39,42 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   const lastFailedRef = useRef(false);
   const setAnimating = useGameStore((state) => state.setAnimating);
 
+  // Hard mode grid refs
+  const lastGridRowRef = useRef(gridRow);
+  const lastGridColRef = useRef(gridCol);
+  const lastBuildingRef = useRef<string | null>(currentBuilding);
+
   // Animation queues
   const moveQueueRef = useRef<MoveCommand[]>([]);
+  const gridQueueRef = useRef<GridCommand[]>([]);  // For city grid animations
   const effectQueueRef = useRef<string[]>([]);  // For non-movement animations
   const isAnimatingRef = useRef(false);
 
   // Process next move in queue
   const processNextMove = useCallback(() => {
-    // First check move queue
+    // First check grid queue (hard mode city navigation)
+    if (gridQueueRef.current.length > 0) {
+      isAnimatingRef.current = true;
+      setAnimating(true);
+      const gridCmd = gridQueueRef.current.shift()!;
+
+      if (gridCmd.type === 'move_grid') {
+        window.dispatchEvent(new CustomEvent('game-event', {
+          detail: { type: 'move_agent_grid', payload: { row: gridCmd.row, col: gridCmd.col } }
+        }));
+      } else if (gridCmd.type === 'enter_building') {
+        window.dispatchEvent(new CustomEvent('game-event', {
+          detail: { type: 'enter_building', payload: { buildingName: gridCmd.buildingName } }
+        }));
+      } else if (gridCmd.type === 'exit_building') {
+        window.dispatchEvent(new CustomEvent('game-event', {
+          detail: { type: 'exit_building', payload: {} }
+        }));
+      }
+      return;
+    }
+
+    // Then check move queue (building navigation)
     if (moveQueueRef.current.length > 0) {
       isAnimatingRef.current = true;
       setAnimating(true);
@@ -78,16 +118,33 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   // Listen for animation complete events from Phaser
   useEffect(() => {
     const handleAnimationComplete = () => {
-      processNextMove();
+      // Small delay between animations for smoother visual flow
+      setTimeout(() => {
+        processNextMove();
+      }, 250);
     };
 
     window.addEventListener('animation-complete', handleAnimationComplete);
     return () => window.removeEventListener('animation-complete', handleAnimationComplete);
   }, [processNextMove]);
 
-  // Initialize Phaser game
+  // Track initial difficulty for scene-ready handler
+  const initialDifficultyRef = useRef(difficulty);
+  initialDifficultyRef.current = difficulty;
+
+  // Initialize Phaser game (only once)
   useEffect(() => {
     if (!containerRef.current || gameRef.current) return;
+
+    // Handler for when BuildingScene signals it's ready
+    const handleSceneReady = () => {
+      window.dispatchEvent(new CustomEvent('game-event', {
+        detail: { type: 'set_difficulty', payload: { difficulty: initialDifficultyRef.current } }
+      }));
+      window.removeEventListener('scene-ready', handleSceneReady);
+    };
+
+    window.addEventListener('scene-ready', handleSceneReady);
 
     gameRef.current = new Phaser.Game({
       ...gameConfig,
@@ -95,11 +152,13 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
     });
 
     return () => {
+      window.removeEventListener('scene-ready', handleSceneReady);
       if (gameRef.current) {
         gameRef.current.destroy(true);
         gameRef.current = null;
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Handle floor/side changes - queue moves instead of dispatching directly
@@ -160,6 +219,63 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
     lastFailedRef.current = deliveryFailed;
   }, [deliveryFailed, processNextMove]);
 
+  // Handle difficulty changes
+  const lastDifficultyRef = useRef(difficulty);
+  useEffect(() => {
+    if (difficulty !== lastDifficultyRef.current) {
+      lastDifficultyRef.current = difficulty;
+      window.dispatchEvent(new CustomEvent('game-event', {
+        detail: { type: 'set_difficulty', payload: { difficulty } }
+      }));
+    }
+  }, [difficulty]);
+
+  // Handle hard mode grid position changes
+  useEffect(() => {
+    if (difficulty !== 'hard') return;
+
+    // Check if building state changed (entering or exiting building)
+    if (currentBuilding !== lastBuildingRef.current) {
+      if (currentBuilding && !lastBuildingRef.current) {
+        // Entering a building
+        gridQueueRef.current.push({
+          type: 'enter_building',
+          buildingName: currentBuilding,
+        });
+
+        if (!isAnimatingRef.current) {
+          processNextMove();
+        }
+      } else if (!currentBuilding && lastBuildingRef.current) {
+        // Exiting a building
+        gridQueueRef.current.push({
+          type: 'exit_building',
+        });
+
+        if (!isAnimatingRef.current) {
+          processNextMove();
+        }
+      }
+      lastBuildingRef.current = currentBuilding;
+    }
+
+    // Check if grid position changed (while on street)
+    if (!currentBuilding && (gridRow !== lastGridRowRef.current || gridCol !== lastGridColRef.current)) {
+      gridQueueRef.current.push({
+        type: 'move_grid',
+        row: gridRow,
+        col: gridCol,
+      });
+
+      if (!isAnimatingRef.current) {
+        processNextMove();
+      }
+
+      lastGridRowRef.current = gridRow;
+      lastGridColRef.current = gridCol;
+    }
+  }, [gridRow, gridCol, currentBuilding, difficulty, processNextMove]);
+
   // Handle special action animations (like reading employee list)
   const lastActionToolRef = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -183,7 +299,7 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
       ref={containerRef}
       id="phaser-container"
       className="w-full rounded-lg overflow-hidden"
-      style={{ aspectRatio: '800/550' }}
+      style={{ aspectRatio: '800/533' }}
     />
   );
 }

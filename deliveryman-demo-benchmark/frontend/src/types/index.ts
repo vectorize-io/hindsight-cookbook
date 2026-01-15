@@ -1,5 +1,8 @@
 // Side types
-export type Side = 'front' | 'back' | 'middle';
+// 'front' | 'back' | 'middle' for easy mode and hard mode building interiors
+// 'building_a' | 'building_b' | 'building_c' for medium mode
+// 'street' for hard mode city grid navigation
+export type Side = 'front' | 'back' | 'middle' | 'building_a' | 'building_b' | 'building_c' | 'street';
 
 // Employee
 export interface Employee {
@@ -8,6 +11,7 @@ export interface Employee {
   business: string;
   floor: number;
   side: Side;
+  building?: string | null;  // Building name for hard mode (city grid)
 }
 
 // Package
@@ -29,14 +33,30 @@ export interface Delivery {
   startTime: number;
 }
 
-// Memory injection info
-export interface MemoryInjection {
-  injected: boolean;
-  count: number;
-  context?: string;
-  bankId?: string;
-  query?: string;
+// Memory recall/reflect result from hindsight
+export interface MemoryReflect {
+  method: 'recall' | 'reflect';  // Which method was used
+  query: string;                  // The query sent to hindsight
+  context: string | null;         // The formatted memory context injected into prompt
+  memories?: MemoryFact[];        // Raw facts (for recall mode)
+  count: number;                  // Number of memories found
+  timing?: number;                // Time taken in seconds
   error?: string | null;
+}
+
+// Individual memory fact from recall
+export interface MemoryFact {
+  text: string;
+  type: string;  // world, experience, opinion
+  weight: number;
+}
+
+// Message in the conversation
+export interface Message {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: { id: string; function: { name: string; arguments: string } }[];
+  tool_call_id?: string;
 }
 
 // Action entry in the log
@@ -49,10 +69,14 @@ export interface ActionEntry {
   floor: number;
   side: string;
   timing: number;
-  memoryInjection?: MemoryInjection;
+  messages?: Message[];  // Full conversation/prompt sent to LLM
   llmDetails?: {
     toolCalls: { name: string; arguments: string }[];
   };
+  // Hard mode city grid fields
+  gridRow?: number;
+  gridCol?: number;
+  currentBuilding?: string | null;
 }
 
 // Delivery result for history
@@ -73,6 +97,7 @@ export interface Stats {
 export type ServerEventType =
   | 'connected'
   | 'delivery_started'
+  | 'memory_reflect'
   | 'agent_thinking'
   | 'agent_action'
   | 'memory_storing'

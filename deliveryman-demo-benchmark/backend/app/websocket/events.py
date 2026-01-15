@@ -66,6 +66,7 @@ class EventType:
     DELIVERY_STARTED = "delivery_started"
     AGENT_THINKING = "agent_thinking"
     AGENT_ACTION = "agent_action"
+    MEMORY_REFLECT = "memory_reflect"  # Initial memory recall at start
     MEMORY_STORING = "memory_storing"
     MEMORY_STORED = "memory_stored"
     DELIVERY_SUCCESS = "delivery_success"

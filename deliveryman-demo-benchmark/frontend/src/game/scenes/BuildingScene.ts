@@ -1,35 +1,58 @@
 import Phaser from 'phaser';
-import { GAME_WIDTH, GAME_HEIGHT, FLOOR_Y, SIDE_X, BUSINESSES } from '../config';
+import { GAME_WIDTH, GAME_HEIGHT, DIFFICULTY_CONFIGS, type Difficulty, type DifficultyConfig } from '../config';
 
 export class BuildingScene extends Phaser.Scene {
   private agent!: Phaser.GameObjects.Container;
   private agentSprite!: Phaser.GameObjects.Image;
+  private agentIcon!: Phaser.GameObjects.Image;  // For city grid view
   private thinkingIndicator!: Phaser.GameObjects.Container;
   private floorText!: Phaser.GameObjects.Text;
   private locationText!: Phaser.GameObjects.Text;
   private packageText!: Phaser.GameObjects.Text;
+  private buildingSprite!: Phaser.GameObjects.Image;
 
   private currentFloor: number = 1;
   private currentSide: string = 'front';
   private isMoving: boolean = false;
+  private currentDifficulty: Difficulty = 'easy';
+  private config: DifficultyConfig = DIFFICULTY_CONFIGS['easy'];
+
+  // Hard mode city grid state
+  private gridRow: number = 0;
+  private gridCol: number = 0;
+  private currentBuilding: string | null = null;  // null = on street, string = inside building
+  private isInCityView: boolean = true;  // true = city grid, false = building interior
 
   constructor() {
     super({ key: 'BuildingScene' });
   }
 
   create() {
-    // Add building background sprite
-    const building = this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'building');
-    building.setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
+    // Add building background sprite - fills the full canvas
+    this.buildingSprite = this.add.image(0, 0, this.config.buildingImage);
+    this.buildingSprite.setOrigin(0, 0);
+    // Calculate scale to fit the canvas exactly
+    const scaleX = GAME_WIDTH / this.buildingSprite.width;
+    const scaleY = GAME_HEIGHT / this.buildingSprite.height;
+    this.buildingSprite.setScale(scaleX, scaleY);
 
-    // Create agent container
-    this.agent = this.add.container(SIDE_X.front, FLOOR_Y[1]);
+    // Create agent container - start at initial position for current difficulty
+    const initialSide = this.config.isMultiBuilding ? 'building_a' : 'front';
+    this.currentSide = initialSide;
+    this.agent = this.add.container(this.config.sideX[initialSide], this.config.floorY[1]);
 
-    // Agent sprite
+    // Agent sprite (for building views)
     this.agentSprite = this.add.image(0, 0, 'agent');
     this.agentSprite.setScale(0.85);
     this.agentSprite.setOrigin(0.5, 1);
     this.agent.add(this.agentSprite);
+
+    // Agent icon (for city grid view in hard mode)
+    this.agentIcon = this.add.image(0, 0, 'agent_icon');
+    this.agentIcon.setScale(0.5);  // Will be adjusted based on agentIconSize
+    this.agentIcon.setOrigin(0.5, 0.5);
+    this.agentIcon.setVisible(false);  // Hidden by default
+    this.agent.add(this.agentIcon);
 
     // Thinking indicator
     this.thinkingIndicator = this.add.container(0, -55);
@@ -70,6 +93,9 @@ export class BuildingScene extends Phaser.Scene {
 
     // Listen for game events from React
     window.addEventListener('game-event', this.handleGameEvent.bind(this) as EventListener);
+
+    // Signal that the scene is ready to receive events
+    window.dispatchEvent(new CustomEvent('scene-ready'));
   }
 
   private handleGameEvent(event: CustomEvent) {
@@ -94,7 +120,98 @@ export class BuildingScene extends Phaser.Scene {
       case 'show_reading':
         this.showReading();
         break;
+      case 'set_difficulty':
+        this.setDifficulty(payload.difficulty);
+        break;
+      // Hard mode city grid events
+      case 'move_agent_grid':
+        this.moveAgentOnGrid(payload.row, payload.col);
+        break;
+      case 'enter_building':
+        this.enterBuilding(payload.buildingName);
+        break;
+      case 'exit_building':
+        this.exitBuilding();
+        break;
     }
+  }
+
+  public setDifficulty(difficulty: Difficulty) {
+    if (difficulty === this.currentDifficulty) return;
+
+    this.currentDifficulty = difficulty;
+    this.config = DIFFICULTY_CONFIGS[difficulty];
+
+    // Update building sprite and recalculate scale for new texture
+    this.buildingSprite.setTexture(this.config.buildingImage);
+    const scaleX = GAME_WIDTH / this.buildingSprite.width;
+    const scaleY = GAME_HEIGHT / this.buildingSprite.height;
+    this.buildingSprite.setScale(scaleX, scaleY);
+
+    // Stop any running animations on the agent before repositioning
+    this.tweens.killTweensOf(this.agent);
+    this.tweens.killTweensOf(this.agentSprite);
+    this.tweens.killTweensOf(this.agentIcon);
+    this.isMoving = false;
+
+    // Handle hard mode city grid view
+    if (this.config.isCityGrid) {
+      // Reset to city grid view
+      this.isInCityView = true;
+      this.currentBuilding = null;
+      this.gridRow = 0;
+      this.gridCol = 0;
+
+      // Show agent icon, hide regular sprite
+      this.agentSprite.setVisible(false);
+      this.agentIcon.setVisible(true);
+      if (this.config.agentIconSize) {
+        const iconScale = this.config.agentIconSize / this.agentIcon.width;
+        this.agentIcon.setScale(iconScale);
+      }
+
+      // Position agent at grid position (0, 0)
+      const gridPos = this.config.cityGridPositions?.['0_0'] ?? { x: 133, y: 67 };
+      this.agent.setPosition(gridPos.x, gridPos.y);
+
+      // Adjust thinking indicator position for icon
+      this.thinkingIndicator.setPosition(0, -30);
+    } else {
+      // Reset to building view (easy/medium mode)
+      this.isInCityView = false;
+      this.currentBuilding = null;
+
+      // Show regular sprite, hide icon
+      this.agentSprite.setVisible(true);
+      this.agentIcon.setVisible(false);
+
+      // Reset agent to starting position for new difficulty
+      const initialSide = this.config.isMultiBuilding ? 'building_a' : 'front';
+      this.currentFloor = 1;
+      this.currentSide = initialSide;
+      this.agent.setPosition(this.config.sideX[initialSide], this.config.floorY[1]);
+
+      // Reset thinking indicator position
+      this.thinkingIndicator.setPosition(0, -55);
+    }
+
+    this.agent.setAlpha(1);  // Ensure agent is visible (in case elevator fade was interrupted)
+
+    // Restart idle animation (only for building views)
+    if (!this.config.isCityGrid) {
+      this.agentSprite.y = 0;
+      this.agentSprite.setScale(0.85);
+      this.startIdleAnimation();
+    } else {
+      // For city grid, do a subtle pulse animation on the icon
+      this.startGridIdleAnimation();
+    }
+
+    // Update UI
+    this.updateUI();
+
+    // Signal completion
+    window.dispatchEvent(new CustomEvent('animation-complete'));
   }
 
   private startIdleAnimation() {
@@ -108,6 +225,27 @@ export class BuildingScene extends Phaser.Scene {
     });
   }
 
+  private startGridIdleAnimation() {
+    this.tweens.killTweensOf(this.agentIcon);
+    this.tweens.add({
+      targets: this.agentIcon,
+      scaleX: this.agentIcon.scaleX * 1.05,
+      scaleY: this.agentIcon.scaleY * 1.05,
+      duration: 600,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    });
+  }
+
+  private stopGridIdleAnimation() {
+    this.tweens.killTweensOf(this.agentIcon);
+    if (this.config.agentIconSize) {
+      const iconScale = this.config.agentIconSize / this.agentIcon.width;
+      this.agentIcon.setScale(iconScale);
+    }
+  }
+
   private stopIdleAnimation() {
     this.tweens.killTweensOf(this.agentSprite);
     this.agentSprite.y = 0;
@@ -118,8 +256,8 @@ export class BuildingScene extends Phaser.Scene {
     // But as a safety fallback, we just return if already moving
     if (this.isMoving) return;
 
-    const targetX = SIDE_X[side] || SIDE_X.middle;
-    const targetY = FLOOR_Y[floor] || FLOOR_Y[1];
+    const targetX = this.config.sideX[side] || this.agent.x;
+    const targetY = this.config.floorY[floor] || this.config.floorY[1];
 
     const sameFloor = floor === this.currentFloor;
     const sameSide = side === this.currentSide;
@@ -147,6 +285,66 @@ export class BuildingScene extends Phaser.Scene {
       window.dispatchEvent(new CustomEvent('animation-complete'));
     };
 
+    // Multi-building mode (medium): different animation logic
+    if (this.config.isMultiBuilding) {
+      if (sameFloor) {
+        // Same floor, different building - walk horizontally (bridge at floor 3)
+        this.walkTo(targetX, () => {
+          this.currentSide = side;
+          this.updateUI();
+          finishMove();
+        });
+      } else if (sameSide) {
+        // Same building, different floor - elevator (fade in place)
+        this.tweens.add({
+          targets: this.agent,
+          alpha: 0,
+          duration: 200,
+          onComplete: () => {
+            this.agent.y = targetY;
+            this.currentFloor = floor;
+            this.tweens.add({
+              targets: this.agent,
+              alpha: 1,
+              duration: 200,
+              delay: 300,
+              onComplete: () => {
+                this.updateUI();
+                finishMove();
+              },
+            });
+          },
+        });
+      } else {
+        // Different building AND different floor
+        // Animate: elevator to current position, walk to target building, elevator to target floor
+        // Simplified: just fade and reposition
+        this.tweens.add({
+          targets: this.agent,
+          alpha: 0,
+          duration: 200,
+          onComplete: () => {
+            this.agent.x = targetX;
+            this.agent.y = targetY;
+            this.currentFloor = floor;
+            this.currentSide = side;
+            this.tweens.add({
+              targets: this.agent,
+              alpha: 1,
+              duration: 200,
+              delay: 400,
+              onComplete: () => {
+                this.updateUI();
+                finishMove();
+              },
+            });
+          },
+        });
+      }
+      return;
+    }
+
+    // Single building mode (easy/hard): original logic
     if (sameFloor) {
       // Just walk horizontally
       this.walkTo(targetX, () => {
@@ -155,8 +353,8 @@ export class BuildingScene extends Phaser.Scene {
         finishMove();
       });
     } else {
-      // Walk to elevator, then move vertically, then walk to target
-      this.walkTo(SIDE_X.middle, () => {
+      // Walk to elevator (middle), then move vertically, then walk to target
+      this.walkTo(this.config.sideX.middle, () => {
         // Fade out for elevator
         this.tweens.add({
           targets: this.agent,
@@ -178,7 +376,7 @@ export class BuildingScene extends Phaser.Scene {
 
                 if (side !== 'middle') {
                   // Set facing direction for final walk
-                  if (SIDE_X[side] < this.agent.x) {
+                  if (this.config.sideX[side] < this.agent.x) {
                     this.agentSprite.setFlipX(true);
                   } else {
                     this.agentSprite.setFlipX(false);
@@ -228,11 +426,181 @@ export class BuildingScene extends Phaser.Scene {
     });
   }
 
-  private updateUI() {
-    this.floorText.setText(`Floor ${this.currentFloor}`);
+  // === HARD MODE CITY GRID METHODS ===
 
+  public moveAgentOnGrid(row: number, col: number) {
+    if (this.isMoving) return;
+    if (!this.config.isCityGrid || !this.isInCityView) return;
+
+    const gridKey = `${row}_${col}`;
+    const targetPos = this.config.cityGridPositions?.[gridKey];
+    if (!targetPos) {
+      window.dispatchEvent(new CustomEvent('animation-complete'));
+      return;
+    }
+
+    if (row === this.gridRow && col === this.gridCol) {
+      window.dispatchEvent(new CustomEvent('animation-complete'));
+      return;
+    }
+
+    this.isMoving = true;
+    this.stopGridIdleAnimation();
+
+    // Animate movement on grid
+    this.tweens.add({
+      targets: this.agent,
+      x: targetPos.x,
+      y: targetPos.y,
+      duration: 400,
+      ease: 'Quad.easeInOut',
+      onComplete: () => {
+        this.gridRow = row;
+        this.gridCol = col;
+        this.isMoving = false;
+        this.startGridIdleAnimation();
+        this.updateUI();
+        window.dispatchEvent(new CustomEvent('animation-complete'));
+      },
+    });
+  }
+
+  public enterBuilding(buildingName: string) {
+    if (this.isMoving) return;
+    if (!this.config.isCityGrid) return;
+
+    this.isMoving = true;
+    this.stopGridIdleAnimation();
+    this.currentBuilding = buildingName;
+    this.isInCityView = false;
+
+    // Zoom in effect, then switch to building interior
+    this.tweens.add({
+      targets: this.agent,
+      alpha: 0,
+      scaleX: 2,
+      scaleY: 2,
+      duration: 300,
+      ease: 'Quad.easeIn',
+      onComplete: () => {
+        // Switch to building interior view
+        if (this.config.buildingInteriorImage) {
+          this.buildingSprite.setTexture(this.config.buildingInteriorImage);
+          const scaleX = GAME_WIDTH / this.buildingSprite.width;
+          const scaleY = GAME_HEIGHT / this.buildingSprite.height;
+          this.buildingSprite.setScale(scaleX, scaleY);
+        }
+
+        // Switch from icon to agent sprite
+        this.agentIcon.setVisible(false);
+        this.agentSprite.setVisible(true);
+
+        // Reset agent position to floor 1, front
+        this.currentFloor = 1;
+        this.currentSide = 'front';
+        this.agent.setPosition(this.config.sideX.front, this.config.floorY[1]);
+        this.agent.setScale(1);
+        this.agentSprite.y = 0;
+        this.agentSprite.setScale(0.85);
+
+        // Reset thinking indicator position
+        this.thinkingIndicator.setPosition(0, -55);
+
+        // Fade back in
+        this.tweens.add({
+          targets: this.agent,
+          alpha: 1,
+          duration: 200,
+          delay: 100,
+          onComplete: () => {
+            this.isMoving = false;
+            this.startIdleAnimation();
+            this.updateUI();
+            window.dispatchEvent(new CustomEvent('animation-complete'));
+          },
+        });
+      },
+    });
+  }
+
+  public exitBuilding() {
+    if (this.isMoving) return;
+    if (!this.config.isCityGrid || this.isInCityView) return;
+
+    this.isMoving = true;
+    this.stopIdleAnimation();
+
+    // Fade out effect
+    this.tweens.add({
+      targets: this.agent,
+      alpha: 0,
+      duration: 200,
+      ease: 'Quad.easeIn',
+      onComplete: () => {
+        // Switch back to city grid view
+        this.buildingSprite.setTexture(this.config.buildingImage);
+        const scaleX = GAME_WIDTH / this.buildingSprite.width;
+        const scaleY = GAME_HEIGHT / this.buildingSprite.height;
+        this.buildingSprite.setScale(scaleX, scaleY);
+
+        // Switch from agent sprite to icon
+        this.agentSprite.setVisible(false);
+        this.agentIcon.setVisible(true);
+
+        // Position at the building's grid position
+        const gridKey = `${this.gridRow}_${this.gridCol}`;
+        const gridPos = this.config.cityGridPositions?.[gridKey] ?? { x: 133, y: 67 };
+        this.agent.setPosition(gridPos.x, gridPos.y);
+        this.agent.setScale(1);
+        if (this.config.agentIconSize) {
+          const iconScale = this.config.agentIconSize / this.agentIcon.width;
+          this.agentIcon.setScale(iconScale);
+        }
+
+        // Adjust thinking indicator position for icon
+        this.thinkingIndicator.setPosition(0, -30);
+
+        this.isInCityView = true;
+        this.currentBuilding = null;
+
+        // Fade back in
+        this.tweens.add({
+          targets: this.agent,
+          alpha: 1,
+          duration: 200,
+          delay: 100,
+          onComplete: () => {
+            this.isMoving = false;
+            this.startGridIdleAnimation();
+            this.updateUI();
+            window.dispatchEvent(new CustomEvent('animation-complete'));
+          },
+        });
+      },
+    });
+  }
+
+  private updateUI() {
+    // City grid view (hard mode on streets)
+    if (this.config.isCityGrid && this.isInCityView) {
+      const gridKey = `${this.gridRow}_${this.gridCol}`;
+      const buildingName = this.config.cityBuildings?.[gridKey] ?? 'Unknown';
+      this.floorText.setText(`Street`);
+      this.locationText.setText(`At: ${buildingName}`);
+      return;
+    }
+
+    // Inside a building (hard mode)
+    if (this.config.isCityGrid && this.currentBuilding) {
+      this.floorText.setText(`Floor ${this.currentFloor}`);
+      this.locationText.setText(`${this.currentBuilding}`);
+      return;
+    }
+
+    // Easy/medium mode
+    this.floorText.setText(`Floor ${this.currentFloor}`);
     const key = `${this.currentFloor}_${this.currentSide}`;
-    const locationName = BUSINESSES[key] || (this.currentSide === 'middle' ? 'Elevator' : 'Unknown');
+    const locationName = this.config.businesses[key] || (this.currentSide === 'middle' ? 'Elevator' : 'Unknown');
     this.locationText.setText(locationName);
   }
 

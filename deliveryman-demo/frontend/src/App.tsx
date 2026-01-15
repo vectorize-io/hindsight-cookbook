@@ -1167,7 +1167,7 @@ function App() {
                   <option value="">Choose a recipient...</option>
                   {employees.map(emp => (
                     <option key={emp.name} value={emp.name}>
-                      F{emp.floor} {emp.side} | {emp.business} | {emp.name}
+                      {emp.building ? `${emp.building} ` : ''}F{emp.floor} {emp.side} | {emp.business} | {emp.name}
                     </option>
                   ))}
                 </select>

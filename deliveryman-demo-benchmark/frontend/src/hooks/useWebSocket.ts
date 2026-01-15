@@ -26,8 +26,8 @@ export function useWebSocket() {
     // Connect directly to backend WebSocket (bypass Vite proxy)
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     // In dev, connect directly to backend; in prod, use same host
-    const isDev = window.location.port === '5173';
-    const wsHost = isDev ? `${window.location.hostname}:8000` : window.location.host;
+    const isDev = window.location.port === '5173' || window.location.port === '5174';
+    const wsHost = isDev ? `${window.location.hostname}:8002` : window.location.host;
     const wsUrl = `${protocol}//${wsHost}/ws/${CLIENT_ID}`;
     console.log('Connecting to WebSocket:', wsUrl);
 
@@ -84,6 +84,9 @@ export function useWebSocket() {
     inject: boolean;
     reflect: boolean;
     store: boolean;
+    bankId?: string;
+    query?: string;  // Custom memory query (use {recipient} placeholder)
+    background?: string;  // Bank background context for memory extraction
   }
 
   const startDelivery = useCallback((

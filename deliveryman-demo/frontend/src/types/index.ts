@@ -11,6 +11,7 @@ export interface Employee {
   business: string;
   floor: number;
   side: Side;
+  building?: string | null;  // Building name for hard mode (city grid)
 }
 
 // Package

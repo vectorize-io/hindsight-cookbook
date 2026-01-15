@@ -11,7 +11,8 @@ from typing import Optional
 import sys
 sys.path.insert(0, str(__file__).rsplit("/app/", 1)[0])
 
-from building import get_building, Package
+from building import get_building, set_difficulty, get_current_difficulty, Package
+from agent_tools import get_tool_definitions
 from .routers import building as building_router
 from .services import memory_service, agent_service
 from .websocket.manager import manager
@@ -30,6 +31,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize memory service at startup - creates bank with background."""
+    # Configure memory in a thread pool to avoid event loop issues
+    # (hindsight_client uses sync code that internally runs async)
+    import concurrent.futures
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        await loop.run_in_executor(pool, memory_service.configure_memory)
+    print(f"Memory service initialized with bank: {memory_service.get_bank_id()}")
+
+
 # Include routers
 app.include_router(building_router.router)
 
@@ -41,7 +55,13 @@ sessions: dict = {}
 class SessionState:
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.bank_id = memory_service.configure_memory(session_id)
+        # Use existing bank (created at startup) or ensure one exists
+        existing_bank = memory_service.get_bank_id()
+        if existing_bank:
+            self.bank_id = existing_bank
+        else:
+            # Fallback: create bank if none exists (shouldn't happen normally)
+            self.bank_id = memory_service.configure_memory()
         self.delivery_counter = 0
         self.deliveries_completed = 0
         self.total_steps = 0
@@ -72,6 +92,8 @@ class HindsightSettings(BaseModel):
     reflect: bool = False
     store: bool = True
     bankId: Optional[str] = None  # Custom bank ID for evaluation
+    query: Optional[str] = None  # Custom memory query (use {recipient} as placeholder)
+    background: Optional[str] = None  # Bank background context for memory extraction
 
 
 class FastDeliveryRequest(BaseModel):
@@ -88,6 +110,30 @@ class FastLoopRequest(BaseModel):
     maxSteps: int = 150
 
 
+# REST endpoints for difficulty
+@app.get("/api/difficulty")
+async def get_difficulty():
+    """Get current difficulty level."""
+    return {
+        "difficulty": get_current_difficulty(),
+    }
+
+
+class SetDifficultyRequest(BaseModel):
+    difficulty: str
+
+
+@app.post("/api/difficulty")
+async def set_difficulty_endpoint(request: SetDifficultyRequest):
+    """Set the difficulty level."""
+    # Update building
+    set_difficulty(request.difficulty)
+    return {
+        "success": True,
+        "difficulty": request.difficulty,
+    }
+
+
 # REST endpoints for memory management
 @app.get("/api/memory/bank")
 async def get_memory_bank():
@@ -95,11 +141,49 @@ async def get_memory_bank():
     return {"bankId": memory_service.get_bank_id()}
 
 
+@app.post("/api/memory/ensure")
+async def ensure_memory_bank():
+    """Ensure memory bank exists with proper background."""
+    success = memory_service.ensure_bank_exists()
+    return {
+        "success": success,
+        "bankId": memory_service.get_bank_id(),
+    }
+
+
 @app.post("/api/memory/reset")
 async def reset_memory_bank():
     """Reset to a new memory bank."""
     new_bank_id = memory_service.reset_bank()
     return {"newBankId": new_bank_id}
+
+
+@app.post("/api/memory/bank/new")
+async def generate_new_bank():
+    """Generate a new memory bank."""
+    new_bank_id = memory_service.configure_memory()
+    memory_service.ensure_bank_exists()
+    return {"bankId": new_bank_id}
+
+
+@app.get("/api/memory/bank/history")
+async def get_bank_history():
+    """Get history of bank IDs used in this session."""
+    return {
+        "history": memory_service.get_bank_history(),
+        "currentBankId": memory_service.get_bank_id(),
+    }
+
+
+class SetBankRequest(BaseModel):
+    bankId: str
+
+
+@app.post("/api/memory/bank")
+async def set_memory_bank(request: SetBankRequest):
+    """Set the active memory bank ID."""
+    memory_service.set_bank_id(request.bankId)
+    return {"bankId": memory_service.get_bank_id()}
 
 
 # WebSocket endpoint
@@ -183,8 +267,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 manager.cancel_delivery(client_id)
 
             elif event_type == "reset_memory":
-                session.bank_id = memory_service.reset_bank(client_id)
-                await websocket.send_json(event("memory_reset", {"bankId": session.bank_id}))
+                # Generate a new bank ID to start fresh
+                new_bank_id = memory_service.configure_memory()
+                memory_service.ensure_bank_exists()
+                session.bank_id = new_bank_id
+                # Notify client of new bank ID
+                await websocket.send_json(event(EventType.CONNECTED, {
+                    "clientId": client_id,
+                    "bankId": new_bank_id,
+                }))
 
             elif event_type == "reset_stats":
                 session.deliveries_completed = 0
@@ -202,6 +293,13 @@ SYSTEM_PROMPT = "You are a delivery agent. Use the tools provided to get it deli
 @app.get("/api/demo-config")
 async def get_demo_config():
     """Get demo configuration for display in UI."""
+    difficulty = get_current_difficulty()
+    tool_defs = get_tool_definitions(difficulty)
+    # Extract simplified tool info for display
+    tools_display = [
+        {"name": t["function"]["name"], "description": t["function"]["description"]}
+        for t in tool_defs
+    ]
     return {
         "systemPrompt": SYSTEM_PROMPT,
         "llmModel": LLM_MODEL,
@@ -211,15 +309,8 @@ async def get_demo_config():
             "injectMemories": True,
             "useReflect": False,
         },
-        "tools": [
-            {"name": "go_up", "description": "Move up one floor"},
-            {"name": "go_down", "description": "Move down one floor"},
-            {"name": "go_to_front", "description": "Move to front side of building"},
-            {"name": "go_to_back", "description": "Move to back side of building"},
-            {"name": "get_employee_list", "description": "Get list of all employees and their locations"},
-            {"name": "check_current_location", "description": "Check current location in building"},
-            {"name": "deliver_package", "description": "Attempt to deliver package at current location"},
-        ]
+        "tools": tools_display,
+        "difficulty": difficulty,
     }
 
 
@@ -258,7 +349,12 @@ async def fast_delivery(request: FastDeliveryRequest):
             "reflect": request.hindsight.reflect,
             "store": request.hindsight.store,
             "bankId": request.hindsight.bankId,
+            "query": request.hindsight.query,
+            "background": request.hindsight.background,
         }
+
+    # Generate unique delivery ID for memory grouping
+    delivery_id = random.randint(10000, 99999)
 
     # Run delivery
     result = await agent_service.run_delivery_fast(
@@ -267,6 +363,7 @@ async def fast_delivery(request: FastDeliveryRequest):
         max_steps=request.maxSteps,
         model=request.model,
         hindsight=hindsight_dict,
+        delivery_id=delivery_id,
     )
 
     result["recipientName"] = recipient_name
