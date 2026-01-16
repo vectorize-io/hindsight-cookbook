@@ -210,6 +210,35 @@ async def set_memory_bank(request: SetBankRequest, app: str = "demo", difficulty
     return {"bankId": memory_service.get_bank_id(app, difficulty)}
 
 
+# Mental models endpoints
+@app.get("/api/memory/mental-models")
+async def get_mental_models(app: str = "demo", difficulty: str = "easy", subtype: str = None):
+    """Get mental models for a bank."""
+    bank_id = memory_service.get_bank_id(app, difficulty)
+    models = memory_service.get_mental_models(bank_id, subtype=subtype)
+    return {"models": models, "bankId": bank_id}
+
+
+@app.post("/api/memory/mental-models/refresh")
+async def refresh_mental_models(app: str = "demo", difficulty: str = "easy", subtype: str = None):
+    """Trigger mental models refresh for a bank."""
+    bank_id = memory_service.get_bank_id(app, difficulty)
+    result = memory_service.refresh_mental_models(bank_id, subtype=subtype)
+    return {"result": result, "bankId": bank_id}
+
+
+class SetMissionRequest(BaseModel):
+    mission: str
+
+
+@app.put("/api/memory/mission")
+async def set_bank_mission(request: SetMissionRequest, app: str = "demo", difficulty: str = "easy"):
+    """Set the mission for a bank (used by mental models)."""
+    bank_id = memory_service.get_bank_id(app, difficulty)
+    result = memory_service.set_bank_mission(bank_id, request.mission)
+    return {"result": result, "bankId": bank_id}
+
+
 # WebSocket endpoint
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str, app: str = "demo", difficulty: str = "easy"):

@@ -23,6 +23,7 @@ from .memory_service import (
     set_bank_id,
     get_bank_id,
     set_bank_background_async,
+    refresh_mental_models_async,
 )
 from ..websocket.events import (
     event, EventType, AgentActionPayload, DeliverySuccessPayload,
@@ -358,6 +359,10 @@ async def run_delivery(
                         print(f"[MEMORY] Stored successfully in {store_timing:.2f}s to bank: {get_bank_id()}")
                         await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
 
+                        # Trigger mental models refresh in background (fire-and-forget)
+                        asyncio.create_task(refresh_mental_models_async())
+                        print(f"[MEMORY] Mental models refresh triggered in background")
+
                     # Send success
                     await websocket.send_json(event(EventType.DELIVERY_SUCCESS, {
                         "message": result,
@@ -403,6 +408,10 @@ async def run_delivery(
             )
             store_timing = time.time() - t_store
             await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
+
+            # Trigger mental models refresh in background (fire-and-forget)
+            asyncio.create_task(refresh_mental_models_async())
+            print(f"[MEMORY] Mental models refresh triggered in background")
 
         await websocket.send_json(event(EventType.STEP_LIMIT_REACHED, {
             "message": f"Exceeded {max_steps} step limit",
@@ -582,6 +591,8 @@ async def run_delivery_fast(
                             context=f"delivery:{package.recipient_name}:success",
                             document_id=f"delivery-{delivery_id}"
                         )
+                        # Trigger mental models refresh in background
+                        asyncio.create_task(refresh_mental_models_async())
                     break
 
             else:
@@ -602,6 +613,8 @@ async def run_delivery_fast(
                 context=f"delivery:{package.recipient_name}:failed",
                 document_id=f"delivery-{delivery_id}"
             )
+            # Trigger mental models refresh in background
+            asyncio.create_task(refresh_mental_models_async())
 
         return {
             "success": success,

@@ -6,8 +6,19 @@ import uuid
 import asyncio
 import concurrent.futures
 from pathlib import Path
+import httpx
 import hindsight_litellm
 from ..config import HINDSIGHT_API_URL
+
+# HTTP client for direct API calls (mental models, mission)
+_http_client: httpx.Client | None = None
+
+def _get_http_client() -> httpx.Client:
+    """Get or create HTTP client for direct Hindsight API calls."""
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.Client(base_url=HINDSIGHT_API_URL, timeout=60.0)
+    return _http_client
 
 # Thread pool for running sync hindsight_litellm calls from async context
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -70,6 +81,17 @@ _configured: bool = False
 # Bank background for memory extraction guidance
 BANK_BACKGROUND = "Delivery agent. Remember employee locations, building layout, and optimal paths."
 
+# Bank mission for mental models - more comprehensive description
+BANK_MISSION = """You are a delivery agent navigating a building to deliver packages to employees.
+Your goal is to learn and remember:
+- Employee locations: which floor and side of the building each employee works at
+- Building layout: how floors are organized, what businesses are on each floor
+- Optimal delivery paths: the fastest routes to reach different employees
+- Past delivery outcomes: which deliveries succeeded and which failed
+
+Use this knowledge to efficiently deliver packages by remembering where employees are located
+rather than searching the entire building each time."""
+
 
 def generate_bank_id(app_type: str = "demo", difficulty: str = None, use_default: bool = True) -> str:
     """Generate a bank ID - uses persisted ID if use_default=True, else random."""
@@ -105,7 +127,7 @@ def get_bank_history(app_type: str = None, difficulty: str = None) -> list[str]:
     return history
 
 
-def configure_memory(bank_id: str = None, set_background: bool = True, app_type: str = None, difficulty: str = None, use_default: bool = True) -> str:
+def configure_memory(bank_id: str = None, set_background: bool = True, app_type: str = None, difficulty: str = None, use_default: bool = True, set_mission: bool = True) -> str:
     """Configure hindsight_litellm for the demo.
 
     Args:
@@ -114,6 +136,7 @@ def configure_memory(bank_id: str = None, set_background: bool = True, app_type:
         app_type: App type (demo or bench) for prefix and tracking
         difficulty: Difficulty level (easy, medium, hard) for separate banks
         use_default: Use deterministic default bank ID (persists across restarts)
+        set_mission: Whether to set the bank mission (for mental models)
 
     Returns:
         The bank_id being used
@@ -150,6 +173,13 @@ def configure_memory(bank_id: str = None, set_background: bool = True, app_type:
             print(f"Bank background set for: {new_bank_id}")
         except Exception as e:
             print(f"Warning: Failed to set bank background: {e}")
+
+    # Set bank mission for mental models
+    if set_mission:
+        try:
+            set_bank_mission(new_bank_id)
+        except Exception as e:
+            print(f"Warning: Failed to set bank mission: {e}")
 
     _configured = True
     _add_to_history(new_bank_id, app, diff)
@@ -454,3 +484,138 @@ def set_difficulty(difficulty: str, app_type: str = None) -> str:
 
     # Create new bank for this difficulty
     return configure_memory(app_type=app, difficulty=difficulty)
+
+
+# =============================================================================
+# Mental Models API (direct HTTP calls to Hindsight)
+# =============================================================================
+
+def set_bank_mission(bank_id: str = None, mission: str = None) -> dict:
+    """Set the mission for a memory bank (used by mental models).
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+        mission: Mission text (uses BANK_MISSION if not provided)
+
+    Returns:
+        Response from the API
+    """
+    bid = bank_id or get_bank_id()
+    if not bid:
+        print("[MEMORY] Cannot set mission: no bank_id")
+        return {}
+
+    mission_text = mission or BANK_MISSION
+    client = _get_http_client()
+
+    try:
+        response = client.put(
+            f"/v1/default/banks/{bid}/mission",
+            json={"mission": mission_text}
+        )
+        response.raise_for_status()
+        result = response.json()
+        print(f"[MEMORY] Set bank mission for {bid}")
+        return result
+    except Exception as e:
+        print(f"[MEMORY] Failed to set bank mission: {e}")
+        return {}
+
+
+async def set_bank_mission_async(bank_id: str = None, mission: str = None) -> dict:
+    """Async version of set_bank_mission."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: set_bank_mission(bank_id, mission)
+    )
+
+
+def refresh_mental_models(bank_id: str = None, subtype: str = None) -> dict:
+    """Refresh mental models for a bank.
+
+    This triggers the Hindsight backend to analyze memories and create/update
+    mental models based on the bank's mission and stored experiences.
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+        subtype: Optional subtype filter ('structural' or 'emergent')
+
+    Returns:
+        Response with operation status
+    """
+    bid = bank_id or get_bank_id()
+    if not bid:
+        print("[MEMORY] Cannot refresh mental models: no bank_id")
+        return {}
+
+    client = _get_http_client()
+    body = {}
+    if subtype:
+        body["subtype"] = subtype
+
+    try:
+        response = client.post(
+            f"/v1/default/banks/{bid}/mental-models/refresh",
+            json=body if body else None
+        )
+        response.raise_for_status()
+        result = response.json()
+        print(f"[MEMORY] Mental models refresh triggered for {bid}: {result}")
+        return result
+    except Exception as e:
+        print(f"[MEMORY] Failed to refresh mental models: {e}")
+        return {}
+
+
+async def refresh_mental_models_async(bank_id: str = None, subtype: str = None) -> dict:
+    """Async version of refresh_mental_models."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: refresh_mental_models(bank_id, subtype)
+    )
+
+
+def get_mental_models(bank_id: str = None, subtype: str = None) -> list:
+    """Get all mental models for a bank.
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+        subtype: Optional filter ('structural', 'emergent', or 'pinned')
+
+    Returns:
+        List of mental models
+    """
+    bid = bank_id or get_bank_id()
+    if not bid:
+        print("[MEMORY] Cannot get mental models: no bank_id")
+        return []
+
+    client = _get_http_client()
+    params = {}
+    if subtype:
+        params["subtype"] = subtype
+
+    try:
+        response = client.get(
+            f"/v1/default/banks/{bid}/mental-models",
+            params=params if params else None
+        )
+        response.raise_for_status()
+        result = response.json()
+        models = result.get("models", [])
+        print(f"[MEMORY] Got {len(models)} mental models for {bid}")
+        return models
+    except Exception as e:
+        print(f"[MEMORY] Failed to get mental models: {e}")
+        return []
+
+
+async def get_mental_models_async(bank_id: str = None, subtype: str = None) -> list:
+    """Async version of get_mental_models."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: get_mental_models(bank_id, subtype)
+    )
