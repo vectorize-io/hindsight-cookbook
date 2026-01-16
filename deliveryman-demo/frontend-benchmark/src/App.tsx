@@ -206,6 +206,18 @@ function App() {
   const [currentBankId, setCurrentBankId] = useState<string | null>(null);
   const [bankInput, setBankInput] = useState('');
 
+  // Mental models state
+  interface MentalModel {
+    id: string;
+    name: string;
+    content?: string;
+    subtype?: string;
+    created_at?: string;
+  }
+  const [mentalModels, setMentalModels] = useState<MentalModel[]>([]);
+  const [mentalModelsLoading, setMentalModelsLoading] = useState(false);
+  const [mentalModelsExpanded, setMentalModelsExpanded] = useState(false);
+
   // Available models
   const modelOptions = [
     { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', description: 'Fast & cheap, good for simple tasks' },
@@ -441,6 +453,39 @@ function App() {
     await switchToBank(bankInput.trim());
     setBankInput('');
   }, [bankInput, switchToBank]);
+
+  // Fetch mental models for the current bank
+  const fetchMentalModels = useCallback(async () => {
+    try {
+      setMentalModelsLoading(true);
+      const res = await fetch(`/api/memory/mental-models?app=bench&difficulty=${difficulty}`);
+      const data = await res.json();
+      setMentalModels(data.models || []);
+    } catch (err) {
+      console.error('Failed to fetch mental models:', err);
+    } finally {
+      setMentalModelsLoading(false);
+    }
+  }, [difficulty]);
+
+  // Trigger mental models refresh
+  const triggerMentalModelsRefresh = useCallback(async () => {
+    try {
+      setMentalModelsLoading(true);
+      const res = await fetch(`/api/memory/mental-models/refresh?app=bench&difficulty=${difficulty}`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        // Wait a bit for the refresh to process, then fetch
+        setTimeout(() => {
+          fetchMentalModels();
+        }, 2000);
+      }
+    } catch (err) {
+      console.error('Failed to refresh mental models:', err);
+      setMentalModelsLoading(false);
+    }
+  }, [difficulty, fetchMentalModels]);
 
   // Fetch employees, demo config, difficulty, building info, and bank history on mount
   useEffect(() => {
@@ -1157,6 +1202,67 @@ function App() {
                     <p className="text-xs text-slate-500 mt-1">
                       Guides memory extraction - tells Hindsight what facts to focus on when storing memories.
                     </p>
+                  </div>
+
+                  {/* Mental Models Section */}
+                  <div className="mt-4 border-t border-slate-700 pt-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <h4 className="text-sm text-slate-300 font-medium">Mental Models</h4>
+                        <p className="text-xs text-slate-500">Higher-level patterns learned from delivery experiences</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={fetchMentalModels}
+                          disabled={mentalModelsLoading}
+                          className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded text-slate-300 disabled:opacity-50"
+                        >
+                          {mentalModelsLoading ? '...' : 'Fetch'}
+                        </button>
+                        <button
+                          onClick={triggerMentalModelsRefresh}
+                          disabled={mentalModelsLoading}
+                          className="px-2 py-1 text-xs bg-purple-600 hover:bg-purple-500 rounded text-white disabled:opacity-50"
+                        >
+                          {mentalModelsLoading ? 'Refreshing...' : 'Refresh'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {mentalModels.length > 0 ? (
+                      <div className="bg-slate-900/50 rounded-lg border border-slate-700 overflow-hidden">
+                        <button
+                          onClick={() => setMentalModelsExpanded(!mentalModelsExpanded)}
+                          className="w-full px-3 py-2 flex items-center justify-between text-left hover:bg-slate-800/50"
+                        >
+                          <span className="text-sm text-slate-300">
+                            {mentalModels.length} mental model{mentalModels.length !== 1 ? 's' : ''} found
+                          </span>
+                          <span className="text-slate-400 text-xs">{mentalModelsExpanded ? '▼' : '▶'}</span>
+                        </button>
+                        {mentalModelsExpanded && (
+                          <div className="border-t border-slate-700 max-h-48 overflow-y-auto">
+                            {mentalModels.map((model, idx) => (
+                              <div key={model.id || idx} className="px-3 py-2 border-b border-slate-700/50 last:border-b-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-xs text-purple-400 font-mono">{model.subtype || 'model'}</span>
+                                  {model.name && <span className="text-xs text-slate-400">{model.name}</span>}
+                                </div>
+                                {model.content && (
+                                  <p className="text-xs text-slate-300 whitespace-pre-wrap">{model.content}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="bg-slate-900/50 rounded-lg border border-slate-700 px-3 py-4 text-center">
+                        <p className="text-xs text-slate-500">
+                          No mental models yet. Run some deliveries to build up memories, then click Refresh.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
