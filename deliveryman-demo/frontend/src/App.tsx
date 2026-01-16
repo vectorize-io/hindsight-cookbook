@@ -170,6 +170,19 @@ function App() {
   const [bankCopied, setBankCopied] = useState(false);
   const [bankHistory, setBankHistory] = useState<string[]>([]);
 
+  // Mental models state
+  interface MentalModel {
+    id: string;
+    name: string;
+    description?: string;
+    summary?: string;
+    subtype?: string;
+    created_at?: string;
+  }
+  const [mentalModels, setMentalModels] = useState<MentalModel[]>([]);
+  const [mentalModelsLoading, setMentalModelsLoading] = useState(false);
+  const [mentalModelsExpanded, setMentalModelsExpanded] = useState(false);
+
   // View mode state (UI vs Training)
   const [viewMode, setViewMode] = useState<'ui' | 'training'>('ui');
 
@@ -249,6 +262,39 @@ function App() {
       console.error('Failed to fetch bank history:', err);
     }
   }, []);
+
+  // Fetch mental models for the current bank
+  const fetchMentalModels = useCallback(async () => {
+    try {
+      setMentalModelsLoading(true);
+      const res = await fetch(`/api/memory/mental-models?app=demo&difficulty=${difficulty}`);
+      const data = await res.json();
+      setMentalModels(data.models || []);
+    } catch (err) {
+      console.error('Failed to fetch mental models:', err);
+    } finally {
+      setMentalModelsLoading(false);
+    }
+  }, [difficulty]);
+
+  // Trigger mental models refresh
+  const triggerMentalModelsRefresh = useCallback(async () => {
+    try {
+      setMentalModelsLoading(true);
+      const res = await fetch(`/api/memory/mental-models/refresh?app=demo&difficulty=${difficulty}`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        // Wait a bit for the refresh to process, then fetch
+        setTimeout(() => {
+          fetchMentalModels();
+        }, 2000);
+      }
+    } catch (err) {
+      console.error('Failed to refresh mental models:', err);
+      setMentalModelsLoading(false);
+    }
+  }, [difficulty, fetchMentalModels]);
 
   // Sync currentBankId when gameStore's bankId changes (e.g., after reset_memory)
   useEffect(() => {
@@ -589,6 +635,62 @@ function App() {
                         Set
                       </button>
                     </div>
+                  </div>
+
+                  {/* Mental Models Section */}
+                  <div className="border-t border-slate-700 pt-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs text-slate-500">Mental Models</label>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={fetchMentalModels}
+                          disabled={mentalModelsLoading}
+                          className="px-2 py-0.5 text-[10px] bg-slate-700 hover:bg-slate-600 rounded text-slate-300 disabled:opacity-50"
+                        >
+                          {mentalModelsLoading ? '...' : 'Fetch'}
+                        </button>
+                        <button
+                          onClick={triggerMentalModelsRefresh}
+                          disabled={mentalModelsLoading}
+                          className="px-2 py-0.5 text-[10px] bg-purple-600 hover:bg-purple-500 rounded text-white disabled:opacity-50"
+                        >
+                          {mentalModelsLoading ? '...' : 'Refresh'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {mentalModels.length > 0 ? (
+                      <div className="bg-slate-900/50 rounded border border-slate-700 overflow-hidden">
+                        <button
+                          onClick={() => setMentalModelsExpanded(!mentalModelsExpanded)}
+                          className="w-full px-2 py-1.5 flex items-center justify-between text-left hover:bg-slate-800/50"
+                        >
+                          <span className="text-xs text-slate-300">
+                            {mentalModels.length} model{mentalModels.length !== 1 ? 's' : ''}
+                          </span>
+                          <span className="text-slate-400 text-[10px]">{mentalModelsExpanded ? '▼' : '▶'}</span>
+                        </button>
+                        {mentalModelsExpanded && (
+                          <div className="border-t border-slate-700 max-h-40 overflow-y-auto">
+                            {mentalModels.map((model, idx) => (
+                              <div key={model.id || idx} className="px-2 py-1.5 border-b border-slate-700/50 last:border-b-0">
+                                <div className="flex items-center gap-1.5 mb-0.5">
+                                  <span className="text-[10px] text-purple-400 font-mono">{model.subtype || 'model'}</span>
+                                  <span className="text-[10px] text-slate-400 truncate">{model.name}</span>
+                                </div>
+                                {(model.description || model.summary) && (
+                                  <p className="text-[10px] text-slate-500 line-clamp-2">{model.description || model.summary}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-slate-600 text-center py-2">
+                        No mental models yet
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
