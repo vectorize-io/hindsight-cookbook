@@ -64,9 +64,9 @@ def event(event_type: str, payload: Any = None) -> dict:
 class EventType:
     CONNECTED = "connected"
     DELIVERY_STARTED = "delivery_started"
-    MEMORY_REFLECT = "memory_reflect"  # Hindsight reflect results at start of delivery
     AGENT_THINKING = "agent_thinking"
     AGENT_ACTION = "agent_action"
+    MEMORY_REFLECT = "memory_reflect"  # Initial memory recall at start
     MEMORY_STORING = "memory_storing"
     MEMORY_STORED = "memory_stored"
     DELIVERY_SUCCESS = "delivery_success"

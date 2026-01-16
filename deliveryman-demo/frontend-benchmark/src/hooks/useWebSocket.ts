@@ -8,7 +8,7 @@ export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
-  const { connected, setConnected, handleEvent } = useGameStore();
+  const { connected, setConnected, handleEvent, difficulty } = useGameStore();
 
   const connect = useCallback(() => {
     // Don't reconnect if already connected or connecting
@@ -26,10 +26,12 @@ export function useWebSocket() {
     // Connect directly to backend WebSocket (bypass Vite proxy)
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     // In dev, connect directly to backend; in prod, use same host
-    const isDev = window.location.port === '5173' || window.location.port === '5174';
-    const wsHost = isDev ? `${window.location.hostname}:8002` : window.location.host;
-    const wsUrl = `${protocol}//${wsHost}/ws/${CLIENT_ID}`;
-    console.log('Connecting to WebSocket:', wsUrl);
+    const port = window.location.port;
+    const isDev = port === '5173' || port === '5174' || port.startsWith('517');
+    const wsHost = isDev ? `${window.location.hostname}:8000` : window.location.host;
+    // Pass app=bench and difficulty to identify this as the benchmark frontend
+    const wsUrl = `${protocol}//${wsHost}/ws/${CLIENT_ID}?app=bench&difficulty=${difficulty}`;
+    console.log('Connecting to WebSocket:', wsUrl, 'difficulty:', difficulty);
 
     const ws = new WebSocket(wsUrl);
 
@@ -70,13 +72,26 @@ export function useWebSocket() {
     };
 
     wsRef.current = ws;
-  }, [setConnected, handleEvent]);
+  }, [setConnected, handleEvent, difficulty]);
 
   const send = useCallback((type: string, payload?: unknown) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type, payload }));
-    } else {
-      console.error('WebSocket not connected, state:', wsRef.current?.readyState);
+    const doSend = () => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        console.log('WebSocket sending:', type);
+        wsRef.current.send(JSON.stringify({ type, payload }));
+        return true;
+      }
+      return false;
+    };
+
+    if (!doSend()) {
+      console.log('WebSocket not ready, retrying send in 500ms:', type);
+      // Retry after a short delay to allow reconnection
+      setTimeout(() => {
+        if (!doSend()) {
+          console.error('WebSocket still not connected after retry, state:', wsRef.current?.readyState);
+        }
+      }, 500);
     }
   }, []);
 
@@ -113,6 +128,10 @@ export function useWebSocket() {
     send('reset_memory');
   }, [send]);
 
+  const sendSetDifficulty = useCallback((newDifficulty: string) => {
+    send('set_difficulty', { difficulty: newDifficulty });
+  }, [send]);
+
   useEffect(() => {
     connect();
 
@@ -127,6 +146,16 @@ export function useWebSocket() {
     };
   }, []); // Empty deps - only run once on mount
 
+  // Reconnect when difficulty changes to get the correct bank
+  const prevDifficultyRef = useRef(difficulty);
+  useEffect(() => {
+    if (prevDifficultyRef.current !== difficulty && wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('Difficulty changed, sending set_difficulty to backend:', difficulty);
+      sendSetDifficulty(difficulty);
+    }
+    prevDifficultyRef.current = difficulty;
+  }, [difficulty, sendSetDifficulty]);
+
   return {
     connected,
     isConnecting,
@@ -134,5 +163,6 @@ export function useWebSocket() {
     startDelivery,
     cancelDelivery,
     resetMemory,
+    sendSetDifficulty,
   };
 }

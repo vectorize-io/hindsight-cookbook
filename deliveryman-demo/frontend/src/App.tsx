@@ -188,7 +188,7 @@ function App() {
       .then(data => setEmployees(data.employees))
       .catch(console.error);
 
-    fetch('/api/demo-config')
+    fetch('/api/demo-config?app=demo')
       .then(res => res.json())
       .then(data => setDemoConfig(data))
       .catch(console.error);
@@ -198,8 +198,8 @@ function App() {
       .then(data => setBuildingInfo(data))
       .catch(console.error);
 
-    // Get current difficulty, bank ID, and history
-    fetch('/api/difficulty')
+    // Get current difficulty, bank ID, and history (app=demo for this frontend)
+    fetch('/api/difficulty?app=demo')
       .then(res => res.json())
       .then(data => {
         const diff = data.difficulty as 'easy' | 'medium' | 'hard';
@@ -211,7 +211,7 @@ function App() {
       })
       .catch(console.error);
 
-    fetch('/api/memory/bank/history')
+    fetch('/api/memory/bank/history?app=demo')
       .then(res => res.json())
       .then(data => setBankHistory(data.history || []))
       .catch(console.error);
@@ -223,7 +223,7 @@ function App() {
       const [empRes, buildingRes, configRes] = await Promise.all([
         fetch('/api/building/employees'),
         fetch('/api/building'),
-        fetch('/api/demo-config'),
+        fetch('/api/demo-config?app=demo'),
       ]);
       const [empData, buildingData, configData] = await Promise.all([
         empRes.json(),
@@ -242,7 +242,7 @@ function App() {
   // Refresh bank history
   const refreshBankHistory = useCallback(async () => {
     try {
-      const res = await fetch('/api/memory/bank/history');
+      const res = await fetch('/api/memory/bank/history?app=demo');
       const data = await res.json();
       setBankHistory(data.history || []);
     } catch (err) {
@@ -293,7 +293,7 @@ function App() {
 
   const generateNewBank = useCallback(async () => {
     try {
-      const res = await fetch('/api/memory/bank/new', { method: 'POST' });
+      const res = await fetch('/api/memory/bank/new?app=demo', { method: 'POST' });
       const data = await res.json();
       setCurrentBankId(data.bankId);
       setShowBankMenu(false);
@@ -309,7 +309,7 @@ function App() {
 
   const switchToBank = useCallback(async (bankId: string) => {
     try {
-      const res = await fetch('/api/memory/bank', {
+      const res = await fetch('/api/memory/bank?app=demo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bankId }),
@@ -340,11 +340,17 @@ function App() {
     }
   }, [actions.length]);
 
-  // Start a random delivery for training mode
+  // Start a random delivery for training mode (with reflect hindsight)
   const startRandomTrainingDelivery = useCallback(() => {
     if (employees.length > 0 && connected) {
       const randomEmployee = employees[Math.floor(Math.random() * employees.length)];
-      startDelivery(randomEmployee.name, includeBusiness, maxSteps);
+      const hindsightSettings = {
+        inject: true,
+        reflect: true,
+        store: true,
+        query: `Where does ${randomEmployee.name} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries.`,
+      };
+      startDelivery(randomEmployee.name, includeBusiness, maxSteps, undefined, hindsightSettings);
     }
   }, [employees, connected, startDelivery, includeBusiness, maxSteps]);
 
@@ -415,9 +421,17 @@ function App() {
     cancelDelivery();
   }, [cancelDelivery]);
 
+  // Hindsight settings for reflect mode
+  const getHindsightSettings = (recipientName: string) => ({
+    inject: true,
+    reflect: true,
+    store: true,
+    query: `Where does ${recipientName} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries.`,
+  });
+
   const handleStartDelivery = () => {
     if (selectedRecipient) {
-      startDelivery(selectedRecipient, includeBusiness, maxSteps);
+      startDelivery(selectedRecipient, includeBusiness, maxSteps, undefined, getHindsightSettings(selectedRecipient));
     }
   };
 
@@ -425,7 +439,7 @@ function App() {
     if (employees.length > 0) {
       const randomEmployee = employees[Math.floor(Math.random() * employees.length)];
       setSelectedRecipient(randomEmployee.name);
-      startDelivery(randomEmployee.name, includeBusiness, maxSteps);
+      startDelivery(randomEmployee.name, includeBusiness, maxSteps, undefined, getHindsightSettings(randomEmployee.name));
     }
   };
 
@@ -433,21 +447,22 @@ function App() {
     if (confirm('This will clear all agent memories and delivery history. Continue?')) {
       resetMemory();
       resetHistory();
-      // Fetch the new bank ID from REST API as fallback (WebSocket should also update it)
-      // Small delay to let backend process the reset
+      // WebSocket will send 'connected' event with new bankId - store will update automatically
+      // Fetch from REST API as fallback after longer delay to ensure backend processed the reset
       setTimeout(async () => {
         try {
-          const res = await fetch('/api/memory/bank');
+          const res = await fetch('/api/memory/bank?app=demo');
           const data = await res.json();
-          if (data.bankId) {
+          if (data.bankId && data.bankId !== currentBankId) {
+            console.log('Reset: updating bank ID from REST API:', data.bankId);
             setCurrentBankId(data.bankId);
             setStoreBankId(data.bankId);
-            refreshBankHistory();
           }
+          refreshBankHistory();
         } catch (err) {
           console.error('Failed to refresh bank ID after reset:', err);
         }
-      }, 100);
+      }, 500);  // Increased delay to ensure backend processes reset
     }
   };
 

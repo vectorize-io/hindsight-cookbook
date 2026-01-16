@@ -147,6 +147,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     switch (event.type) {
       case 'connected':
+        console.log('Store: connected event received, bankId:', payload?.bankId);
         set({
           connected: true,
           clientId: payload?.clientId,

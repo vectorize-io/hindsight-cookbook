@@ -386,7 +386,7 @@ function App() {
       })
       .catch(console.error);
 
-    fetch('/api/demo-config')
+    fetch('/api/demo-config?app=bench')
       .then(res => res.json())
       .then(data => setDemoConfig(data))
       .catch(console.error);
@@ -395,7 +395,7 @@ function App() {
   // Fetch bank history and current bank
   const refreshBankHistory = useCallback(async () => {
     try {
-      const res = await fetch('/api/memory/bank/history');
+      const res = await fetch('/api/memory/bank/history?app=bench');
       const data = await res.json();
       setBankHistory(data.history || []);
       setCurrentBankId(data.currentBankId || null);
@@ -407,7 +407,7 @@ function App() {
   // Switch to an existing bank
   const switchToBank = useCallback(async (bankId: string) => {
     try {
-      const res = await fetch('/api/memory/bank', {
+      const res = await fetch('/api/memory/bank?app=bench', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bankId }),
@@ -424,7 +424,7 @@ function App() {
   // Generate a new bank
   const generateNewBank = useCallback(async () => {
     try {
-      const res = await fetch('/api/memory/bank/new', { method: 'POST' });
+      const res = await fetch('/api/memory/bank/new?app=bench', { method: 'POST' });
       const data = await res.json();
       if (data.bankId) {
         setCurrentBankId(data.bankId);
@@ -444,7 +444,7 @@ function App() {
 
   // Fetch employees, demo config, difficulty, building info, and bank history on mount
   useEffect(() => {
-    fetch('/api/difficulty')
+    fetch('/api/difficulty?app=bench')
       .then(res => res.json())
       .then(data => {
         const diff = data.difficulty as Difficulty;
@@ -460,7 +460,7 @@ function App() {
   const changeDifficulty = useCallback(async (newDifficulty: Difficulty) => {
     if (newDifficulty === difficulty) return;
     try {
-      const res = await fetch('/api/difficulty', {
+      const res = await fetch('/api/difficulty?app=bench', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ difficulty: newDifficulty }),

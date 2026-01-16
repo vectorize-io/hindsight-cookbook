@@ -14,10 +14,8 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, client_id: str):
         """Accept a new WebSocket connection."""
-        # Accept with any origin (for cross-origin connections from dev frontend)
         await websocket.accept()
         self.active_connections[client_id] = websocket
-        print(f"WebSocket connected: {client_id}")
 
     def disconnect(self, client_id: str):
         """Remove a WebSocket connection."""
