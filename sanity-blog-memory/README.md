@@ -217,7 +217,7 @@ Replace keyword search with semantic understanding:
 
 ```typescript
 // Old: keyword matching
-const posts = posts.filter(p => p.title.includes('React'));
+const results = posts.filter(p => p.title.includes('React'));
 
 // New: semantic understanding
 const result = await recallMemory('frontend framework tutorials');
