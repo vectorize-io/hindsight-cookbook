@@ -1,0 +1,32 @@
+{
+  "name": "sanity-blog-memory",
+  "version": "1.0.0",
+  "description": "Hindsight cookbook recipe: Sync Sanity CMS blog posts to agent memory",
+  "type": "module",
+  "scripts": {
+    "sync": "npx tsx src/sync.ts",
+    "query": "npx tsx src/query-examples.ts",
+    "dev": "npx tsx watch src/sync.ts"
+  },
+  "keywords": [
+    "hindsight",
+    "sanity",
+    "cms",
+    "blog",
+    "memory",
+    "ai-agents",
+    "semantic-search"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@sanity/client": "^6.22.0",
+    "@vectorize-io/hindsight-client": "^0.3.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

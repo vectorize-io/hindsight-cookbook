@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:latest
+    pull_policy: always
+    ports:
+      - "8888:8888"  # API
+      - "9999:9999"  # Control Plane UI
+    environment:
+      # Choose your LLM provider (uncomment one):
+      
+      # Option 1: OpenAI
+      - HINDSIGHT_API_LLM_API_KEY=${OPENAI_API_KEY}
+      - HINDSIGHT_API_LLM_MODEL=gpt-4o-mini
+      
+      # Option 2: Google Gemini (free tier)
+      # - HINDSIGHT_API_LLM_PROVIDER=google
+      # - HINDSIGHT_API_LLM_API_KEY=${GOOGLE_API_KEY}
+      # - HINDSIGHT_API_LLM_MODEL=gemini-2.5-flash
+      
+      # Option 3: Groq (free tier)
+      # - HINDSIGHT_API_LLM_PROVIDER=groq
+      # - HINDSIGHT_API_LLM_API_KEY=${GROQ_API_KEY}
+      # - HINDSIGHT_API_LLM_MODEL=llama-3.3-70b-versatile
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0
+    restart: unless-stopped
+
+volumes:
+  hindsight-data:
