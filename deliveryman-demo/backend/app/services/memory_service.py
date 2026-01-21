@@ -1,11 +1,8 @@
 """Memory service wrapper around hindsight_litellm."""
 
-import os
-import json
 import uuid
 import asyncio
 import concurrent.futures
-from pathlib import Path
 import httpx
 import hindsight_litellm
 from ..config import HINDSIGHT_API_URL
@@ -23,48 +20,11 @@ def _get_http_client() -> httpx.Client:
 # Thread pool for running sync hindsight_litellm calls from async context
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
-# File to persist bank IDs across hot reloads
-_BANK_IDS_FILE = Path(__file__).parent.parent.parent / ".bank_ids.json"
-
-def _load_persisted_bank_ids() -> dict[str, str]:
-    """Load bank IDs from file if it exists."""
-    if _BANK_IDS_FILE.exists():
-        try:
-            with open(_BANK_IDS_FILE, "r") as f:
-                data = json.load(f)
-                print(f"Loaded persisted bank IDs: {data}")
-                return data
-        except Exception as e:
-            print(f"Warning: Failed to load bank IDs file: {e}")
-    return {}
-
-def _save_persisted_bank_ids(bank_ids: dict[str, str]):
-    """Save bank IDs to file for persistence across hot reloads."""
-    try:
-        with open(_BANK_IDS_FILE, "w") as f:
-            json.dump(bank_ids, f)
-        print(f"Saved bank IDs to file: {bank_ids}")
-    except Exception as e:
-        print(f"Warning: Failed to save bank IDs file: {e}")
-
 def _get_bank_key(app_type: str, difficulty: str = None) -> str:
     """Get the key for bank storage (app:difficulty or just app if no difficulty)."""
     if difficulty:
         return f"{app_type}:{difficulty}"
     return app_type
-
-def _get_or_create_default_bank_id(app_type: str, difficulty: str = None) -> str:
-    """Get persisted bank ID or create a new random one."""
-    key = _get_bank_key(app_type, difficulty)
-    persisted = _load_persisted_bank_ids()
-    if key in persisted:
-        return persisted[key]
-    # Generate new random ID - include difficulty in prefix for clarity
-    prefix = f"{app_type}-{difficulty}" if difficulty else app_type
-    new_id = f"{prefix}-{uuid.uuid4().hex[:8]}"
-    persisted[key] = new_id
-    _save_persisted_bank_ids(persisted)
-    return new_id
 
 # Per-app+difficulty bank state
 # Keys are "app_type:difficulty" (e.g., "demo:easy", "bench:hard")
@@ -78,26 +38,22 @@ _current_difficulty: str = "easy"
 # Track whether we've already configured (to avoid reconfiguring in async context)
 _configured: bool = False
 
+# Mental model refresh settings
+# Tracks deliveries since last refresh per app+difficulty
+_deliveries_since_refresh: dict[str, int] = {}  # key -> count
+_refresh_interval: dict[str, int] = {}  # key -> interval (0 = disabled)
+DEFAULT_REFRESH_INTERVAL = 5  # Refresh every 5 deliveries by default
+
 # Bank background for memory extraction guidance
 BANK_BACKGROUND = "Delivery agent. Remember employee locations, building layout, and optimal paths."
 
-# Bank mission for mental models - more comprehensive description
-BANK_MISSION = """You are a delivery agent navigating a building to deliver packages to employees.
-Your goal is to learn and remember:
-- Employee locations: which floor and side of the building each employee works at
-- Building layout: how floors are organized, what businesses are on each floor
-- Optimal delivery paths: the fastest routes to reach different employees
-- Past delivery outcomes: which deliveries succeeded and which failed
-
-Use this knowledge to efficiently deliver packages by remembering where employees are located
-rather than searching the entire building each time."""
+# Bank mission for mental models - same as background for simplicity
+BANK_MISSION = "Delivery agent. Remember employee locations, building layout, and optimal paths."
 
 
-def generate_bank_id(app_type: str = "demo", difficulty: str = None, use_default: bool = True) -> str:
-    """Generate a bank ID - uses persisted ID if use_default=True, else random."""
+def generate_bank_id(app_type: str = "demo", difficulty: str = None) -> str:
+    """Generate a new random bank ID."""
     diff = difficulty or _current_difficulty
-    if use_default:
-        return _get_or_create_default_bank_id(app_type, diff)
     prefix = f"{app_type}-{diff}" if diff else app_type
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
@@ -127,15 +83,14 @@ def get_bank_history(app_type: str = None, difficulty: str = None) -> list[str]:
     return history
 
 
-def configure_memory(bank_id: str = None, set_background: bool = True, app_type: str = None, difficulty: str = None, use_default: bool = True, set_mission: bool = True) -> str:
+def configure_memory(bank_id: str = None, set_background: bool = True, app_type: str = None, difficulty: str = None, set_mission: bool = True) -> str:
     """Configure hindsight_litellm for the demo.
 
     Args:
-        bank_id: Bank ID to use (uses default if not provided)
+        bank_id: Bank ID to use (generates new random one if not provided)
         set_background: Whether to set the bank background
         app_type: App type (demo or bench) for prefix and tracking
         difficulty: Difficulty level (easy, medium, hard) for separate banks
-        use_default: Use deterministic default bank ID (persists across restarts)
         set_mission: Whether to set the bank mission (for mental models)
 
     Returns:
@@ -148,11 +103,20 @@ def configure_memory(bank_id: str = None, set_background: bool = True, app_type:
     diff = difficulty or _current_difficulty
     key = _get_bank_key(app, diff)
 
-    new_bank_id = bank_id or generate_bank_id(app, diff, use_default=use_default)
+    new_bank_id = bank_id or generate_bank_id(app, diff)
     _app_bank_ids[key] = new_bank_id
     _current_app_type = app
     _current_difficulty = diff
 
+    # Create the bank in Hindsight (idempotent - will skip if exists)
+    create_bank(
+        bank_id=new_bank_id,
+        name=new_bank_id,
+        background=BANK_BACKGROUND if set_background else None,
+        mission=BANK_MISSION if set_mission else None,
+    )
+
+    # Configure static settings (API URL, storage options, etc.)
     hindsight_litellm.configure(
         hindsight_api_url=HINDSIGHT_API_URL,
         store_conversations=False,  # We store manually after delivery
@@ -160,26 +124,15 @@ def configure_memory(bank_id: str = None, set_background: bool = True, app_type:
         verbose=True,
     )
 
+    # Set per-call defaults (bank_id, budget, reflect settings)
     hindsight_litellm.set_defaults(
         bank_id=new_bank_id,
         use_reflect=True,  # Use reflect for intelligent memory synthesis
         budget="high",  # Use high budget for better memory retrieval
     )
 
-    # Set bank background for new banks
-    if set_background:
-        try:
-            hindsight_litellm.set_bank_background(background=BANK_BACKGROUND)
-            print(f"Bank background set for: {new_bank_id}")
-        except Exception as e:
-            print(f"Warning: Failed to set bank background: {e}")
-
-    # Set bank mission for mental models
-    if set_mission:
-        try:
-            set_bank_mission(new_bank_id)
-        except Exception as e:
-            print(f"Warning: Failed to set bank mission: {e}")
+    # Enable the integration
+    hindsight_litellm.enable()
 
     _configured = True
     _add_to_history(new_bank_id, app, diff)
@@ -212,6 +165,7 @@ def set_bank_id(bank_id: str, set_background: bool = True, add_to_history: bool 
     _app_bank_ids[key] = bank_id
     _current_app_type = app
     _current_difficulty = diff
+    # Update the defaults' bank_id
     hindsight_litellm.set_defaults(bank_id=bank_id)
 
     if add_to_history:
@@ -219,27 +173,27 @@ def set_bank_id(bank_id: str, set_background: bool = True, add_to_history: bool 
 
     if set_background:
         try:
-            hindsight_litellm.set_bank_background(background=BANK_BACKGROUND)
-            print(f"Bank background set for: {bank_id}")
+            hindsight_litellm.set_bank_mission(mission=BANK_MISSION)
+            print(f"Bank mission set for: {bank_id}")
         except Exception as e:
-            print(f"Warning: Failed to set bank background: {e}")
+            print(f"Warning: Failed to set bank mission: {e}")
 
 
-def set_bank_background_async(background: str = None):
-    """Set bank background in a thread pool to avoid event loop issues.
+def set_bank_mission_async(mission: str = None):
+    """Set bank mission in a thread pool to avoid event loop issues.
 
     This is a fire-and-forget operation that won't block.
     """
-    bg = background or BANK_BACKGROUND
-    def _set_bg():
+    m = mission or BANK_MISSION
+    def _set_mission():
         try:
-            hindsight_litellm.set_bank_background(background=bg)
+            hindsight_litellm.set_bank_mission(mission=m)
             bank_id = get_bank_id()
-            print(f"Bank background set for: {bank_id}")
+            print(f"Bank mission set for: {bank_id}")
         except Exception as e:
-            print(f"Warning: Failed to set bank background: {e}")
+            print(f"Warning: Failed to set bank mission: {e}")
 
-    _executor.submit(_set_bg)
+    _executor.submit(_set_mission)
 
 
 def ensure_bank_exists(app_type: str = None, difficulty: str = None) -> bool:
@@ -434,15 +388,10 @@ def reset_bank(session_id: str = None, app_type: str = None, difficulty: str = N
     """
     app = app_type or _current_app_type
     diff = difficulty or _current_difficulty
-    key = _get_bank_key(app, diff)
     # Generate new random ID with difficulty in prefix
     prefix = f"{app}-{diff}"
     new_id = f"{prefix}-{session_id or uuid.uuid4().hex[:8]}"
-    # Update the persisted file with the new ID
-    persisted = _load_persisted_bank_ids()
-    persisted[key] = new_id
-    _save_persisted_bank_ids(persisted)
-    return configure_memory(bank_id=new_id, app_type=app, difficulty=diff, use_default=False)
+    return configure_memory(bank_id=new_id, app_type=app, difficulty=diff)
 
 
 def set_active_app(app_type: str, difficulty: str = None):
@@ -484,6 +433,46 @@ def set_difficulty(difficulty: str, app_type: str = None) -> str:
 
     # Create new bank for this difficulty
     return configure_memory(app_type=app, difficulty=difficulty)
+
+
+# =============================================================================
+# Bank Creation API (direct HTTP calls to Hindsight)
+# =============================================================================
+
+def create_bank(bank_id: str, name: str = None, background: str = None, mission: str = None) -> dict:
+    """Create a memory bank in Hindsight.
+
+    Args:
+        bank_id: Unique bank ID
+        name: Optional display name (defaults to bank_id)
+        background: Optional bank background/context
+        mission: Optional mission for mental models
+
+    Returns:
+        Response from the API
+    """
+    client = _get_http_client()
+
+    payload = {
+        "name": name or bank_id,
+    }
+    if background:
+        payload["background"] = background
+    if mission:
+        payload["mission"] = mission
+
+    try:
+        # Use PUT /v1/default/banks/{bank_id} to create/update bank
+        response = client.put(f"/v1/default/banks/{bank_id}", json=payload)
+        if response.status_code == 200 or response.status_code == 201:
+            print(f"[MEMORY] Created/updated bank: {bank_id}")
+            return response.json()
+        else:
+            print(f"[MEMORY] Failed to create bank {bank_id}: {response.status_code} - {response.text}")
+            return {}
+    except Exception as e:
+        print(f"[MEMORY] Error creating bank {bank_id}: {e}")
+        return {}
 
 
 # =============================================================================
@@ -531,7 +520,7 @@ async def set_bank_mission_async(bank_id: str = None, mission: str = None) -> di
     )
 
 
-def refresh_mental_models(bank_id: str = None, subtype: str = None) -> dict:
+def refresh_mental_models(bank_id: str = None, subtype: str = None, sync: bool = True, poll_interval: float = 0.5, timeout: float = 60.0) -> dict:
     """Refresh mental models for a bank.
 
     This triggers the Hindsight backend to analyze memories and create/update
@@ -540,10 +529,15 @@ def refresh_mental_models(bank_id: str = None, subtype: str = None) -> dict:
     Args:
         bank_id: Bank ID (uses current if not provided)
         subtype: Optional subtype filter ('structural' or 'emergent')
+        sync: If True, poll until refresh completes before returning (default: True)
+        poll_interval: Seconds between status polls when sync=True (default: 0.5)
+        timeout: Maximum seconds to wait when sync=True (default: 60.0)
 
     Returns:
         Response with operation status
     """
+    import time
+
     bid = bank_id or get_bank_id()
     if not bid:
         print("[MEMORY] Cannot refresh mental models: no bank_id")
@@ -555,14 +549,50 @@ def refresh_mental_models(bank_id: str = None, subtype: str = None) -> dict:
         body["subtype"] = subtype
 
     try:
+        # Submit the refresh operation
         response = client.post(
             f"/v1/default/banks/{bid}/mental-models/refresh",
-            json=body if body else None
+            json=body if body else None,
         )
         response.raise_for_status()
         result = response.json()
-        print(f"[MEMORY] Mental models refresh triggered for {bid}: {result}")
-        return result
+        operation_id = result.get("operation_id")
+        print(f"[MEMORY] Mental models refresh triggered for {bid}, operation_id: {operation_id}")
+
+        if not sync or not operation_id:
+            return result
+
+        # Poll for completion
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            time.sleep(poll_interval)
+            try:
+                status_response = client.get(
+                    f"/v1/default/banks/{bid}/operations/{operation_id}"
+                )
+                status_response.raise_for_status()
+                status = status_response.json()
+                op_status = status.get("status")
+                print(f"[MEMORY] Refresh operation {operation_id} status: {op_status}")
+
+                if op_status == "completed":
+                    print(f"[MEMORY] Mental models refresh completed for {bid}")
+                    return {"success": True, "operation_id": operation_id, "status": "completed"}
+                elif op_status == "failed":
+                    error_msg = status.get("error_message", "Unknown error")
+                    print(f"[MEMORY] Mental models refresh failed for {bid}: {error_msg}")
+                    return {"success": False, "operation_id": operation_id, "status": "failed", "error": error_msg}
+                elif op_status == "not_found":
+                    # Operation completed and was removed from storage
+                    print(f"[MEMORY] Mental models refresh completed for {bid} (operation cleaned up)")
+                    return {"success": True, "operation_id": operation_id, "status": "completed"}
+                # Still pending, continue polling
+            except Exception as poll_error:
+                print(f"[MEMORY] Error polling operation status: {poll_error}")
+
+        print(f"[MEMORY] Mental models refresh timed out after {timeout}s for {bid}")
+        return {"success": False, "operation_id": operation_id, "status": "timeout"}
+
     except Exception as e:
         print(f"[MEMORY] Failed to refresh mental models: {e}")
         return {}
@@ -575,6 +605,87 @@ async def refresh_mental_models_async(bank_id: str = None, subtype: str = None) 
         _executor,
         lambda: refresh_mental_models(bank_id, subtype)
     )
+
+
+# --- Mental Model Refresh Interval Management ---
+
+def get_refresh_interval(app_type: str = None, difficulty: str = None) -> int:
+    """Get the mental model refresh interval for an app+difficulty.
+
+    Returns:
+        Number of deliveries between refreshes (0 = disabled)
+    """
+    app = app_type or _current_app_type
+    diff = difficulty or _current_difficulty
+    key = _get_bank_key(app, diff)
+    return _refresh_interval.get(key, DEFAULT_REFRESH_INTERVAL)
+
+
+def set_refresh_interval(interval: int, app_type: str = None, difficulty: str = None) -> int:
+    """Set the mental model refresh interval for an app+difficulty.
+
+    Args:
+        interval: Number of deliveries between refreshes (0 = disabled)
+        app_type: App type (uses current if not provided)
+        difficulty: Difficulty level (uses current if not provided)
+
+    Returns:
+        The new interval value
+    """
+    global _refresh_interval
+    app = app_type or _current_app_type
+    diff = difficulty or _current_difficulty
+    key = _get_bank_key(app, diff)
+    _refresh_interval[key] = max(0, interval)  # Ensure non-negative
+    print(f"[MEMORY] Refresh interval set to {interval} for {key}")
+    return _refresh_interval[key]
+
+
+def get_deliveries_since_refresh(app_type: str = None, difficulty: str = None) -> int:
+    """Get the number of deliveries since last mental model refresh."""
+    app = app_type or _current_app_type
+    diff = difficulty or _current_difficulty
+    key = _get_bank_key(app, diff)
+    return _deliveries_since_refresh.get(key, 0)
+
+
+def record_delivery(app_type: str = None, difficulty: str = None) -> bool:
+    """Record a delivery and check if mental model refresh is needed.
+
+    Args:
+        app_type: App type (uses current if not provided)
+        difficulty: Difficulty level (uses current if not provided)
+
+    Returns:
+        True if refresh should be triggered, False otherwise
+    """
+    global _deliveries_since_refresh
+    app = app_type or _current_app_type
+    diff = difficulty or _current_difficulty
+    key = _get_bank_key(app, diff)
+
+    # Increment delivery count
+    _deliveries_since_refresh[key] = _deliveries_since_refresh.get(key, 0) + 1
+    count = _deliveries_since_refresh[key]
+
+    # Check if refresh is needed
+    interval = get_refresh_interval(app, diff)
+    if interval > 0 and count >= interval:
+        print(f"[MEMORY] {count} deliveries reached, refresh triggered for {key}")
+        return True
+
+    print(f"[MEMORY] Delivery recorded for {key}: {count}/{interval if interval > 0 else 'disabled'}")
+    return False
+
+
+def reset_delivery_count(app_type: str = None, difficulty: str = None):
+    """Reset the delivery count after a refresh."""
+    global _deliveries_since_refresh
+    app = app_type or _current_app_type
+    diff = difficulty or _current_difficulty
+    key = _get_bank_key(app, diff)
+    _deliveries_since_refresh[key] = 0
+    print(f"[MEMORY] Delivery count reset for {key}")
 
 
 def get_mental_models(bank_id: str = None, subtype: str = None) -> list:
@@ -604,7 +715,8 @@ def get_mental_models(bank_id: str = None, subtype: str = None) -> list:
         )
         response.raise_for_status()
         result = response.json()
-        models = result.get("models", [])
+        # API returns "items" but we normalize to "models"
+        models = result.get("items", result.get("models", []))
         print(f"[MEMORY] Got {len(models)} mental models for {bid}")
         return models
     except Exception as e:
@@ -618,4 +730,122 @@ async def get_mental_models_async(bank_id: str = None, subtype: str = None) -> l
     return await loop.run_in_executor(
         _executor,
         lambda: get_mental_models(bank_id, subtype)
+    )
+
+
+def get_mental_model(bank_id: str = None, model_id: str = None) -> dict:
+    """Get a single mental model with full details including observations.
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+        model_id: The mental model ID
+
+    Returns:
+        Mental model with observations and freshness metadata
+    """
+    bid = bank_id or get_bank_id()
+    if not bid or not model_id:
+        print("[MEMORY] Cannot get mental model: missing bank_id or model_id")
+        return {}
+
+    client = _get_http_client()
+
+    try:
+        response = client.get(f"/v1/default/banks/{bid}/mental-models/{model_id}")
+        response.raise_for_status()
+        result = response.json()
+        print(f"[MEMORY] Got mental model {model_id} for {bid}")
+        return result
+    except Exception as e:
+        print(f"[MEMORY] Failed to get mental model: {e}")
+        return {}
+
+
+async def get_mental_model_async(bank_id: str = None, model_id: str = None) -> dict:
+    """Async version of get_mental_model."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: get_mental_model(bank_id, model_id)
+    )
+
+
+def create_pinned_model(bank_id: str = None, name: str = None, description: str = None) -> dict:
+    """Create a pinned mental model (user-defined topic to track).
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+        name: Name of the model (e.g., "Employee Locations")
+        description: Description of what to track
+
+    Returns:
+        Created mental model
+    """
+    bid = bank_id or get_bank_id()
+    if not bid or not name:
+        print("[MEMORY] Cannot create pinned model: missing bank_id or name")
+        return {}
+
+    client = _get_http_client()
+
+    try:
+        response = client.post(
+            f"/v1/default/banks/{bid}/mental-models",
+            json={
+                "name": name,
+                "description": description or name,
+                "subtype": "pinned"
+            }
+        )
+        response.raise_for_status()
+        result = response.json()
+        print(f"[MEMORY] Created pinned model '{name}' for {bid}")
+        return result
+    except Exception as e:
+        print(f"[MEMORY] Failed to create pinned model: {e}")
+        return {}
+
+
+async def create_pinned_model_async(bank_id: str = None, name: str = None, description: str = None) -> dict:
+    """Async version of create_pinned_model."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: create_pinned_model(bank_id, name, description)
+    )
+
+
+def delete_mental_model(bank_id: str = None, model_id: str = None) -> bool:
+    """Delete a mental model.
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+        model_id: The mental model ID to delete
+
+    Returns:
+        True if successful
+    """
+    bid = bank_id or get_bank_id()
+    if not bid or not model_id:
+        print("[MEMORY] Cannot delete mental model: missing bank_id or model_id")
+        return False
+
+    client = _get_http_client()
+
+    try:
+        response = client.delete(f"/v1/default/banks/{bid}/mental-models/{model_id}")
+        response.raise_for_status()
+        print(f"[MEMORY] Deleted mental model {model_id} from {bid}")
+        return True
+    except Exception as e:
+        print(f"[MEMORY] Failed to delete mental model: {e}")
+        return False
+
+
+async def delete_mental_model_async(bank_id: str = None, model_id: str = None) -> bool:
+    """Async version of delete_mental_model."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: delete_mental_model(bank_id, model_id)
     )

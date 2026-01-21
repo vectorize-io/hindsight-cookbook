@@ -22,8 +22,10 @@ from .memory_service import (
     set_document_id,
     set_bank_id,
     get_bank_id,
-    set_bank_background_async,
+    set_bank_mission_async,
     refresh_mental_models_async,
+    record_delivery,
+    reset_delivery_count,
 )
 from ..websocket.events import (
     event, EventType, AgentActionPayload, DeliverySuccessPayload,
@@ -149,7 +151,7 @@ async def run_delivery(
     # Set custom bank background if provided (guides memory extraction)
     # Uses async-safe version to avoid event loop conflicts
     if custom_background:
-        set_bank_background_async(custom_background)
+        set_bank_mission_async(custom_background)
 
     # Set up agent state - starting position depends on difficulty
     if building.is_city_grid:
@@ -359,9 +361,23 @@ async def run_delivery(
                         print(f"[MEMORY] Stored successfully in {store_timing:.2f}s to bank: {get_bank_id()}")
                         await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
 
-                        # Trigger mental models refresh in background (fire-and-forget)
-                        asyncio.create_task(refresh_mental_models_async())
-                        print(f"[MEMORY] Mental models refresh triggered in background")
+                    # Record delivery and check if mental model refresh is needed
+                    should_refresh = record_delivery()
+                    if should_refresh:
+                        # Send event that models are refreshing
+                        await websocket.send_json(event(EventType.MODELS_REFRESHING, {}))
+
+                        async def refresh_with_notification():
+                            try:
+                                await refresh_mental_models_async()
+                                await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": True}))
+                            except Exception as e:
+                                print(f"[MEMORY] Mental models refresh failed: {e}")
+                                await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": False, "error": str(e)}))
+
+                        asyncio.create_task(refresh_with_notification())
+                        reset_delivery_count()
+                        print(f"[MEMORY] Mental models refresh triggered (interval reached)")
 
                     # Send success
                     await websocket.send_json(event(EventType.DELIVERY_SUCCESS, {
@@ -409,9 +425,23 @@ async def run_delivery(
             store_timing = time.time() - t_store
             await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
 
-            # Trigger mental models refresh in background (fire-and-forget)
-            asyncio.create_task(refresh_mental_models_async())
-            print(f"[MEMORY] Mental models refresh triggered in background")
+        # Record delivery (even failures count) and check if mental model refresh is needed
+        should_refresh = record_delivery()
+        if should_refresh:
+            # Send event that models are refreshing
+            await websocket.send_json(event(EventType.MODELS_REFRESHING, {}))
+
+            async def refresh_with_notification():
+                try:
+                    await refresh_mental_models_async()
+                    await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": True}))
+                except Exception as e:
+                    print(f"[MEMORY] Mental models refresh failed: {e}")
+                    await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": False, "error": str(e)}))
+
+            asyncio.create_task(refresh_with_notification())
+            reset_delivery_count()
+            print(f"[MEMORY] Mental models refresh triggered (interval reached)")
 
         await websocket.send_json(event(EventType.STEP_LIMIT_REACHED, {
             "message": f"Exceeded {max_steps} step limit",
@@ -469,7 +499,7 @@ async def run_delivery_fast(
     # Set custom bank background if provided (guides memory extraction)
     # Uses async-safe version to avoid event loop conflicts
     if custom_background:
-        set_bank_background_async(custom_background)
+        set_bank_mission_async(custom_background)
 
     # Set up agent state - starting position depends on difficulty
     if building.is_city_grid:
@@ -591,8 +621,11 @@ async def run_delivery_fast(
                             context=f"delivery:{package.recipient_name}:success",
                             document_id=f"delivery-{delivery_id}"
                         )
-                        # Trigger mental models refresh in background
+                    # Record delivery and check if mental model refresh is needed
+                    should_refresh = record_delivery()
+                    if should_refresh:
                         asyncio.create_task(refresh_mental_models_async())
+                        reset_delivery_count()
                     break
 
             else:
@@ -601,20 +634,24 @@ async def run_delivery_fast(
                 messages.append({"role": "user", "content": "Use the available tools to complete the delivery."})
 
         # If we exit the loop without success, store the failed delivery
-        if not success and store_conversations:
-            final_convo = format_messages_for_retain(
-                messages,
-                success=False,
-                steps=agent_state.steps_taken,
-                recipient=package.recipient_name
-            )
-            await retain_async(
-                final_convo,
-                context=f"delivery:{package.recipient_name}:failed",
-                document_id=f"delivery-{delivery_id}"
-            )
-            # Trigger mental models refresh in background
-            asyncio.create_task(refresh_mental_models_async())
+        if not success:
+            if store_conversations:
+                final_convo = format_messages_for_retain(
+                    messages,
+                    success=False,
+                    steps=agent_state.steps_taken,
+                    recipient=package.recipient_name
+                )
+                await retain_async(
+                    final_convo,
+                    context=f"delivery:{package.recipient_name}:failed",
+                    document_id=f"delivery-{delivery_id}"
+                )
+            # Record delivery (even failures count) and check if mental model refresh is needed
+            should_refresh = record_delivery()
+            if should_refresh:
+                asyncio.create_task(refresh_mental_models_async())
+                reset_delivery_count()
 
         return {
             "success": success,

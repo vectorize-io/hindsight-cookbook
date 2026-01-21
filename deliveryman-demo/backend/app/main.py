@@ -17,7 +17,7 @@ from .routers import building as building_router
 from .services import memory_service, agent_service
 from .websocket.manager import manager
 from .websocket.events import event, EventType
-from .config import LLM_MODEL, HINDSIGHT_API_URL
+from .config import LLM_MODEL, HINDSIGHT_API_URL, AVAILABLE_MODELS
 
 
 app = FastAPI(title="Delivery Agent API", version="1.0.0")
@@ -45,8 +45,14 @@ async def startup_event():
         difficulties = ["easy", "medium", "hard"]
         for app_type in ["demo", "bench"]:
             for difficulty in difficulties:
-                memory_service.configure_memory(app_type=app_type, difficulty=difficulty)
-                print(f"Initialized bank for {app_type}:{difficulty} = {memory_service.get_bank_id(app_type, difficulty)}")
+                bank_id = memory_service.configure_memory(app_type=app_type, difficulty=difficulty)
+                print(f"Initialized bank for {app_type}:{difficulty} = {bank_id}")
+                # Refresh mental models on startup to initialize with mission (no memories yet)
+                try:
+                    memory_service.refresh_mental_models(bank_id=bank_id)
+                    print(f"Mental models refreshed for {app_type}:{difficulty}")
+                except Exception as e:
+                    print(f"Warning: Failed to refresh mental models for {app_type}:{difficulty}: {e}")
 
     with concurrent.futures.ThreadPoolExecutor() as pool:
         await loop.run_in_executor(pool, init_all_banks)
@@ -224,6 +230,8 @@ async def refresh_mental_models(app: str = "demo", difficulty: str = "easy", sub
     """Trigger mental models refresh for a bank."""
     bank_id = memory_service.get_bank_id(app, difficulty)
     result = memory_service.refresh_mental_models(bank_id, subtype=subtype)
+    # Reset delivery count since we just refreshed
+    memory_service.reset_delivery_count(app, difficulty)
     return {"result": result, "bankId": bank_id}
 
 
@@ -237,6 +245,75 @@ async def set_bank_mission(request: SetMissionRequest, app: str = "demo", diffic
     bank_id = memory_service.get_bank_id(app, difficulty)
     result = memory_service.set_bank_mission(bank_id, request.mission)
     return {"result": result, "bankId": bank_id}
+
+
+@app.get("/api/memory/mental-models/{model_id}")
+async def get_mental_model(model_id: str, app: str = "demo", difficulty: str = "easy"):
+    """Get a single mental model with full observations."""
+    bank_id = memory_service.get_bank_id(app, difficulty)
+    model = memory_service.get_mental_model(bank_id, model_id)
+    return {"model": model, "bankId": bank_id}
+
+
+class CreatePinnedModelRequest(BaseModel):
+    name: str
+    description: str = None
+
+
+@app.post("/api/memory/mental-models/pinned")
+async def create_pinned_model(request: CreatePinnedModelRequest, app: str = "demo", difficulty: str = "easy"):
+    """Create a pinned mental model (user-defined topic to track)."""
+    bank_id = memory_service.get_bank_id(app, difficulty)
+    model = memory_service.create_pinned_model(bank_id, request.name, request.description)
+    return {"model": model, "bankId": bank_id}
+
+
+@app.delete("/api/memory/mental-models/{model_id}")
+async def delete_mental_model(model_id: str, app: str = "demo", difficulty: str = "easy"):
+    """Delete a mental model."""
+    bank_id = memory_service.get_bank_id(app, difficulty)
+    success = memory_service.delete_mental_model(bank_id, model_id)
+    return {"success": success, "bankId": bank_id}
+
+
+# Mental model refresh interval endpoints
+@app.get("/api/memory/refresh-interval")
+async def get_refresh_interval(app: str = "demo", difficulty: str = "easy"):
+    """Get the mental model refresh interval (deliveries between refreshes)."""
+    interval = memory_service.get_refresh_interval(app, difficulty)
+    deliveries_since = memory_service.get_deliveries_since_refresh(app, difficulty)
+    return {
+        "interval": interval,
+        "deliveriesSinceRefresh": deliveries_since,
+        "app": app,
+        "difficulty": difficulty,
+    }
+
+
+class SetRefreshIntervalRequest(BaseModel):
+    interval: int
+
+
+@app.post("/api/memory/refresh-interval")
+async def set_refresh_interval(request: SetRefreshIntervalRequest, app: str = "demo", difficulty: str = "easy"):
+    """Set the mental model refresh interval (deliveries between refreshes). 0 = disabled."""
+    interval = memory_service.set_refresh_interval(request.interval, app, difficulty)
+    return {
+        "interval": interval,
+        "app": app,
+        "difficulty": difficulty,
+    }
+
+
+@app.post("/api/memory/refresh-interval/reset-counter")
+async def reset_delivery_counter(app: str = "demo", difficulty: str = "easy"):
+    """Reset the delivery counter for auto-refresh to 0."""
+    memory_service.reset_delivery_count(app, difficulty)
+    return {
+        "deliveriesSinceRefresh": 0,
+        "app": app,
+        "difficulty": difficulty,
+    }
 
 
 # WebSocket endpoint
@@ -381,12 +458,14 @@ async def get_demo_config(app: str = "demo", difficulty: str = "easy"):
     return {
         "systemPrompt": SYSTEM_PROMPT,
         "llmModel": LLM_MODEL,
+        "availableModels": AVAILABLE_MODELS,
         "hindsight": {
             "apiUrl": HINDSIGHT_API_URL,
             "bankId": memory_service.get_bank_id(app, difficulty),
             "method": "reflect",
             "queryTemplate": QUERY_TEMPLATE,
             "budget": "high",
+            "mission": memory_service.BANK_MISSION,
             "background": memory_service.BANK_BACKGROUND,
         },
         "tools": tools_display,

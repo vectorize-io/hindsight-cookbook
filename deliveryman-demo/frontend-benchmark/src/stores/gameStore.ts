@@ -203,7 +203,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
 
       case 'memory_storing':
-        set({ isThinking: true, isStoringMemory: true });
+        // Only set isStoringMemory, not isThinking - we want animations to finish first
+        set({ isStoringMemory: true });
         break;
 
       case 'memory_stored':

@@ -10,6 +10,7 @@ interface PhaserGameProps {
   packageText: string;
   deliverySuccess: boolean;
   deliveryFailed: boolean;
+  deliveryCancelled: boolean;
   lastActionTool?: string;  // Tool name of the most recent action
   difficulty?: 'easy' | 'medium' | 'hard';
   // Hard mode city grid props
@@ -30,13 +31,14 @@ interface GridCommand {
   buildingName?: string;
 }
 
-export function PhaserGame({ floor, side, isThinking, packageText, deliverySuccess, deliveryFailed, lastActionTool, difficulty = 'easy', gridRow = 0, gridCol = 0, currentBuilding = null }: PhaserGameProps) {
+export function PhaserGame({ floor, side, isThinking, packageText, deliverySuccess, deliveryFailed, deliveryCancelled, lastActionTool, difficulty = 'easy', gridRow = 0, gridCol = 0, currentBuilding = null }: PhaserGameProps) {
   const gameRef = useRef<Phaser.Game | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const lastFloorRef = useRef(floor);
   const lastSideRef = useRef(side);
   const lastSuccessRef = useRef(false);
   const lastFailedRef = useRef(false);
+  const lastCancelledRef = useRef(false);
   const setAnimating = useGameStore((state) => state.setAnimating);
 
   // Hard mode grid refs
@@ -51,7 +53,7 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   const isAnimatingRef = useRef(false);
 
   // Process next move in queue
-  const processNextMove = useCallback(() => {
+  const processNextMove = useCallback((customDelay?: number) => {
     // First check grid queue (hard mode city navigation)
     if (gridQueueRef.current.length > 0) {
       isAnimatingRef.current = true;
@@ -98,10 +100,24 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
 
       // Different durations for different effects
       let effectDuration = 1400; // Default for reading animation
-      if (effect === 'delivery_success') {
-        effectDuration = 2500; // Success animation is longer
-      } else if (effect === 'delivery_failed') {
-        effectDuration = 2500; // Failure animation duration
+      let postEffectDelay = 200; // Standard pause between animations
+
+      if (effect === 'delivery_success' || effect === 'delivery_failed') {
+        effectDuration = 2500; // Success/failure animation is longer
+        postEffectDelay = 500; // Longer pause after delivery end before reset
+
+        // Queue reset animation to return to starting position (for easy mode: floor 1, front)
+        // This happens after the success/failure animation
+        setTimeout(() => {
+          if (difficulty === 'easy') {
+            moveQueueRef.current.push({ floor: 1, side: 'front' });
+          } else if (difficulty === 'medium') {
+            moveQueueRef.current.push({ floor: 1, side: 'building_a' });
+          }
+          // For hard mode, reset is handled differently (grid position)
+          window.dispatchEvent(new CustomEvent('animation-complete', { detail: { delay: postEffectDelay } }));
+        }, effectDuration);
+        return;
       }
 
       setTimeout(() => {
@@ -113,15 +129,16 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
     // Nothing left to process
     isAnimatingRef.current = false;
     setAnimating(false);
-  }, [setAnimating]);
+  }, [setAnimating, difficulty]);
 
   // Listen for animation complete events from Phaser
   useEffect(() => {
-    const handleAnimationComplete = () => {
-      // Small delay between animations for smoother visual flow
+    const handleAnimationComplete = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const delay = customEvent.detail?.delay ?? 200; // Default 0.2s pause between animations
       setTimeout(() => {
         processNextMove();
-      }, 250);
+      }, delay);
     };
 
     window.addEventListener('animation-complete', handleAnimationComplete);
@@ -191,33 +208,71 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
     }));
   }, [packageText]);
 
-  // Handle delivery success - queue it to play after all animations
+  // Handle delivery success - clear other effects and play immediately after moves
   useEffect(() => {
     if (deliverySuccess && !lastSuccessRef.current) {
-      // Queue the success animation to play after all other animations
+      // Immediately mark as animating to prevent thinking animation from showing
+      isAnimatingRef.current = true;
+      setAnimating(true);
+
+      // Clear any pending non-essential animations (like show_reading)
+      effectQueueRef.current = effectQueueRef.current.filter(
+        e => e === 'delivery_success' || e === 'delivery_failed'
+      );
+      // Queue the success animation
       effectQueueRef.current.push('delivery_success');
 
-      // If not currently animating, start processing
-      if (!isAnimatingRef.current) {
-        processNextMove();
-      }
+      // Start processing
+      processNextMove();
     }
     lastSuccessRef.current = deliverySuccess;
-  }, [deliverySuccess, processNextMove]);
+  }, [deliverySuccess, processNextMove, setAnimating]);
 
-  // Handle delivery failure - queue it to play after all animations
+  // Handle delivery failure - clear other effects and play immediately after moves
   useEffect(() => {
     if (deliveryFailed && !lastFailedRef.current) {
-      // Queue the failure animation to play after all other animations
+      // Immediately mark as animating to prevent thinking animation from showing
+      isAnimatingRef.current = true;
+      setAnimating(true);
+
+      // Clear any pending non-essential animations (like show_reading)
+      effectQueueRef.current = effectQueueRef.current.filter(
+        e => e === 'delivery_success' || e === 'delivery_failed'
+      );
+      // Queue the failure animation
       effectQueueRef.current.push('delivery_failed');
 
-      // If not currently animating, start processing
-      if (!isAnimatingRef.current) {
-        processNextMove();
-      }
+      // Start processing
+      processNextMove();
     }
     lastFailedRef.current = deliveryFailed;
-  }, [deliveryFailed, processNextMove]);
+  }, [deliveryFailed, processNextMove, setAnimating]);
+
+  // Handle delivery cancelled - immediately clear all queues and reset
+  useEffect(() => {
+    if (deliveryCancelled && !lastCancelledRef.current) {
+      // Clear ALL animation queues immediately
+      moveQueueRef.current = [];
+      gridQueueRef.current = [];
+      effectQueueRef.current = [];
+      isAnimatingRef.current = false;
+
+      // Queue reset animation based on difficulty
+      if (difficulty === 'easy') {
+        moveQueueRef.current.push({ floor: 1, side: 'front' });
+      } else if (difficulty === 'medium') {
+        moveQueueRef.current.push({ floor: 1, side: 'building_a' });
+      } else if (difficulty === 'hard') {
+        // Hard mode: reset to starting grid position
+        gridQueueRef.current.push({ type: 'exit_building' });
+        gridQueueRef.current.push({ type: 'move_grid', row: 0, col: 0 });
+      }
+
+      // Start reset animation immediately
+      processNextMove();
+    }
+    lastCancelledRef.current = deliveryCancelled;
+  }, [deliveryCancelled, processNextMove, difficulty]);
 
   // Handle difficulty changes
   const lastDifficultyRef = useRef(difficulty);
@@ -277,8 +332,22 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   }, [gridRow, gridCol, currentBuilding, difficulty, processNextMove]);
 
   // Handle special action animations (like reading employee list)
+  // Don't queue reading animation if delivery has already completed
   const lastActionToolRef = useRef<string | undefined>(undefined);
   useEffect(() => {
+    // Skip if delivery is already done - don't play reading animation after success/failure
+    if (deliverySuccess || deliveryFailed) {
+      return;
+    }
+
+    // Skip if delivery completion is already queued
+    const hasDeliveryEnd = effectQueueRef.current.some(
+      e => e === 'delivery_success' || e === 'delivery_failed'
+    );
+    if (hasDeliveryEnd) {
+      return;
+    }
+
     if (lastActionTool && lastActionTool !== lastActionToolRef.current) {
       lastActionToolRef.current = lastActionTool;
 
@@ -292,7 +361,15 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
         }
       }
     }
-  }, [lastActionTool, processNextMove]);
+  }, [lastActionTool, processNextMove, deliverySuccess, deliveryFailed]);
+
+  // Reset lastActionToolRef when delivery ends so it's fresh for next delivery
+  useEffect(() => {
+    if (!deliverySuccess && !deliveryFailed) {
+      // New delivery starting - reset the tool tracking
+      lastActionToolRef.current = undefined;
+    }
+  }, [deliverySuccess, deliveryFailed]);
 
   return (
     <div

@@ -163,6 +163,7 @@ function App() {
     agentSide,
     isThinking,
     isAnimating,
+    isStoringMemory,
     thinkingText,
     deliveryStatus,
     deliverySteps,
@@ -199,6 +200,7 @@ function App() {
   const [hindsightReflect, setHindsightReflect] = useState(false);
   const [hindsightStore, setHindsightStore] = useState(true);
   const [hindsightQuery, setHindsightQuery] = useState('');
+  const [hindsightMission, setHindsightMission] = useState('');
   const [hindsightBackground, setHindsightBackground] = useState('');
 
   // Bank management state
@@ -217,6 +219,8 @@ function App() {
   const [mentalModels, setMentalModels] = useState<MentalModel[]>([]);
   const [mentalModelsLoading, setMentalModelsLoading] = useState(false);
   const [mentalModelsExpanded, setMentalModelsExpanded] = useState(false);
+  const [refreshInterval, setRefreshInterval] = useState(5);
+  const [deliveriesSinceRefresh, setDeliveriesSinceRefresh] = useState(0);
 
   // Available models
   const modelOptions = [
@@ -278,7 +282,8 @@ function App() {
     results: EvalResult[];
     // Hindsight settings
     query: string;  // Memory query template (use {recipient} placeholder)
-    background: string;  // Bank background for memory extraction
+    mission: string;  // Bank mission for mental models
+    background: string;  // Bank background for memory extraction (deprecated)
   }
 
   // Generate short random ID for bank names
@@ -296,8 +301,17 @@ function App() {
     '#ec4899', // pink
   ];
 
-  // Default query and background
+  // Default query, mission, and background
   const DEFAULT_QUERY = "Where does {recipient} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries.";
+  const DEFAULT_MISSION = `You are a delivery agent navigating a building to deliver packages to employees.
+Your goal is to learn and remember:
+- Employee locations: which floor and side of the building each employee works at
+- Building layout: how floors are organized, what businesses are on each floor
+- Optimal delivery paths: the fastest routes to reach different employees
+- Past delivery outcomes: which deliveries succeeded and which failed
+
+Use this knowledge to efficiently deliver packages by remembering where employees are located
+rather than searching the entire building each time.`;
   const DEFAULT_BACKGROUND = "Delivery agent. Remember employee locations, building layout, and optimal paths.";
 
   // Config counter for naming
@@ -317,6 +331,7 @@ function App() {
         enabled: true,
         results: [],
         query: DEFAULT_QUERY,
+        mission: DEFAULT_MISSION,
         background: DEFAULT_BACKGROUND,
       },
       {
@@ -329,6 +344,7 @@ function App() {
         enabled: true,
         results: [],
         query: DEFAULT_QUERY,
+        mission: DEFAULT_MISSION,
         background: DEFAULT_BACKGROUND,
       },
     ];
@@ -365,6 +381,7 @@ function App() {
       enabled: true,
       results: [],
       query: DEFAULT_QUERY,
+      mission: DEFAULT_MISSION,
       background: DEFAULT_BACKGROUND,
     };
     setUiConfigs(prev => [...prev, newConfig]);
@@ -479,6 +496,7 @@ function App() {
         // Wait a bit for the refresh to process, then fetch
         setTimeout(() => {
           fetchMentalModels();
+          fetchRefreshIntervalStatus();
         }, 2000);
       }
     } catch (err) {
@@ -487,6 +505,34 @@ function App() {
     }
   }, [difficulty, fetchMentalModels]);
 
+  // Fetch refresh interval status
+  const fetchRefreshIntervalStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/memory/refresh-interval?app=bench&difficulty=${difficulty}`);
+      const data = await res.json();
+      setRefreshInterval(data.interval);
+      setDeliveriesSinceRefresh(data.deliveriesSinceRefresh);
+    } catch (err) {
+      console.error('Failed to fetch refresh interval:', err);
+    }
+  }, [difficulty]);
+
+  // Update refresh interval
+  const updateRefreshInterval = useCallback(async (newInterval: number) => {
+    try {
+      const res = await fetch(`/api/memory/refresh-interval?app=bench&difficulty=${difficulty}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interval: newInterval }),
+      });
+      if (res.ok) {
+        setRefreshInterval(newInterval);
+      }
+    } catch (err) {
+      console.error('Failed to update refresh interval:', err);
+    }
+  }, [difficulty]);
+
   // Fetch employees, demo config, difficulty, building info, and bank history on mount
   useEffect(() => {
     fetch('/api/difficulty?app=bench')
@@ -494,6 +540,15 @@ function App() {
       .then(data => {
         const diff = data.difficulty as Difficulty;
         setDifficulty(diff);
+
+        // Fetch refresh interval status for the correct difficulty
+        fetch(`/api/memory/refresh-interval?app=bench&difficulty=${diff}`)
+          .then(res => res.json())
+          .then(intervalData => {
+            setRefreshInterval(intervalData.interval);
+            setDeliveriesSinceRefresh(intervalData.deliveriesSinceRefresh);
+          })
+          .catch(console.error);
       })
       .catch(console.error);
 
@@ -541,9 +596,10 @@ function App() {
       store: hindsightStore,
       bankId: config.bankId,
       query: hindsightQuery || undefined,  // Custom memory query (optional)
-      background: hindsightBackground || undefined,  // Bank background context (optional)
+      mission: hindsightMission || undefined,  // Bank mission for mental models (optional)
+      background: hindsightBackground || undefined,  // Bank background context (deprecated)
     };
-  }, [getOrCreateUiConfig, selectedModel, memoryMode, hindsightInject, hindsightReflect, hindsightStore, hindsightQuery, hindsightBackground]);
+  }, [getOrCreateUiConfig, selectedModel, memoryMode, hindsightInject, hindsightReflect, hindsightStore, hindsightQuery, hindsightMission, hindsightBackground]);
 
   const handleStartDelivery = () => {
     if (selectedRecipient) {
@@ -692,7 +748,10 @@ function App() {
 
     setFfCurrentConfig(null);
     setFfRunning(false);
-  }, [evalConfigs, includeBusiness, maxSteps, saveAllSteps]);
+
+    // Update refresh interval status after all deliveries complete
+    fetchRefreshIntervalStatus();
+  }, [evalConfigs, includeBusiness, maxSteps, saveAllSteps, fetchRefreshIntervalStatus]);
 
   // Add a new config
   const addEvalConfig = useCallback(() => {
@@ -709,6 +768,7 @@ function App() {
       enabled: true,
       results: [],
       query: DEFAULT_QUERY,
+      mission: DEFAULT_MISSION,
       background: DEFAULT_BACKGROUND,
     }]);
   }, [evalConfigs.length]);
@@ -1187,20 +1247,37 @@ function App() {
                     </p>
                   </div>
 
-                  {/* Bank Background Input */}
+                  {/* Bank Mission Input */}
                   <div className="mt-3">
                     <label className="text-xs text-slate-400 block mb-1">
-                      Bank Background (optional)
+                      Bank Mission (optional)
+                    </label>
+                    <textarea
+                      value={hindsightMission}
+                      onChange={(e) => setHindsightMission(e.target.value)}
+                      placeholder={DEFAULT_MISSION}
+                      rows={4}
+                      className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500 resize-none"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      Comprehensive description for mental models - what the agent should learn and remember.
+                    </p>
+                  </div>
+
+                  {/* Bank Background Input (Deprecated) */}
+                  <div className="mt-3">
+                    <label className="text-xs text-slate-400 block mb-1">
+                      Bank Background (optional) <span className="text-orange-400 text-[10px]">(deprecated)</span>
                     </label>
                     <textarea
                       value={hindsightBackground}
                       onChange={(e) => setHindsightBackground(e.target.value)}
                       placeholder="Delivery agent. Remember employee locations, building layout, and optimal paths."
-                      rows={3}
+                      rows={2}
                       className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500 resize-none"
                     />
                     <p className="text-xs text-slate-500 mt-1">
-                      Guides memory extraction - tells Hindsight what facts to focus on when storing memories.
+                      Guides memory extraction - use Mission instead for mental models.
                     </p>
                   </div>
 
@@ -1211,7 +1288,7 @@ function App() {
                         <h4 className="text-sm text-slate-300 font-medium">Mental Models</h4>
                         <p className="text-xs text-slate-500">Higher-level patterns learned from delivery experiences</p>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex items-center gap-2">
                         <button
                           onClick={fetchMentalModels}
                           disabled={mentalModelsLoading}
@@ -1226,6 +1303,26 @@ function App() {
                         >
                           {mentalModelsLoading ? 'Refreshing...' : 'Refresh'}
                         </button>
+                        {/* Auto-refresh controls */}
+                        <div className="flex items-center gap-1 ml-2 border-l border-slate-600 pl-2">
+                          <span className="text-slate-500 text-xs">Auto:</span>
+                          <select
+                            value={refreshInterval}
+                            onChange={(e) => updateRefreshInterval(parseInt(e.target.value))}
+                            className="px-1 py-0.5 bg-slate-700 border border-slate-600 rounded text-slate-300 text-xs"
+                          >
+                            <option value={0}>Off</option>
+                            <option value={1}>1</option>
+                            <option value={3}>3</option>
+                            <option value={5}>5</option>
+                            <option value={10}>10</option>
+                          </select>
+                          {refreshInterval > 0 && (
+                            <span className="text-slate-500 text-xs">
+                              ({deliveriesSinceRefresh}/{refreshInterval})
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -1391,10 +1488,11 @@ function App() {
               <PhaserGame
                 floor={agentFloor}
                 side={agentSide}
-                isThinking={isThinking && !isAnimating}
+                isThinking={(isThinking || isStoringMemory) && !isAnimating}
                 packageText={currentPackage ? `${currentPackage.recipientName}${currentPackage.businessName ? ` @ ${currentPackage.businessName}` : ''}` : ''}
                 deliverySuccess={deliveryStatus === 'success'}
                 deliveryFailed={deliveryStatus === 'failed'}
+                deliveryCancelled={deliveryStatus === 'cancelled'}
                 lastActionTool={actions.length > 0 ? actions[actions.length - 1].toolName : undefined}
                 difficulty={difficulty}
                 gridRow={agentGridRow}
@@ -1945,6 +2043,7 @@ function App() {
                           enabled: true,
                           results: [],
                           query: DEFAULT_QUERY,
+                          mission: DEFAULT_MISSION,
                           background: DEFAULT_BACKGROUND,
                         }]);
                       }}
@@ -2064,9 +2163,21 @@ function App() {
                             className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
                           />
                         </div>
-                        {/* Background */}
+                        {/* Mission */}
                         <div>
-                          <label className="block text-xs text-slate-500 mb-1">Bank Background</label>
+                          <label className="block text-xs text-slate-500 mb-1">Bank Mission</label>
+                          <textarea
+                            value={config.mission}
+                            onChange={(e) => updateEvalConfig(config.id, { mission: e.target.value })}
+                            placeholder={DEFAULT_MISSION}
+                            rows={2}
+                            disabled={ffRunning}
+                            className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
+                          />
+                        </div>
+                        {/* Background (deprecated) */}
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">Bank Background <span className="text-orange-400">(deprecated)</span></label>
                           <textarea
                             value={config.background}
                             onChange={(e) => updateEvalConfig(config.id, { background: e.target.value })}

@@ -97,7 +97,9 @@ export type ServerEventType =
   | 'delivery_failed'
   | 'step_limit_reached'
   | 'cancelled'
-  | 'error';
+  | 'error'
+  | 'models_refreshing'
+  | 'models_refreshed';
 
 export interface ServerEvent<T = unknown> {
   type: ServerEventType;

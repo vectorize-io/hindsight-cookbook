@@ -15,6 +15,7 @@ interface DemoConfig {
     method: string;
     queryTemplate: string;
     budget: string | number;
+    mission: string;
     background: string;
   };
   tools: { name: string; description: string }[];
@@ -125,6 +126,7 @@ function App() {
     isThinking,
     isAnimating,
     isStoringMemory,
+    isRefreshingModels: isRefreshingModelsFromWs,
     thinkingText,
     deliveryStatus,
     deliverySteps,
@@ -171,6 +173,17 @@ function App() {
   const [bankHistory, setBankHistory] = useState<string[]>([]);
 
   // Mental models state
+  interface Observation {
+    title: string;
+    content: string;
+    trend?: 'STABLE' | 'STRENGTHENING' | 'WEAKENING' | 'NEW' | 'STALE';
+    evidence?: Array<{
+      memory_id: string;
+      quote: string;
+      timestamp?: string;
+      relevance?: string;
+    }>;
+  }
   interface MentalModel {
     id: string;
     name: string;
@@ -178,13 +191,31 @@ function App() {
     summary?: string;
     subtype?: string;
     created_at?: string;
+    observations?: Observation[];
+    freshness?: {
+      is_up_to_date: boolean;
+      memories_since_refresh: number;
+      reasons?: string[];
+    };
   }
   const [mentalModels, setMentalModels] = useState<MentalModel[]>([]);
   const [mentalModelsLoading, setMentalModelsLoading] = useState(false);
+  const [isRefreshingModels, setIsRefreshingModels] = useState(false);
   const [mentalModelsExpanded, setMentalModelsExpanded] = useState(false);
+  const [expandedModelId, setExpandedModelId] = useState<string | null>(null);
+  const [newPinnedModelName, setNewPinnedModelName] = useState('');
+  const [refreshInterval, setRefreshInterval] = useState(5);
+  const [deliveriesSinceRefresh, setDeliveriesSinceRefresh] = useState(0);
 
   // View mode state (UI vs Training)
   const [viewMode, setViewMode] = useState<'ui' | 'training'>('ui');
+
+  // UI mode loop state
+  const [loopDeliveries, setLoopDeliveries] = useState(false);
+  const [loopTarget, setLoopTarget] = useState(5);
+  const [loopCompleted, setLoopCompleted] = useState(0);
+  const loopAbortRef = useRef(false);
+  const loopStartHistoryRef = useRef(0);
 
   // Training mode state
   const [trainingTarget, setTrainingTarget] = useState(10);
@@ -221,6 +252,22 @@ function App() {
         // Sync store difficulty (sets correct initial position)
         setStoreDifficulty(diff);
         setStoreBankId(data.bankId || '');
+
+        // Reset delivery counter on page load/reload using the correct difficulty
+        fetch(`/api/memory/refresh-interval/reset-counter?app=demo&difficulty=${diff}`, { method: 'POST' })
+          .then(() => fetch(`/api/memory/refresh-interval?app=demo&difficulty=${diff}`))
+          .then(res => res.json())
+          .then(intervalData => {
+            setRefreshInterval(intervalData.interval);
+            setDeliveriesSinceRefresh(intervalData.deliveriesSinceRefresh);
+          })
+          .catch(console.error);
+
+        // Fetch mental models on startup using the correct difficulty
+        fetch(`/api/memory/mental-models?app=demo&difficulty=${diff}`)
+          .then(res => res.json())
+          .then(modelsData => setMentalModels(modelsData.models || []))
+          .catch(console.error);
       })
       .catch(console.error);
 
@@ -263,6 +310,33 @@ function App() {
     }
   }, []);
 
+  // Update refresh interval
+  const updateRefreshInterval = useCallback(async (newInterval: number) => {
+    try {
+      const res = await fetch(`/api/memory/refresh-interval?app=demo&difficulty=${difficulty}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interval: newInterval }),
+      });
+      const data = await res.json();
+      setRefreshInterval(data.interval);
+    } catch (err) {
+      console.error('Failed to update refresh interval:', err);
+    }
+  }, [difficulty]);
+
+  // Fetch refresh interval status
+  const fetchRefreshIntervalStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/memory/refresh-interval?app=demo&difficulty=${difficulty}`);
+      const data = await res.json();
+      setRefreshInterval(data.interval);
+      setDeliveriesSinceRefresh(data.deliveriesSinceRefresh);
+    } catch (err) {
+      console.error('Failed to fetch refresh interval:', err);
+    }
+  }, [difficulty]);
+
   // Fetch mental models for the current bank
   const fetchMentalModels = useCallback(async () => {
     try {
@@ -281,20 +355,86 @@ function App() {
   const triggerMentalModelsRefresh = useCallback(async () => {
     try {
       setMentalModelsLoading(true);
+      setIsRefreshingModels(true);
       const res = await fetch(`/api/memory/mental-models/refresh?app=demo&difficulty=${difficulty}`, {
         method: 'POST',
       });
       if (res.ok) {
-        // Wait a bit for the refresh to process, then fetch
-        setTimeout(() => {
-          fetchMentalModels();
-        }, 2000);
+        // Refresh is synchronous now, fetch immediately
+        fetchMentalModels();
+        fetchRefreshIntervalStatus();  // Update delivery count (reset by refresh)
+      } else {
+        setMentalModelsLoading(false);
       }
+      setIsRefreshingModels(false);
     } catch (err) {
       console.error('Failed to refresh mental models:', err);
       setMentalModelsLoading(false);
+      setIsRefreshingModels(false);
+    }
+  }, [difficulty, fetchMentalModels, fetchRefreshIntervalStatus]);
+
+  // Fetch single mental model with full details
+  const fetchMentalModelDetails = useCallback(async (modelId: string) => {
+    try {
+      const res = await fetch(`/api/memory/mental-models/${modelId}?app=demo&difficulty=${difficulty}`);
+      const data = await res.json();
+      if (data.model) {
+        // Update the model in the list with full details
+        setMentalModels(prev => prev.map(m =>
+          m.id === modelId ? { ...m, ...data.model } : m
+        ));
+      }
+    } catch (err) {
+      console.error('Failed to fetch mental model details:', err);
+    }
+  }, [difficulty]);
+
+  // Toggle model expansion and fetch details if needed
+  const toggleModelExpansion = useCallback((modelId: string) => {
+    if (expandedModelId === modelId) {
+      setExpandedModelId(null);
+    } else {
+      setExpandedModelId(modelId);
+      // Fetch full details when expanding
+      fetchMentalModelDetails(modelId);
+    }
+  }, [expandedModelId, fetchMentalModelDetails]);
+
+  // Create a pinned mental model
+  const createPinnedModel = useCallback(async (name: string) => {
+    if (!name.trim()) return;
+    try {
+      const res = await fetch(`/api/memory/mental-models/pinned?app=demo&difficulty=${difficulty}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      if (res.ok) {
+        setNewPinnedModelName('');
+        fetchMentalModels();
+      }
+    } catch (err) {
+      console.error('Failed to create pinned model:', err);
     }
   }, [difficulty, fetchMentalModels]);
+
+  // Delete a mental model
+  const deleteMentalModel = useCallback(async (modelId: string) => {
+    try {
+      const res = await fetch(`/api/memory/mental-models/${modelId}?app=demo&difficulty=${difficulty}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        setMentalModels(prev => prev.filter(m => m.id !== modelId));
+        if (expandedModelId === modelId) {
+          setExpandedModelId(null);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to delete mental model:', err);
+    }
+  }, [difficulty, expandedModelId]);
 
   // Sync currentBankId when gameStore's bankId changes (e.g., after reset_memory)
   useEffect(() => {
@@ -304,6 +444,27 @@ function App() {
       refreshBankHistory();
     }
   }, [storeBankId, currentBankId, refreshBankHistory]);
+
+  // Update refresh interval status when a delivery completes
+  useEffect(() => {
+    if (deliveryStatus === 'success' || deliveryStatus === 'failed') {
+      // Fetch updated delivery count after a short delay to let backend process
+      setTimeout(() => {
+        fetchRefreshIntervalStatus();
+      }, 500);
+    }
+  }, [deliveryStatus, fetchRefreshIntervalStatus]);
+
+  // Fetch mental models when WebSocket auto-refresh completes
+  const prevIsRefreshingFromWs = useRef(isRefreshingModelsFromWs);
+  useEffect(() => {
+    // When transitioning from refreshing to not refreshing (refresh completed)
+    if (prevIsRefreshingFromWs.current && !isRefreshingModelsFromWs) {
+      fetchMentalModels();
+      fetchRefreshIntervalStatus();
+    }
+    prevIsRefreshingFromWs.current = isRefreshingModelsFromWs;
+  }, [isRefreshingModelsFromWs, fetchMentalModels, fetchRefreshIntervalStatus]);
 
   // Change difficulty
   const changeDifficulty = useCallback(async (newDifficulty: 'easy' | 'medium' | 'hard') => {
@@ -325,10 +486,12 @@ function App() {
       await refreshBuildingData();
       // Refresh bank history for new difficulty
       await refreshBankHistory();
+      // Fetch refresh interval for new difficulty
+      fetchRefreshIntervalStatus();
     } catch (err) {
       console.error('Failed to change difficulty:', err);
     }
-  }, [difficulty, refreshBuildingData, refreshBankHistory, setStoreBankId, setStoreDifficulty]);
+  }, [difficulty, refreshBuildingData, refreshBankHistory, fetchRefreshIntervalStatus, setStoreBankId, setStoreDifficulty]);
 
   // Bank management functions
   const copyBankId = useCallback(() => {
@@ -467,6 +630,98 @@ function App() {
     cancelDelivery();
   }, [cancelDelivery]);
 
+  // UI mode loop: start random delivery
+  const startLoopDelivery = useCallback(() => {
+    if (employees.length > 0 && connected && !loopAbortRef.current) {
+      const randomEmployee = employees[Math.floor(Math.random() * employees.length)];
+      setSelectedRecipient(randomEmployee.name);
+      const hindsightSettings = {
+        inject: true,
+        reflect: true,
+        store: true,
+        query: `Where does ${randomEmployee.name} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries.`,
+      };
+      startDelivery(randomEmployee.name, includeBusiness, maxSteps, undefined, hindsightSettings);
+    }
+  }, [employees, connected, startDelivery, includeBusiness, maxSteps]);
+
+  // UI mode loop: auto-start next delivery when BOTH storing and animations complete
+  const loopWasStoringRef = useRef(false);
+  const loopWasAnimatingRef = useRef(false);
+  const loopDeliveryCompleteRef = useRef(false);
+
+  // Track delivery completion
+  useEffect(() => {
+    if (!loopDeliveries || viewMode !== 'ui') return;
+
+    // Mark delivery as complete when we see success/failed status
+    if (deliveryStatus === 'success' || deliveryStatus === 'failed') {
+      loopDeliveryCompleteRef.current = true;
+    }
+  }, [loopDeliveries, viewMode, deliveryStatus]);
+
+  // Track storing and animation states, start next delivery when both complete
+  useEffect(() => {
+    if (!loopDeliveries || viewMode !== 'ui') return;
+    if (loopAbortRef.current) {
+      setLoopDeliveries(false);
+      return;
+    }
+
+    // Track state transitions
+    if (isStoringMemory) {
+      loopWasStoringRef.current = true;
+    }
+    if (isAnimating) {
+      loopWasAnimatingRef.current = true;
+    }
+
+    // Check if delivery completed and both storing and animations are done
+    const storingDone = loopWasStoringRef.current && !isStoringMemory;
+    const animatingDone = loopWasAnimatingRef.current && !isAnimating;
+    const deliveryDone = loopDeliveryCompleteRef.current;
+
+    if (deliveryDone && storingDone && animatingDone) {
+      // Reset tracking refs for next delivery
+      loopWasStoringRef.current = false;
+      loopWasAnimatingRef.current = false;
+      loopDeliveryCompleteRef.current = false;
+
+      // Update completed count
+      const completedInLoop = history.length - loopStartHistoryRef.current;
+      setLoopCompleted(completedInLoop);
+
+      // Check if we've reached the target
+      if (completedInLoop >= loopTarget) {
+        setLoopDeliveries(false);
+        return;
+      }
+
+      // Start next delivery after a brief pause
+      if (!loopAbortRef.current) {
+        setTimeout(() => {
+          startLoopDelivery();
+        }, 500);
+      }
+    }
+  }, [loopDeliveries, viewMode, isStoringMemory, isAnimating, startLoopDelivery, history.length, loopTarget]);
+
+  // Start loop mode
+  const handleStartLoop = useCallback(() => {
+    loopAbortRef.current = false;
+    loopStartHistoryRef.current = history.length;
+    setLoopCompleted(0);
+    setLoopDeliveries(true);
+    startLoopDelivery();
+  }, [startLoopDelivery, history.length]);
+
+  // Stop loop mode
+  const handleStopLoop = useCallback(() => {
+    loopAbortRef.current = true;
+    setLoopDeliveries(false);
+    cancelDelivery();
+  }, [cancelDelivery]);
+
   // Hindsight settings for reflect mode
   const getHindsightSettings = (recipientName: string) => ({
     inject: true,
@@ -505,6 +760,9 @@ function App() {
             setStoreBankId(data.bankId);
           }
           refreshBankHistory();
+
+          // Refresh and fetch mental models for the new bank
+          triggerMentalModelsRefresh();
         } catch (err) {
           console.error('Failed to refresh bank ID after reset:', err);
         }
@@ -636,62 +894,6 @@ function App() {
                       </button>
                     </div>
                   </div>
-
-                  {/* Mental Models Section */}
-                  <div className="border-t border-slate-700 pt-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs text-slate-500">Mental Models</label>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={fetchMentalModels}
-                          disabled={mentalModelsLoading}
-                          className="px-2 py-0.5 text-[10px] bg-slate-700 hover:bg-slate-600 rounded text-slate-300 disabled:opacity-50"
-                        >
-                          {mentalModelsLoading ? '...' : 'Fetch'}
-                        </button>
-                        <button
-                          onClick={triggerMentalModelsRefresh}
-                          disabled={mentalModelsLoading}
-                          className="px-2 py-0.5 text-[10px] bg-purple-600 hover:bg-purple-500 rounded text-white disabled:opacity-50"
-                        >
-                          {mentalModelsLoading ? '...' : 'Refresh'}
-                        </button>
-                      </div>
-                    </div>
-
-                    {mentalModels.length > 0 ? (
-                      <div className="bg-slate-900/50 rounded border border-slate-700 overflow-hidden">
-                        <button
-                          onClick={() => setMentalModelsExpanded(!mentalModelsExpanded)}
-                          className="w-full px-2 py-1.5 flex items-center justify-between text-left hover:bg-slate-800/50"
-                        >
-                          <span className="text-xs text-slate-300">
-                            {mentalModels.length} model{mentalModels.length !== 1 ? 's' : ''}
-                          </span>
-                          <span className="text-slate-400 text-[10px]">{mentalModelsExpanded ? '▼' : '▶'}</span>
-                        </button>
-                        {mentalModelsExpanded && (
-                          <div className="border-t border-slate-700 max-h-40 overflow-y-auto">
-                            {mentalModels.map((model, idx) => (
-                              <div key={model.id || idx} className="px-2 py-1.5 border-b border-slate-700/50 last:border-b-0">
-                                <div className="flex items-center gap-1.5 mb-0.5">
-                                  <span className="text-[10px] text-purple-400 font-mono">{model.subtype || 'model'}</span>
-                                  <span className="text-[10px] text-slate-400 truncate">{model.name}</span>
-                                </div>
-                                {(model.description || model.summary) && (
-                                  <p className="text-[10px] text-slate-500 line-clamp-2">{model.description || model.summary}</p>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="text-[10px] text-slate-600 text-center py-2">
-                        No mental models yet
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
             </div>
@@ -770,6 +972,14 @@ function App() {
 
           {showDemoSettings && demoConfig && (
             <div className="mt-3 bg-slate-800/50 rounded-xl p-4 border border-slate-700 space-y-4">
+              {/* Agent Model */}
+              <div>
+                <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-2">Agent Model</h3>
+                <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700">
+                  <code className="text-blue-400 text-sm font-mono">{demoConfig.llmModel}</code>
+                </div>
+              </div>
+
               {/* System Prompt */}
               <div>
                 <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-2">System Prompt</h3>
@@ -801,7 +1011,13 @@ function App() {
                     <span className="text-purple-400">{demoConfig.hindsight.budget}</span>
                   </div>
                   <div className="text-sm pt-2 border-t border-slate-700">
-                    <span className="text-slate-400">Bank Background</span>
+                    <span className="text-slate-400">Mission</span>
+                    <code className="block text-purple-400 font-mono text-xs mt-1 bg-slate-800/50 p-2 rounded whitespace-pre-wrap">
+                      {demoConfig.hindsight.mission}
+                    </code>
+                  </div>
+                  <div className="text-sm pt-2 border-t border-slate-700">
+                    <span className="text-slate-400">Bank Background <span className="text-orange-400 text-[10px]">(deprecated)</span></span>
                     <code className="block text-purple-400 font-mono text-xs mt-1 bg-slate-800/50 p-2 rounded">
                       {demoConfig.hindsight.background}
                     </code>
@@ -1087,10 +1303,11 @@ function App() {
               <PhaserGame
                 floor={agentFloor}
                 side={agentSide}
-                isThinking={isThinking && !isAnimating}
+                isThinking={(isThinking || isStoringMemory) && !isAnimating}
                 packageText={currentPackage ? `${currentPackage.recipientName}${currentPackage.businessName ? ` @ ${currentPackage.businessName}` : ''}` : ''}
                 deliverySuccess={deliveryStatus === 'success'}
                 deliveryFailed={deliveryStatus === 'failed'}
+                deliveryCancelled={deliveryStatus === 'cancelled'}
                 lastActionTool={actions.length > 0 ? actions[actions.length - 1].toolName : undefined}
                 difficulty={difficulty}
                 // Hard mode grid props
@@ -1262,6 +1479,180 @@ function App() {
                 </ResponsiveContainer>
               )}
             </div>
+
+            {/* Mental Models */}
+            <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 relative">
+              {(isRefreshingModels || isRefreshingModelsFromWs) && (
+                <div className="absolute inset-0 bg-slate-900/70 rounded-xl flex items-center justify-center z-10">
+                  <div className="flex items-center gap-2 text-purple-400">
+                    <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span className="text-sm font-medium">Refreshing models...</span>
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-lg font-semibold text-slate-300">Mental Models</h2>
+                <span className="text-xs text-purple-400">
+                  {mentalModels.length} models
+                </span>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex gap-2 flex-wrap mb-3">
+                <button
+                  onClick={fetchMentalModels}
+                  disabled={mentalModelsLoading}
+                  className="px-3 py-1.5 text-xs bg-slate-700 hover:bg-slate-600 rounded text-slate-300 disabled:opacity-50 transition-colors"
+                >
+                  {mentalModelsLoading ? 'Loading...' : 'Fetch'}
+                </button>
+                <button
+                  onClick={triggerMentalModelsRefresh}
+                  disabled={mentalModelsLoading}
+                  className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded text-white disabled:opacity-50 transition-colors"
+                >
+                  {mentalModelsLoading ? 'Refreshing...' : 'Refresh'}
+                </button>
+                <div className="flex items-center gap-1 ml-auto text-xs">
+                  <span className="text-slate-500">Auto:</span>
+                  <select
+                    value={refreshInterval}
+                    onChange={(e) => updateRefreshInterval(parseInt(e.target.value))}
+                    className="px-1.5 py-1 bg-slate-700 border border-slate-600 rounded text-slate-300 text-xs"
+                  >
+                    <option value={0}>Off</option>
+                    <option value={1}>1</option>
+                    <option value={3}>3</option>
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                  </select>
+                  {refreshInterval > 0 && (
+                    <span className="text-slate-500">
+                      ({deliveriesSinceRefresh}/{refreshInterval})
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Create pinned model */}
+              <div className="flex gap-2 mb-3">
+                <input
+                  type="text"
+                  value={newPinnedModelName}
+                  onChange={(e) => setNewPinnedModelName(e.target.value)}
+                  placeholder="Pin a topic to track..."
+                  className="flex-1 px-2 py-1.5 text-xs bg-slate-700 border border-slate-600 rounded text-slate-300 placeholder-slate-500"
+                  onKeyDown={(e) => e.key === 'Enter' && createPinnedModel(newPinnedModelName)}
+                />
+                <button
+                  onClick={() => createPinnedModel(newPinnedModelName)}
+                  disabled={!newPinnedModelName.trim()}
+                  className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded text-white disabled:opacity-50 transition-colors"
+                >
+                  + Pin
+                </button>
+              </div>
+
+              {/* Models list */}
+              {mentalModels.length > 0 ? (
+                <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                  {mentalModels.map((model, idx) => (
+                    <div key={model.id || idx} className="bg-slate-700/50 rounded border border-slate-600 overflow-hidden">
+                      {/* Model header - clickable to expand */}
+                      <button
+                        onClick={() => toggleModelExpansion(model.id)}
+                        className="w-full p-2 text-left hover:bg-slate-600/30 transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`transition-transform text-[10px] text-slate-500 ${expandedModelId === model.id ? 'rotate-90' : ''}`}>
+                              ▶
+                            </span>
+                            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                              model.subtype === 'structural' ? 'text-blue-400 bg-blue-900/30' :
+                              model.subtype === 'emergent' ? 'text-green-400 bg-green-900/30' :
+                              model.subtype === 'pinned' ? 'text-yellow-400 bg-yellow-900/30' :
+                              'text-purple-400 bg-purple-900/30'
+                            }`}>
+                              {model.subtype || 'model'}
+                            </span>
+                            <span className="text-sm text-slate-300 font-medium truncate">{model.name}</span>
+                          </div>
+                          {model.observations && (
+                            <span className="text-[10px] text-slate-500 shrink-0">
+                              {model.observations.length} obs
+                            </span>
+                          )}
+                        </div>
+                        {(model.description || model.summary) && (
+                          <p className="text-xs text-slate-500 mt-1 ml-5 line-clamp-1">{model.description || model.summary}</p>
+                        )}
+                      </button>
+
+                      {/* Expanded observations */}
+                      {expandedModelId === model.id && (
+                        <div className="border-t border-slate-600 p-2 space-y-2 bg-slate-800/50">
+                          {model.observations && model.observations.length > 0 ? (
+                            model.observations.map((obs, obsIdx) => (
+                              <div key={obsIdx} className="bg-slate-700/50 rounded p-2 border border-slate-600">
+                                <div className="flex items-start justify-between gap-2">
+                                  <span className="text-xs text-slate-300 font-medium">{obs.title}</span>
+                                  {obs.trend && (
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                      obs.trend === 'STRENGTHENING' ? 'text-green-400 bg-green-900/30' :
+                                      obs.trend === 'WEAKENING' ? 'text-red-400 bg-red-900/30' :
+                                      obs.trend === 'NEW' ? 'text-blue-400 bg-blue-900/30' :
+                                      obs.trend === 'STALE' ? 'text-yellow-400 bg-yellow-900/30' :
+                                      'text-slate-400 bg-slate-700/30'
+                                    }`}>
+                                      {obs.trend}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-xs text-slate-400 mt-1">{obs.content}</p>
+                                {obs.evidence && obs.evidence.length > 0 && (
+                                  <div className="mt-2 space-y-1">
+                                    <span className="text-[10px] text-slate-500 uppercase">Evidence:</span>
+                                    {obs.evidence.slice(0, 2).map((ev, evIdx) => (
+                                      <div key={evIdx} className="text-[10px] text-slate-500 italic pl-2 border-l border-slate-600">
+                                        "{ev.quote?.slice(0, 100)}{ev.quote && ev.quote.length > 100 ? '...' : ''}"
+                                      </div>
+                                    ))}
+                                    {obs.evidence.length > 2 && (
+                                      <span className="text-[10px] text-slate-600">+{obs.evidence.length - 2} more</span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="text-xs text-slate-500 text-center py-2">
+                              No observations yet. Click "Refresh" to generate.
+                            </div>
+                          )}
+                          {/* Delete button for pinned models */}
+                          {model.subtype === 'pinned' && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); deleteMentalModel(model.id); }}
+                              className="w-full mt-2 px-2 py-1 text-xs bg-red-900/30 hover:bg-red-800/50 text-red-400 rounded transition-colors"
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-slate-500 text-center py-4">
+                  No mental models yet. Run deliveries and click "Refresh" to synthesize.
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Right Column - Controls & Logs */}
@@ -1323,10 +1714,10 @@ function App() {
               <div className="flex gap-2">
                 <button
                   onClick={handleStartDelivery}
-                  disabled={!connected || !selectedRecipient || deliveryStatus === 'running' || isStoringMemory}
+                  disabled={!connected || !selectedRecipient || deliveryStatus === 'running' || isStoringMemory || loopDeliveries}
                   className="flex-1 bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-400 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-all shadow-lg shadow-green-500/20 disabled:shadow-none"
                 >
-                  {deliveryStatus === 'running' ? 'Running...' : isStoringMemory ? 'Storing...' : 'Start Delivery'}
+                  {loopDeliveries ? 'Looping...' : deliveryStatus === 'running' ? 'Running...' : isStoringMemory ? 'Storing...' : 'Start Delivery'}
                 </button>
                 <button
                   onClick={cancelDelivery}
@@ -1340,16 +1731,46 @@ function App() {
               {/* Random Delivery Button */}
               <button
                 onClick={handleRandomDelivery}
-                disabled={!connected || deliveryStatus === 'running' || employees.length === 0 || isStoringMemory}
+                disabled={!connected || deliveryStatus === 'running' || employees.length === 0 || isStoringMemory || loopDeliveries}
                 className="w-full mt-2 bg-gradient-to-r from-purple-600 to-blue-500 hover:from-purple-500 hover:to-blue-400 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-all shadow-lg shadow-purple-500/20 disabled:shadow-none"
               >
                 Random Delivery
               </button>
 
+              {/* Loop Deliveries */}
+              <div className="mt-3 p-3 bg-slate-700/30 rounded-lg border border-slate-600">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-sm text-slate-400">Loop</span>
+                  <input
+                    type="number"
+                    value={loopTarget}
+                    onChange={(e) => setLoopTarget(Math.max(1, parseInt(e.target.value) || 1))}
+                    disabled={loopDeliveries}
+                    min={1}
+                    className="w-16 bg-slate-700/50 border border-slate-600 rounded px-2 py-1 text-white text-sm text-center disabled:opacity-50"
+                  />
+                  <span className="text-sm text-slate-400">deliveries</span>
+                  {loopDeliveries && (
+                    <span className="text-xs text-cyan-400 ml-auto">({loopCompleted}/{loopTarget})</span>
+                  )}
+                </div>
+                <button
+                  onClick={loopDeliveries ? handleStopLoop : handleStartLoop}
+                  disabled={!connected || employees.length === 0}
+                  className={`w-full px-3 py-2 rounded-lg font-medium text-sm transition-all ${
+                    loopDeliveries
+                      ? 'bg-gradient-to-r from-orange-600 to-red-500 hover:from-orange-500 hover:to-red-400'
+                      : 'bg-gradient-to-r from-cyan-600 to-teal-500 hover:from-cyan-500 hover:to-teal-400 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed'
+                  }`}
+                >
+                  {loopDeliveries ? 'Stop Loop' : 'Start Loop'}
+                </button>
+              </div>
+
               {/* Reset Memory */}
               <button
                 onClick={handleResetMemory}
-                disabled={deliveryStatus === 'running'}
+                disabled={deliveryStatus === 'running' || loopDeliveries}
                 className="w-full mt-3 bg-slate-700/50 hover:bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-300 disabled:cursor-not-allowed px-4 py-2 rounded-lg text-sm transition-colors"
               >
                 Reset Memory & History
@@ -1458,7 +1879,7 @@ function App() {
                 Automatically run random deliveries to train the agent's memory.
               </p>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                 <div>
                   <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
                     Total Deliveries
@@ -1485,6 +1906,30 @@ function App() {
                     className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
                     disabled={trainingRunning}
                   />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
+                    Auto-Refresh Models
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={refreshInterval}
+                      onChange={(e) => updateRefreshInterval(parseInt(e.target.value))}
+                      className="flex-1 bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
+                      disabled={trainingRunning}
+                    >
+                      <option value={0}>Off</option>
+                      <option value={1}>Every 1</option>
+                      <option value={3}>Every 3</option>
+                      <option value={5}>Every 5</option>
+                      <option value={10}>Every 10</option>
+                    </select>
+                    {refreshInterval > 0 && (
+                      <span className="text-sm text-slate-400 whitespace-nowrap">
+                        ({deliveriesSinceRefresh}/{refreshInterval})
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-end">
                   <label className="flex items-center gap-3 cursor-pointer group pb-2">

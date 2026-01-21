@@ -58,6 +58,7 @@ interface GameState {
   // Memory
   bankId: string | null;
   memoryReflect: MemoryReflect | null;
+  isRefreshingModels: boolean;  // True while mental models are being refreshed
 
   // Settings
   mode: Mode;
@@ -129,6 +130,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   bankId: null,
   memoryReflect: null,
+  isRefreshingModels: false,
   mode: 'ui',
   includeBusiness: false,
   maxSteps: 150,
@@ -203,7 +205,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
 
       case 'memory_storing':
-        set({ isThinking: true, isStoringMemory: true });
+        // Only set isStoringMemory, not isThinking - we want animations to finish first
+        set({ isStoringMemory: true });
         break;
 
       case 'memory_stored':
@@ -289,6 +292,14 @@ export const useGameStore = create<GameState>((set, get) => ({
           isThinking: false,
           deliveryStatus: 'failed',
         });
+        break;
+
+      case 'models_refreshing':
+        set({ isRefreshingModels: true });
+        break;
+
+      case 'models_refreshed':
+        set({ isRefreshingModels: false });
         break;
     }
   },

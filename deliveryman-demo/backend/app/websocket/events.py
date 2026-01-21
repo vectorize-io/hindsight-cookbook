@@ -74,3 +74,6 @@ class EventType:
     STEP_LIMIT_REACHED = "step_limit_reached"
     CANCELLED = "cancelled"
     ERROR = "error"
+    # Mental model refresh events
+    MODELS_REFRESHING = "models_refreshing"
+    MODELS_REFRESHED = "models_refreshed"
