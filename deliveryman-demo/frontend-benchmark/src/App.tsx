@@ -202,6 +202,10 @@ function App() {
   const [hindsightQuery, setHindsightQuery] = useState('');
   const [hindsightMission, setHindsightMission] = useState('');
 
+  // Global hindsight URL (can be overridden per-config)
+  const [globalHindsightUrl, setGlobalHindsightUrl] = useState('http://localhost:8888');
+  const [hindsightUrlInput, setHindsightUrlInput] = useState('http://localhost:8888');
+
   // Bank management state
   const [bankHistory, setBankHistory] = useState<string[]>([]);
   const [currentBankId, setCurrentBankId] = useState<string | null>(null);
@@ -310,6 +314,7 @@ function App() {
     // Hindsight settings
     query: string;  // Memory query template (use {recipient} placeholder)
     mission: string;  // Bank mission for mental models
+    hindsightUrl?: string;  // Optional override for hindsight URL (uses global if not set)
     // New benchmark settings
     repeatRatio: number;  // 0.0-1.0, fraction of repeat visits
     pairedMode: boolean;  // Each office visited exactly 2x
@@ -394,37 +399,13 @@ rather than searching the entire building each time.`;
     mmQueryType: 'recall' as const,  // 'recall' or 'reflect' for MM modes
   };
 
-  const [evalConfigs, setEvalConfigs] = useState<EvalConfig[]>(() => {
-    configCounterRef.current = 2;
-    return [
-      {
-        id: 'config-1',
-        name: 'No Memory',
-        model: 'openai/gpt-4o',
-        memoryMode: 'no_memory',
-        bankId: `no_memory-${Math.random().toString(36).slice(2, 8)}`,
-        color: configColors[0],
-        enabled: true,
-        results: [],
-        query: DEFAULT_QUERY,
-        mission: DEFAULT_MISSION,
-        ...DEFAULT_BENCHMARK_SETTINGS,
-      },
-      {
-        id: 'config-2',
-        name: 'Hindsight MM',
-        model: 'openai/gpt-4o',
-        memoryMode: 'hindsight_mm',
-        bankId: `hindsight_mm-${Math.random().toString(36).slice(2, 8)}`,
-        color: configColors[4],
-        enabled: true,
-        results: [],
-        query: DEFAULT_QUERY,
-        mission: DEFAULT_MISSION,
-        ...DEFAULT_BENCHMARK_SETTINGS,
-      },
-    ];
-  });
+  const [evalConfigs, setEvalConfigs] = useState<EvalConfig[]>([]);
+  const evalConfigsRef = useRef<EvalConfig[]>([]);
+
+  // Keep ref in sync with state for use in async callbacks
+  useEffect(() => {
+    evalConfigsRef.current = evalConfigs;
+  }, [evalConfigs]);
 
   // Benchmark state
   const [ffLoopCount, setFfLoopCount] = useState(10);
@@ -496,6 +477,17 @@ rather than searching the entire building each time.`;
       .then(res => res.json())
       .then(data => setDemoConfig(data))
       .catch(console.error);
+
+    // Fetch global config (hindsight URL, etc.)
+    fetch('/api/config')
+      .then(res => res.json())
+      .then(data => {
+        if (data.hindsightUrl) {
+          setGlobalHindsightUrl(data.hindsightUrl);
+          setHindsightUrlInput(data.hindsightUrl);
+        }
+      })
+      .catch(console.error);
   }, []);
 
   // Fetch bank history and current bank
@@ -547,6 +539,24 @@ rather than searching the entire building each time.`;
     await switchToBank(bankInput.trim());
     setBankInput('');
   }, [bankInput, switchToBank]);
+
+  // Update global hindsight URL
+  const updateHindsightUrl = useCallback(async (url: string) => {
+    try {
+      const res = await fetch('/api/config', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hindsightUrl: url || '' }),  // Empty string resets to default
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGlobalHindsightUrl(data.hindsightUrl);
+        setHindsightUrlInput(data.hindsightUrl);
+      }
+    } catch (err) {
+      console.error('Failed to update hindsight URL:', err);
+    }
+  }, []);
 
   // Fetch mental models for the current bank
   const fetchMentalModels = useCallback(async () => {
@@ -811,6 +821,7 @@ rather than searching the entire building each time.`;
               bankId: config.bankId,
               query: config.query || undefined,
               mission: config.mission || undefined,  // Always pass mission for bank setup
+              url: config.hindsightUrl || globalHindsightUrl,  // Per-config override or global
             },
           }),
         });
@@ -878,8 +889,8 @@ rather than searching the entire building each time.`;
     // Auto-save if saveBenchmark is enabled
     if (saveBenchmark && !ffAbortRef.current) {
       try {
-        // Get updated configs with results
-        const configsWithResults = evalConfigs.filter(c => c.enabled && c.results.length > 0);
+        // Get updated configs with results (use ref to get latest state)
+        const configsWithResults = evalConfigsRef.current.filter(c => c.enabled && c.results.length > 0);
 
         // Format results for the save endpoint
         const resultsToSave = configsWithResults.map(config => {
@@ -987,7 +998,7 @@ rather than searching the entire building each time.`;
         console.error('Failed to save benchmark:', err);
       }
     }
-  }, [evalConfigs, includeBusiness, maxSteps, saveAllSteps, saveBenchmark, chartSettings.enabled, difficulty, fetchRefreshIntervalStatus]);
+  }, [includeBusiness, maxSteps, saveAllSteps, saveBenchmark, chartSettings.enabled, difficulty, fetchRefreshIntervalStatus]);
 
   // Remove a config
   const removeEvalConfig = useCallback((id: string) => {
@@ -2114,6 +2125,41 @@ rather than searching the entire building each time.`;
                 )}
               </div>
 
+              {/* Hindsight URL Setting */}
+              <div className="mb-4">
+                <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
+                  Hindsight API URL
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={hindsightUrlInput}
+                    onChange={(e) => setHindsightUrlInput(e.target.value)}
+                    placeholder="http://localhost:8888"
+                    className="flex-1 bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-yellow-500 focus:outline-none font-mono"
+                    disabled={ffRunning}
+                  />
+                  <button
+                    onClick={() => updateHindsightUrl(hindsightUrlInput)}
+                    disabled={ffRunning || hindsightUrlInput === globalHindsightUrl}
+                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 text-slate-300 rounded-lg text-sm transition-colors"
+                  >
+                    Set
+                  </button>
+                  <button
+                    onClick={() => updateHindsightUrl('')}
+                    disabled={ffRunning}
+                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 text-slate-400 rounded-lg text-sm transition-colors"
+                    title="Reset to default"
+                  >
+                    Reset
+                  </button>
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  Current: <span className="font-mono text-slate-400">{globalHindsightUrl}</span>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                 <div>
                   <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
@@ -2592,6 +2638,20 @@ rather than searching the entire building each time.`;
                             rows={2}
                             disabled={ffRunning}
                             className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
+                          />
+                        </div>
+                        {/* Hindsight URL Override */}
+                        <div>
+                          <label className="block text-xs text-slate-500 mb-1">
+                            Hindsight URL <span className="text-slate-600">(optional override)</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={config.hindsightUrl || ''}
+                            onChange={(e) => updateEvalConfig(config.id, { hindsightUrl: e.target.value || undefined })}
+                            placeholder={globalHindsightUrl}
+                            disabled={ffRunning}
+                            className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 font-mono disabled:opacity-50"
                           />
                         </div>
                       </div>

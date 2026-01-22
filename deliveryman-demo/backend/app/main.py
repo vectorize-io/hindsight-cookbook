@@ -24,7 +24,7 @@ from .services.benchmark_types import AgentMode, BenchmarkConfig
 from .services.benchmark_charts import generate_dashboard_chart, generate_comparison_chart
 from .websocket.manager import manager
 from .websocket.events import event, EventType
-from .config import LLM_MODEL, HINDSIGHT_API_URL, AVAILABLE_MODELS
+from .config import LLM_MODEL, HINDSIGHT_API_URL, AVAILABLE_MODELS, BACKEND_PORT, HINDSIGHT_PORT, get_hindsight_url, set_hindsight_url
 
 # Results directory
 RESULTS_DIR = Path(__file__).parent.parent.parent / "results"
@@ -130,6 +130,7 @@ class HindsightSettings(BaseModel):
     query: Optional[str] = None  # Custom memory query (use {recipient} as placeholder)
     background: Optional[str] = None  # Bank background context for memory extraction
     mission: Optional[str] = None  # Bank mission for mental models
+    url: Optional[str] = None  # Override hindsight API URL for this request
 
 
 class FastDeliveryRequest(BaseModel):
@@ -467,6 +468,43 @@ SYSTEM_PROMPT = "You are a delivery agent. Use the tools provided to get it deli
 
 QUERY_TEMPLATE = "Where does {recipient} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries."
 
+@app.get("/api/config")
+async def get_config():
+    """Get global configuration including ports and URLs."""
+    return {
+        "backendPort": BACKEND_PORT,
+        "hindsightPort": HINDSIGHT_PORT,
+        "hindsightUrl": get_hindsight_url(),
+        "hindsightDefaultUrl": HINDSIGHT_API_URL,
+        "llmModel": LLM_MODEL,
+        "availableModels": AVAILABLE_MODELS,
+    }
+
+
+class ConfigUpdateRequest(BaseModel):
+    """Request to update configuration."""
+    hindsightUrl: Optional[str] = None
+
+
+@app.patch("/api/config")
+async def update_config(request: ConfigUpdateRequest):
+    """Update global configuration.
+
+    Set hindsightUrl to null to reset to default.
+    """
+    if request.hindsightUrl is not None or request.hindsightUrl == "":
+        # Empty string or null resets to default
+        if request.hindsightUrl == "":
+            set_hindsight_url(None)
+        else:
+            set_hindsight_url(request.hindsightUrl)
+
+    return {
+        "hindsightUrl": get_hindsight_url(),
+        "hindsightDefaultUrl": HINDSIGHT_API_URL,
+    }
+
+
 @app.get("/api/demo-config")
 async def get_demo_config(app: str = "demo", difficulty: str = "easy"):
     """Get demo configuration for display in UI."""
@@ -482,7 +520,7 @@ async def get_demo_config(app: str = "demo", difficulty: str = "easy"):
         "llmModel": LLM_MODEL,
         "availableModels": AVAILABLE_MODELS,
         "hindsight": {
-            "apiUrl": HINDSIGHT_API_URL,
+            "apiUrl": get_hindsight_url(),
             "bankId": memory_service.get_bank_id(app, difficulty),
             "method": "reflect",
             "queryTemplate": QUERY_TEMPLATE,
@@ -544,6 +582,10 @@ async def fast_delivery(request: FastDeliveryRequest):
     # Convert hindsight settings to dict if provided
     hindsight_dict = None
     if request.hindsight:
+        # If a custom hindsight URL is provided, update the global config
+        if request.hindsight.url:
+            set_hindsight_url(request.hindsight.url)
+
         hindsight_dict = {
             "inject": request.hindsight.inject,
             "reflect": request.hindsight.reflect,
@@ -552,6 +594,7 @@ async def fast_delivery(request: FastDeliveryRequest):
             "query": request.hindsight.query,
             "background": request.hindsight.background,
             "mission": request.hindsight.mission,
+            "url": request.hindsight.url,
         }
 
     # Generate unique delivery ID for memory grouping

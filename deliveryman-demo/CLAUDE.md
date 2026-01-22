@@ -65,16 +65,31 @@ cd /path/to/hindsight
 ## Configuration
 
 ### Backend (.env)
-```
+```bash
+# Server ports
+BACKEND_PORT=8000           # Port for the FastAPI backend (default: 8000)
+HINDSIGHT_PORT=8888         # Default Hindsight API port (default: 8888)
+
+# Hindsight URL (can also be set via UI or API)
 HINDSIGHT_API_URL=http://localhost:8888
 ```
 
 ### Hindsight (.env)
-```
+```bash
 HINDSIGHT_API_LLM_PROVIDER=groq
 HINDSIGHT_API_LLM_MODEL=openai/gpt-oss-120b
 HINDSIGHT_API_LLM_API_KEY=<your-api-key>
 ```
+
+### Runtime Configuration
+
+The Hindsight API URL can be configured at multiple levels:
+
+1. **Environment variable** (`HINDSIGHT_API_URL`) - Default at startup
+2. **Global UI setting** - Shown in "Run Settings" panel, affects all configs
+3. **Per-config override** - Each benchmark config can specify its own URL
+
+Priority: Per-config override > Global UI setting > Environment variable
 
 ## Benchmark Configuration Options
 
