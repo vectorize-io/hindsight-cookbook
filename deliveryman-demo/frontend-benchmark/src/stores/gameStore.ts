@@ -7,7 +7,8 @@ import type {
   DeliveryResult,
   ServerEvent,
   Mode,
-  MemoryReflect
+  MemoryReflect,
+  BenchmarkResults,
 } from '../types';
 
 type Difficulty = 'easy' | 'medium' | 'hard';
@@ -64,6 +65,16 @@ interface GameState {
   includeBusiness: boolean;
   maxSteps: number | null;
 
+  // Benchmark state
+  benchmarkRunning: boolean;
+  benchmarkProgress: number;  // 0-100
+  benchmarkCurrentDelivery: number;
+  benchmarkTotalDeliveries: number;
+  benchmarkCurrentEfficiency: number;
+  benchmarkAvgEfficiency: number;
+  benchmarkResults: BenchmarkResults | null;
+  isRefreshingModels: boolean;
+
   // Actions
   setConnected: (connected: boolean, clientId?: string, bankId?: string) => void;
   handleEvent: (event: ServerEvent) => void;
@@ -80,6 +91,10 @@ interface GameState {
   setAnimating: (value: boolean) => void;
   setBankId: (bankId: string) => void;
   setDifficulty: (difficulty: Difficulty) => void;
+  // Benchmark actions
+  setBenchmarkRunning: (running: boolean) => void;
+  setBenchmarkResults: (results: BenchmarkResults | null) => void;
+  setIsRefreshingModels: (refreshing: boolean) => void;
 }
 
 // Helper to compute derived stats from history
@@ -132,6 +147,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   mode: 'ui',
   includeBusiness: false,
   maxSteps: 150,
+
+  // Benchmark initial state
+  benchmarkRunning: false,
+  benchmarkProgress: 0,
+  benchmarkCurrentDelivery: 0,
+  benchmarkTotalDeliveries: 0,
+  benchmarkCurrentEfficiency: 0,
+  benchmarkAvgEfficiency: 0,
+  benchmarkResults: null,
+  isRefreshingModels: false,
 
   // Actions
   setConnected: (connected, clientId, bankId) => set({
@@ -291,6 +316,54 @@ export const useGameStore = create<GameState>((set, get) => ({
           deliveryStatus: 'failed',
         });
         break;
+
+      // Benchmark events
+      case 'benchmark_start':
+        set({
+          benchmarkRunning: true,
+          benchmarkProgress: 0,
+          benchmarkCurrentDelivery: 0,
+          benchmarkTotalDeliveries: payload?.numDeliveries ?? 0,
+          benchmarkResults: null,
+        });
+        break;
+
+      case 'benchmark_progress':
+        set({
+          benchmarkCurrentDelivery: payload?.completed ?? 0,
+          benchmarkProgress: ((payload?.completed ?? 0) / (payload?.total ?? 1)) * 100,
+          benchmarkCurrentEfficiency: payload?.currentEfficiency ?? 0,
+          benchmarkAvgEfficiency: payload?.avgEfficiency ?? 0,
+        });
+        break;
+
+      case 'benchmark_complete':
+        set({
+          benchmarkRunning: false,
+          benchmarkProgress: 100,
+          benchmarkResults: payload as BenchmarkResults,
+        });
+        break;
+
+      case 'delivery_start':
+        // Individual delivery starting in benchmark
+        set({
+          currentPackage: {
+            id: String(payload?.deliveryId ?? 0),
+            recipientName: payload?.recipient ?? 'Unknown',
+            businessName: payload?.business,
+          },
+          deliveryStatus: 'running',
+        });
+        break;
+
+      case 'models_refreshing':
+        set({ isRefreshingModels: true });
+        break;
+
+      case 'models_refreshed':
+        set({ isRefreshingModels: false });
+        break;
     }
   },
 
@@ -426,4 +499,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       agentCurrentBuilding: null,
     });
   },
+
+  // Benchmark actions
+  setBenchmarkRunning: (running) => set({ benchmarkRunning: running }),
+  setBenchmarkResults: (results) => set({ benchmarkResults: results }),
+  setIsRefreshingModels: (refreshing) => set({ isRefreshingModels: refreshing }),
 }));

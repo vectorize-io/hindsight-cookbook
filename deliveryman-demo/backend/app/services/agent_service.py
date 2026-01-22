@@ -9,7 +9,7 @@ from fastapi import WebSocket
 import sys
 sys.path.insert(0, str(__file__).rsplit("/app/", 1)[0])
 
-from building import Building, Package, AgentState, Side, get_building
+from building import Building, Package, AgentState, Side, get_building, compute_optimal_steps, compute_path_efficiency
 from agent_tools import AgentTools, get_tool_definitions, execute_tool
 from .memory_service import (
     completion,
@@ -26,6 +26,9 @@ from .memory_service import (
     refresh_mental_models_async,
     record_delivery,
     reset_delivery_count,
+    get_mental_models_async,
+    get_bank_stats_async,
+    BANK_MISSION,  # Default mission for hindsight
 )
 from ..websocket.events import (
     event, EventType, AgentActionPayload, DeliverySuccessPayload,
@@ -50,6 +53,86 @@ def get_hindsight_query(recipient_name: str, custom_query: str = None) -> str:
 
     # Default query focusing on recipient location
     return f"Where does {recipient_name} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries."
+
+
+def generate_preseed_facts(building: Building, coverage: float = 1.0) -> list[str]:
+    """Generate preseed facts algorithmically from building data.
+
+    These facts represent knowledge an agent would gain from exploring
+    the building. Used to skip the expensive exploration phase.
+
+    Args:
+        building: The building to generate facts for
+        coverage: Fraction of employees/offices to include (0.0-1.0)
+
+    Returns:
+        List of fact strings
+    """
+    import random
+
+    facts: list[str] = []
+
+    # Get all employees
+    all_employees = list(building.all_employees.items())
+
+    # Subset based on coverage
+    if coverage < 1.0:
+        num_to_include = max(1, int(len(all_employees) * coverage))
+        random.shuffle(all_employees)
+        selected_employees = all_employees[:num_to_include]
+    else:
+        selected_employees = all_employees
+
+    # Generate employee location facts
+    for emp_name, (business, employee) in selected_employees:
+        # Fact: Employee -> business and floor
+        facts.append(
+            f"{emp_name} works at {business.name} on floor {business.floor}."
+        )
+        # Fact: Business location
+        facts.append(
+            f"{business.name} is located on floor {business.floor}, {business.side.value} side."
+        )
+
+    # Generate building structure facts
+    if building.is_city_grid:
+        facts.append("This is a city grid with multiple buildings arranged in rows and columns.")
+        facts.append("Navigate using go_to_building(name), go_up, go_down, go_to_front, go_to_back.")
+    elif building.is_multi_building:
+        facts.append("There are two connected buildings: Building A and Building B.")
+        facts.append("Use go_to_building_a or go_to_building_b to switch between them.")
+    else:
+        facts.append(f"The building has {building.floors} floors.")
+        facts.append("Each floor has a front side and back side with different businesses.")
+
+    # Add navigation hints
+    facts.append("Use go_up/go_down to change floors, go_to_front/go_to_back to change sides.")
+    facts.append("Once at the correct location, use deliver_package to complete delivery.")
+
+    return facts
+
+
+async def preseed_memory(facts: list[str], delivery_id: int) -> None:
+    """Pre-seed memory with building knowledge facts.
+
+    Args:
+        facts: List of fact strings to store
+        delivery_id: Delivery ID for context
+    """
+    if not facts:
+        return
+
+    # Combine facts into a single document
+    content = "Building Knowledge (Pre-seeded):\n\n" + "\n".join(f"- {fact}" for fact in facts)
+
+    try:
+        await retain_async(
+            content,
+            context="Pre-seeded building knowledge for delivery agent",
+            document_id=f"preseed-{delivery_id}"
+        )
+    except Exception as e:
+        print(f"[MEMORY] Failed to preseed facts: {e}")
 
 
 def format_messages_for_retain(messages: list, success: bool = True, steps: int = 0, recipient: str = None) -> str:
@@ -149,9 +232,8 @@ async def run_delivery(
         set_bank_id(custom_bank_id, set_background=False)
 
     # Set custom bank background if provided (guides memory extraction)
-    # Uses async-safe version to avoid event loop conflicts
     if custom_background:
-        set_bank_mission_async(custom_background)
+        await set_bank_mission_async(custom_bank_id, custom_background)
 
     # Set up agent state - starting position depends on difficulty
     if building.is_city_grid:
@@ -467,6 +549,10 @@ async def run_delivery_fast(
     model: Optional[str] = None,
     hindsight: Optional[dict] = None,
     delivery_id: int = 0,
+    memory_query_mode: str = "inject_once",  # 'inject_once', 'per_step', 'both'
+    wait_for_consolidation: bool = True,
+    preseed_coverage: float = 0.0,  # 0.0-1.0, fraction of building knowledge to pre-seed
+    mm_query_type: str = "recall",  # 'recall' or 'reflect' for MM modes
 ) -> dict:
     """Run a delivery without WebSocket streaming (fast-forward mode).
 
@@ -475,8 +561,13 @@ async def run_delivery_fast(
         package: The package to deliver
         max_steps: Maximum steps allowed
         model: LLM model to use (None = use default from config)
-        hindsight: Hindsight settings (inject, reflect, store, query)
+        hindsight: Hindsight settings (inject, reflect, store, query, mission)
         delivery_id: Unique ID for this delivery (for memory grouping)
+        memory_query_mode: When to inject memory - 'inject_once' (start only),
+                          'per_step' (every step), or 'both'
+        wait_for_consolidation: Whether to wait after storing for consolidation
+        preseed_coverage: Fraction of building knowledge to pre-seed into memory (0.0-1.0)
+        mm_query_type: Query method for MM modes - 'recall' (raw facts) or 'reflect' (LLM synthesis)
 
     Returns:
         dict with success, steps, and actions taken
@@ -491,15 +582,30 @@ async def run_delivery_fast(
     custom_bank_id = hindsight.get("bankId") if hindsight else None
     custom_query = hindsight.get("query") if hindsight else None
     custom_background = hindsight.get("background") if hindsight else None
+    custom_mission = hindsight.get("mission") if hindsight else None
+
+    # For MM modes, override use_reflect based on mm_query_type
+    # This allows MM modes to use either recall or reflect for querying
+    if mm_query_type == "reflect":
+        use_reflect = True
 
     # Update hindsight defaults if custom bank_id provided
     if custom_bank_id:
         set_bank_id(custom_bank_id, set_background=False)
 
-    # Set custom bank background if provided (guides memory extraction)
-    # Uses async-safe version to avoid event loop conflicts
-    if custom_background:
-        set_bank_mission_async(custom_background)
+    # ALWAYS set bank mission for hindsight modes (required for mental models)
+    # Priority: custom_mission > custom_background > BANK_MISSION (default)
+    if inject_memories or store_conversations:
+        mission_to_set = custom_mission or custom_background or BANK_MISSION
+        print(f"[AGENT] Setting bank mission: {mission_to_set[:50]}...", flush=True)
+        await set_bank_mission_async(custom_bank_id, mission_to_set)
+
+    # Pre-seed building knowledge if coverage > 0
+    if preseed_coverage > 0 and inject_memories:
+        preseed_facts = generate_preseed_facts(building, coverage=preseed_coverage)
+        if preseed_facts:
+            await preseed_memory(preseed_facts, delivery_id)
+            print(f"[MEMORY] Pre-seeded {len(preseed_facts)} facts ({preseed_coverage*100:.0f}% coverage)")
 
     # Set up agent state - starting position depends on difficulty
     if building.is_city_grid:
@@ -522,26 +628,32 @@ async def run_delivery_fast(
     memory_context = None
     memory_method = "reflect" if use_reflect else "recall"
 
-    # MEMORY INJECTION: Call recall or reflect ONCE at start to get relevant memories
-    if inject_memories:
+    # Helper function to fetch memory context
+    async def fetch_memory_context():
+        """Fetch memory context using recall or reflect."""
         try:
             memory_query = get_hindsight_query(package.recipient_name, custom_query)
-
             if use_reflect:
-                # REFLECT MODE: Use LLM to synthesize memories
                 result = await reflect_async(query=memory_query, budget="high")
                 if result and hasattr(result, 'text') and result.text:
-                    memory_context = result.text
+                    return result.text
             else:
-                # RECALL MODE: Get raw facts without LLM synthesis
                 result = await recall_async(query=memory_query, budget="high")
                 if result and len(result) > 0:
-                    memory_context = format_recall_as_context(result)
-
-            if memory_context:
-                system_prompt = f"{base_system_prompt}\n\n# Relevant Memory\n{memory_context}"
+                    return format_recall_as_context(result)
         except Exception as e:
             print(f"[MEMORY] Error during {memory_method}: {e}")
+        return None
+
+    # Determine if we should inject at start based on mode
+    inject_at_start = memory_query_mode in ("inject_once", "both")
+    inject_per_step = memory_query_mode in ("per_step", "both")
+
+    # MEMORY INJECTION: Call recall or reflect at start if enabled
+    if inject_memories and inject_at_start:
+        memory_context = await fetch_memory_context()
+        if memory_context:
+            system_prompt = f"{base_system_prompt}\n\n# Relevant Memory\n{memory_context}"
 
     # Initial messages with (possibly augmented) system prompt
     messages = [
@@ -553,9 +665,33 @@ async def run_delivery_fast(
     success = False
     actions = []
 
+    # Track total metrics
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_latency_ms = 0
+    delivery_start_time = time.time()
+
+    # Track additional metrics for eval parity
+    api_calls = 0
+    wrong_turns = 0
+    path = [agent_state.position_str()]  # Track positions visited
+    previous_positions = {agent_state.position_str()}  # Set for backtrack detection
+
+    # Compute optimal steps for this delivery
+    optimal_steps = compute_optimal_steps(building, package.recipient_name)
+    if optimal_steps < 0:
+        optimal_steps = 3  # Fallback default
+
     try:
         while agent_state.steps_taken < max_steps:
-            # Call LLM without per-call memory injection
+            # Per-step memory injection if enabled
+            if inject_memories and inject_per_step and agent_state.steps_taken > 0:
+                step_memory = await fetch_memory_context()
+                if step_memory:
+                    # Update the system message with fresh memory
+                    messages[0]["content"] = f"{base_system_prompt}\n\n# Relevant Memory (Step {agent_state.steps_taken})\n{step_memory}"
+
+            # Call LLM
             t0 = time.time()
             response = await completion(
                 model=llm_model,
@@ -565,6 +701,13 @@ async def run_delivery_fast(
                 timeout=30,
             )
             timing = time.time() - t0
+            total_latency_ms += timing * 1000
+            api_calls += 1  # Track API calls
+
+            # Track token usage from response
+            if hasattr(response, 'usage') and response.usage:
+                total_prompt_tokens += getattr(response.usage, 'prompt_tokens', 0)
+                total_completion_tokens += getattr(response.usage, 'completion_tokens', 0)
 
             # Track memory count for first action only
             memory_count = 1 if agent_state.steps_taken == 1 and memory_context else 0
@@ -578,7 +721,25 @@ async def run_delivery_fast(
                     tool_name = tool_call.function.name
                     arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
 
+                    # Store position before tool execution to detect movement
+                    prev_position = agent_state.position_str()
+
                     result = execute_tool(tools, tool_name, arguments)
+
+                    # Track path and detect wrong turns (backtracking)
+                    new_position = agent_state.position_str()
+                    if new_position != prev_position:
+                        # Agent moved - track the path
+                        path.append(new_position)
+                        if new_position in previous_positions:
+                            # Backtracking to a previously visited position
+                            wrong_turns += 1
+                        previous_positions.add(new_position)
+
+                    # Detect failed moves (trying to go somewhere invalid)
+                    if tool_name in ("go_up", "go_down", "go_to_front", "go_to_back", "move_north", "move_south", "move_east", "move_west"):
+                        if "Cannot" in result or "can't" in result.lower() or "already" in result.lower():
+                            wrong_turns += 1
 
                     tool_results.append({
                         "tool_call_id": tool_call.id,
@@ -624,7 +785,10 @@ async def run_delivery_fast(
                     # Record delivery and check if mental model refresh is needed
                     should_refresh = record_delivery()
                     if should_refresh:
-                        asyncio.create_task(refresh_mental_models_async())
+                        if wait_for_consolidation:
+                            await refresh_mental_models_async()  # Wait for completion
+                        else:
+                            asyncio.create_task(refresh_mental_models_async())  # Fire-and-forget
                         reset_delivery_count()
                     break
 
@@ -650,16 +814,57 @@ async def run_delivery_fast(
             # Record delivery (even failures count) and check if mental model refresh is needed
             should_refresh = record_delivery()
             if should_refresh:
-                asyncio.create_task(refresh_mental_models_async())
+                if wait_for_consolidation:
+                    await refresh_mental_models_async()  # Wait for completion
+                else:
+                    asyncio.create_task(refresh_mental_models_async())  # Fire-and-forget
                 reset_delivery_count()
+
+        # Compute path efficiency
+        path_efficiency = compute_path_efficiency(agent_state.steps_taken, optimal_steps)
+
+        # Get mental model stats
+        mental_model_count = 0
+        mental_model_observations = 0
+        building_coverage = 0.0
+        try:
+            bank_stats = await get_bank_stats_async()
+            mental_model_count = bank_stats.get("total_mental_models", 0)
+            # Get observation count from mental models if available
+            mental_models = await get_mental_models_async()
+            if mental_models:
+                mental_model_observations = sum(
+                    len(mm.get("observations", [])) for mm in mental_models
+                )
+                # Estimate building coverage based on mental models
+                # (number of unique locations/entities mentioned)
+                building_coverage = min(1.0, mental_model_count / 10.0)  # Rough estimate
+        except Exception as e:
+            print(f"[MEMORY] Error getting mental model stats: {e}")
 
         return {
             "success": success,
             "steps": agent_state.steps_taken,
+            "optimalSteps": optimal_steps,
+            "pathEfficiency": path_efficiency,
             "actions": actions,
             "floor": agent_state.floor,
             "side": agent_state.side.value,
             "memoryInjected": memory_context is not None,
+            "tokens": {
+                "prompt": total_prompt_tokens,
+                "completion": total_completion_tokens,
+                "total": total_prompt_tokens + total_completion_tokens,
+            },
+            "latencyMs": total_latency_ms,
+            "totalTimeMs": (time.time() - delivery_start_time) * 1000,
+            # New fields for eval parity
+            "apiCalls": api_calls,
+            "wrongTurns": wrong_turns,
+            "path": path,
+            "mentalModelCount": mental_model_count,
+            "mentalModelObservations": mental_model_observations,
+            "buildingCoverage": building_coverage,
         }
 
     except Exception as e:
@@ -667,7 +872,23 @@ async def run_delivery_fast(
         return {
             "success": False,
             "steps": agent_state.steps_taken,
+            "optimalSteps": optimal_steps,
+            "pathEfficiency": 0.0,
             "actions": actions,
             "error": str(e),
             "traceback": traceback.format_exc(),
+            "tokens": {
+                "prompt": total_prompt_tokens,
+                "completion": total_completion_tokens,
+                "total": total_prompt_tokens + total_completion_tokens,
+            },
+            "latencyMs": total_latency_ms,
+            "totalTimeMs": (time.time() - delivery_start_time) * 1000,
+            # New fields for eval parity (with defaults for errors)
+            "apiCalls": api_calls,
+            "wrongTurns": wrong_turns,
+            "path": path,
+            "mentalModelCount": 0,
+            "mentalModelObservations": 0,
+            "buildingCoverage": 0.0,
         }

@@ -24,10 +24,11 @@ export function useWebSocket() {
     }
 
     // Connect directly to backend WebSocket (bypass Vite proxy)
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     // In dev, connect directly to backend; in prod, use same host
     const port = window.location.port;
     const isDev = port === '5173' || port === '5174' || port.startsWith('517');
+    // Use ws:// for dev (localhost), wss:// for prod (https)
+    const protocol = isDev ? 'ws:' : (window.location.protocol === 'https:' ? 'wss:' : 'ws:');
     const wsHost = isDev ? `${window.location.hostname}:8000` : window.location.host;
     // Pass app=bench and difficulty to identify this as the benchmark frontend
     const wsUrl = `${protocol}//${wsHost}/ws/${CLIENT_ID}?app=bench&difficulty=${difficulty}`;

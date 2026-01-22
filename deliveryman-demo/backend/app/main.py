@@ -3,21 +3,31 @@
 import asyncio
 import uuid
 import random
+import json
+from datetime import datetime
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 import sys
 sys.path.insert(0, str(__file__).rsplit("/app/", 1)[0])
 
-from building import get_building, set_difficulty, get_current_difficulty, Package
+from building import get_building, set_difficulty, get_current_difficulty, Package, compute_optimal_steps
 from agent_tools import get_tool_definitions
 from .routers import building as building_router
 from .services import memory_service, agent_service
+from .services.benchmark_service import run_benchmark
+from .services.benchmark_types import AgentMode, BenchmarkConfig
+from .services.benchmark_charts import generate_dashboard_chart, generate_comparison_chart
 from .websocket.manager import manager
 from .websocket.events import event, EventType
 from .config import LLM_MODEL, HINDSIGHT_API_URL, AVAILABLE_MODELS
+
+# Results directory
+RESULTS_DIR = Path(__file__).parent.parent.parent / "results"
 
 
 app = FastAPI(title="Delivery Agent API", version="1.0.0")
@@ -119,14 +129,26 @@ class HindsightSettings(BaseModel):
     bankId: Optional[str] = None  # Custom bank ID for evaluation
     query: Optional[str] = None  # Custom memory query (use {recipient} as placeholder)
     background: Optional[str] = None  # Bank background context for memory extraction
+    mission: Optional[str] = None  # Bank mission for mental models
 
 
 class FastDeliveryRequest(BaseModel):
     recipientName: Optional[str] = None  # None = random
-    includeBusiness: bool = False
-    maxSteps: int = 150
+    includeBusiness: str = "random"  # 'always', 'never', or 'random'
+    maxSteps: Optional[int] = None  # Hard cap (None = use stepMultiplier calculation)
     model: Optional[str] = None  # None = use default
     hindsight: Optional[HindsightSettings] = None
+    # Benchmark settings (for eval framework parity)
+    repeatRatio: float = 0.4
+    pairedMode: bool = False
+    memoryQueryMode: str = "inject_once"  # 'inject_once', 'per_step', 'both'
+    waitForConsolidation: bool = True
+    refreshInterval: int = 5
+    preseedCoverage: float = 0.0  # 0.0-1.0, fraction of building knowledge to pre-seed
+    mmQueryType: str = "recall"  # 'recall' or 'reflect' for MM modes
+    # Step limit settings
+    stepMultiplier: float = 5.0  # max_steps = optimal * multiplier
+    minSteps: int = 15  # Floor for max_steps
 
 
 class FastLoopRequest(BaseModel):
@@ -492,13 +514,32 @@ async def fast_delivery(request: FastDeliveryRequest):
     if not emp_info:
         return {"error": f"Employee {recipient_name} not found"}
 
-    business_name = emp_info[0].name if request.includeBusiness else None
+    # Determine if business name should be included based on includeBusiness setting
+    if request.includeBusiness == "always":
+        include_biz = True
+    elif request.includeBusiness == "never":
+        include_biz = False
+    else:  # "random"
+        include_biz = random.choice([True, False])
+
+    business_name = emp_info[0].name if include_biz else None
 
     package = Package(
         id=f"{random.randint(1000, 9999)}",
         recipient_name=recipient_name,
         business_name=business_name
     )
+
+    # Compute optimal steps for this delivery
+    optimal_steps = compute_optimal_steps(building, recipient_name)
+
+    # Calculate max_steps: max(min_steps, optimal * multiplier)
+    # Apply hard cap if maxSteps is provided
+    calculated_max = max(request.minSteps, int(optimal_steps * request.stepMultiplier))
+    if request.maxSteps is not None:
+        max_steps = min(calculated_max, request.maxSteps)  # Hard cap
+    else:
+        max_steps = calculated_max
 
     # Convert hindsight settings to dict if provided
     hindsight_dict = None
@@ -510,22 +551,29 @@ async def fast_delivery(request: FastDeliveryRequest):
             "bankId": request.hindsight.bankId,
             "query": request.hindsight.query,
             "background": request.hindsight.background,
+            "mission": request.hindsight.mission,
         }
 
     # Generate unique delivery ID for memory grouping
     delivery_id = random.randint(10000, 99999)
 
-    # Run delivery
+    # Run delivery with benchmark settings
     result = await agent_service.run_delivery_fast(
         building=building,
         package=package,
-        max_steps=request.maxSteps,
+        max_steps=max_steps,
         model=request.model,
         hindsight=hindsight_dict,
         delivery_id=delivery_id,
+        memory_query_mode=request.memoryQueryMode,
+        wait_for_consolidation=request.waitForConsolidation,
+        preseed_coverage=request.preseedCoverage,
+        mm_query_type=request.mmQueryType,
     )
 
     result["recipientName"] = recipient_name
+    result["optimalSteps"] = optimal_steps
+    result["maxStepsAllowed"] = max_steps
     return result
 
 
@@ -583,6 +631,277 @@ async def fast_delivery_loop(request: FastLoopRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# =============================================================================
+# Benchmark Endpoints
+# =============================================================================
+
+class BenchmarkRequest(BaseModel):
+    """Request model for starting a benchmark run."""
+    mode: str = "recall"  # no_memory, filesystem, recall, reflect, hindsight_mm, hindsight_mm_nowait
+    model: Optional[str] = None  # LLM model (None = use default)
+    numDeliveries: int = 10
+    repeatRatio: float = 0.4  # 40% repeat visits
+    pairedMode: bool = False  # Each office visited exactly 2x
+    includeBusiness: str = "random"  # always, never, random
+    stepMultiplier: float = 5.0  # max_steps = optimal * multiplier
+    minSteps: int = 15
+    memoryQueryMode: str = "inject_once"  # inject_once, per_step, both
+    waitForConsolidation: bool = True
+    refreshInterval: int = 5  # 0 = disabled
+    difficulty: str = "easy"
+    seed: Optional[int] = None
+
+
+@app.post("/api/benchmark/run")
+async def run_benchmark_endpoint(request: BenchmarkRequest):
+    """Run a benchmark with the specified configuration (non-streaming)."""
+    try:
+        mode = AgentMode(request.mode)
+    except ValueError:
+        return {"error": f"Invalid mode: {request.mode}. Valid modes: {[m.value for m in AgentMode]}"}
+
+    config = BenchmarkConfig(
+        mode=mode,
+        model=request.model or LLM_MODEL,
+        num_deliveries=request.numDeliveries,
+        repeat_ratio=request.repeatRatio,
+        paired_mode=request.pairedMode,
+        include_business=request.includeBusiness,
+        step_multiplier=request.stepMultiplier,
+        min_steps=request.minSteps,
+        memory_query_mode=request.memoryQueryMode,
+        wait_for_consolidation=request.waitForConsolidation,
+        refresh_interval=request.refreshInterval,
+        difficulty=request.difficulty,
+        seed=request.seed,
+    )
+
+    results = await run_benchmark(config=config)
+    return results.to_dict()
+
+
+@app.get("/api/benchmark/modes")
+async def get_benchmark_modes():
+    """Get available benchmark modes and their descriptions."""
+    return {
+        "modes": [
+            {"id": "no_memory", "name": "No Memory", "description": "Stateless baseline - no memory injection or storage"},
+            {"id": "filesystem", "name": "Filesystem", "description": "Agent manages own notes (read_notes/write_notes tools)"},
+            {"id": "recall", "name": "Recall", "description": "Hindsight recall - raw fact retrieval"},
+            {"id": "reflect", "name": "Reflect", "description": "Hindsight reflect - LLM-synthesized answers"},
+            {"id": "hindsight_mm", "name": "Hindsight MM", "description": "Hindsight with mental models (wait for consolidation)"},
+            {"id": "hindsight_mm_nowait", "name": "Hindsight MM (No Wait)", "description": "Mental models without waiting for consolidation"},
+        ],
+        "defaultMode": "recall",
+    }
+
+
+@app.get("/api/benchmark/presets")
+async def get_benchmark_presets():
+    """Get predefined benchmark configurations."""
+    return {
+        "presets": [
+            {
+                "id": "quick_test",
+                "name": "Quick Test",
+                "description": "5 deliveries, easy mode, recall",
+                "config": {"mode": "recall", "numDeliveries": 5, "difficulty": "easy"},
+            },
+            {
+                "id": "learning_test",
+                "name": "Learning Test",
+                "description": "20 deliveries, 50% repeat, mental models",
+                "config": {"mode": "hindsight_mm", "numDeliveries": 20, "repeatRatio": 0.5, "difficulty": "easy"},
+            },
+            {
+                "id": "paired_comparison",
+                "name": "Paired Comparison",
+                "description": "Each office visited exactly 2x for clear learning signal",
+                "config": {"mode": "hindsight_mm", "numDeliveries": 12, "pairedMode": True, "difficulty": "easy"},
+            },
+            {
+                "id": "full_benchmark",
+                "name": "Full Benchmark",
+                "description": "30 deliveries, medium difficulty",
+                "config": {"mode": "hindsight_mm", "numDeliveries": 30, "difficulty": "medium"},
+            },
+            {
+                "id": "no_memory_baseline",
+                "name": "No Memory Baseline",
+                "description": "10 deliveries without memory for comparison",
+                "config": {"mode": "no_memory", "numDeliveries": 10, "difficulty": "easy"},
+            },
+        ],
+    }
+
+
+# Bank stats endpoint
+@app.get("/api/memory/stats")
+async def get_bank_stats(app: str = "demo", difficulty: str = "easy"):
+    """Get statistics for a memory bank including consolidation status."""
+    bank_id = memory_service.get_bank_id(app, difficulty)
+    stats = memory_service.get_bank_stats(bank_id)
+    return {"stats": stats, "bankId": bank_id}
+
+
+# Clear mental models endpoint
+@app.delete("/api/memory/mental-models")
+async def clear_all_mental_models(app: str = "demo", difficulty: str = "easy"):
+    """Clear all mental models for a bank."""
+    bank_id = memory_service.get_bank_id(app, difficulty)
+    result = await memory_service.clear_mental_models_async(bank_id)
+    return {"result": result, "bankId": bank_id}
+
+
+# =============================================================================
+# Benchmark Save Endpoints
+# =============================================================================
+
+class BenchmarkResultData(BaseModel):
+    """A single benchmark result for saving."""
+    config: dict
+    summary: dict
+    learning: dict
+    timeSeries: dict
+    deliveries: List[dict]
+
+
+class SaveBenchmarkRequest(BaseModel):
+    """Request to save benchmark results."""
+    results: List[BenchmarkResultData]
+    generateCharts: bool = True
+    runName: Optional[str] = None  # Optional custom name for the run
+
+
+@app.post("/api/benchmark/save")
+async def save_benchmark_results(request: SaveBenchmarkRequest):
+    """Save benchmark results to disk with optional chart generation.
+
+    Saves:
+    - JSON file with all results: {run_name}.json
+    - Dashboard SVG for each config: {run_name}_{mode}_dashboard.svg
+    - Comparison SVG if multiple configs: {run_name}_comparison.svg
+    """
+    # Create results directory if it doesn't exist
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Generate run name
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = request.runName or f"benchmark_{timestamp}"
+
+    # Sanitize run name for filesystem
+    run_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in run_name)
+
+    saved_files = []
+
+    # Convert results to dicts
+    results_dicts = [r.model_dump() for r in request.results]
+
+    # Save JSON results
+    json_path = RESULTS_DIR / f"{run_name}.json"
+    json_data = {
+        "savedAt": datetime.now().isoformat(),
+        "runName": run_name,
+        "numConfigs": len(results_dicts),
+        "results": results_dicts,
+    }
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, indent=2)
+    saved_files.append(str(json_path))
+
+    # Generate charts if requested
+    if request.generateCharts and results_dicts:
+        # Dashboard for each config
+        for result in results_dicts:
+            mode = result["config"].get("mode", "unknown")
+            svg_path = RESULTS_DIR / f"{run_name}_{mode}_dashboard.svg"
+            try:
+                generate_dashboard_chart(result, svg_path)
+                saved_files.append(str(svg_path))
+            except Exception as e:
+                print(f"Warning: Failed to generate dashboard chart for {mode}: {e}")
+
+        # Comparison chart if multiple configs
+        if len(results_dicts) > 1:
+            comparison_path = RESULTS_DIR / f"{run_name}_comparison.svg"
+            try:
+                generate_comparison_chart(results_dicts, comparison_path)
+                saved_files.append(str(comparison_path))
+            except Exception as e:
+                print(f"Warning: Failed to generate comparison chart: {e}")
+
+    return {
+        "success": True,
+        "runName": run_name,
+        "savedFiles": saved_files,
+        "resultsDir": str(RESULTS_DIR),
+    }
+
+
+@app.get("/api/benchmark/results")
+async def list_benchmark_results():
+    """List all saved benchmark results."""
+    if not RESULTS_DIR.exists():
+        return {"results": []}
+
+    results = []
+    for json_file in sorted(RESULTS_DIR.glob("*.json"), reverse=True):
+        try:
+            with open(json_file) as f:
+                data = json.load(f)
+            results.append({
+                "filename": json_file.name,
+                "runName": data.get("runName", json_file.stem),
+                "savedAt": data.get("savedAt"),
+                "numConfigs": data.get("numConfigs", len(data.get("results", []))),
+            })
+        except Exception as e:
+            results.append({
+                "filename": json_file.name,
+                "error": str(e),
+            })
+
+    return {"results": results, "resultsDir": str(RESULTS_DIR)}
+
+
+@app.get("/api/benchmark/results/{filename}")
+async def get_benchmark_result(filename: str):
+    """Get a specific benchmark result by filename."""
+    filepath = RESULTS_DIR / filename
+
+    if not filepath.exists():
+        return {"error": f"File not found: {filename}"}
+
+    if filepath.suffix == ".json":
+        with open(filepath) as f:
+            return json.load(f)
+    elif filepath.suffix == ".svg":
+        return FileResponse(filepath, media_type="image/svg+xml")
+    else:
+        return {"error": f"Unsupported file type: {filepath.suffix}"}
+
+
+@app.delete("/api/benchmark/results/{filename}")
+async def delete_benchmark_result(filename: str):
+    """Delete a benchmark result file."""
+    filepath = RESULTS_DIR / filename
+
+    if not filepath.exists():
+        return {"error": f"File not found: {filename}"}
+
+    # Also delete associated chart files if this is a JSON file
+    deleted = [str(filepath)]
+    if filepath.suffix == ".json":
+        run_name = filepath.stem
+        for svg_file in RESULTS_DIR.glob(f"{run_name}*.svg"):
+            svg_file.unlink()
+            deleted.append(str(svg_file))
+
+    filepath.unlink()
+
+    return {"success": True, "deleted": deleted}
 
 
 if __name__ == "__main__":

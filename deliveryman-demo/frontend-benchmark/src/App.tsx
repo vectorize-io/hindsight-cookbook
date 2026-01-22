@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useGameStore } from './stores/gameStore';
 import { PhaserGame } from './game/PhaserGame';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, BarChart, Bar, Legend } from 'recharts';
 import type { Employee } from './types';
 
 // Demo config type
@@ -201,7 +201,6 @@ function App() {
   const [hindsightStore, setHindsightStore] = useState(true);
   const [hindsightQuery, setHindsightQuery] = useState('');
   const [hindsightMission, setHindsightMission] = useState('');
-  const [hindsightBackground, setHindsightBackground] = useState('');
 
   // Bank management state
   const [bankHistory, setBankHistory] = useState<string[]>([]);
@@ -238,8 +237,15 @@ function App() {
   ];
 
   // Memory mode state (controls hindsight settings)
+  // UI mode still uses simplified memory modes (maps to AgentMode for configs)
   type MemoryMode = 'baseline' | 'recall' | 'reflect';
   const [memoryMode, setMemoryMode] = useState<MemoryMode>('recall');
+
+  // Map UI MemoryMode to AgentMode
+  const memoryModeToAgentMode = (mode: MemoryMode): AgentMode => {
+    if (mode === 'baseline') return 'no_memory';
+    return mode;
+  };
 
   // Update hindsight settings when memory mode changes
   const handleMemoryModeChange = (newMode: MemoryMode) => {
@@ -253,14 +259,32 @@ function App() {
   };
 
   // View mode state (UI vs Benchmark)
-  const [viewMode, setViewMode] = useState<'ui' | 'benchmark'>('ui');
+  const [viewMode, setViewMode] = useState<'ui' | 'benchmark'>('benchmark');
 
   // Evaluation configuration type
   interface EvalResult {
     success: boolean;
     steps: number;
+    optimalSteps: number;
+    pathEfficiency: number;
     recipientName: string;
     deliveryNumber: number;
+    tokens: {
+      prompt: number;
+      completion: number;
+      total: number;
+    };
+    latencyMs: number;
+    totalTimeMs: number;
+    memoryInjected: boolean;
+    isRepeat?: boolean;
+    // New fields for eval parity
+    apiCalls?: number;
+    wrongTurns?: number;
+    path?: string[];
+    mentalModelCount?: number;
+    mentalModelObservations?: number;
+    buildingCoverage?: number;
     actions?: {
       step: number;
       tool: string;
@@ -271,11 +295,14 @@ function App() {
     }[];
   }
 
+  // Agent modes - expanded from just baseline/recall/reflect
+  type AgentMode = 'no_memory' | 'filesystem' | 'recall' | 'reflect' | 'hindsight_mm' | 'hindsight_mm_nowait';
+
   interface EvalConfig {
     id: string;
     name: string;
     model: string;
-    memoryMode: 'baseline' | 'recall' | 'reflect';
+    memoryMode: AgentMode;  // Expanded to all 6 modes
     bankId: string;
     color: string;
     enabled: boolean;
@@ -283,7 +310,31 @@ function App() {
     // Hindsight settings
     query: string;  // Memory query template (use {recipient} placeholder)
     mission: string;  // Bank mission for mental models
-    background: string;  // Bank background for memory extraction (deprecated)
+    // New benchmark settings
+    repeatRatio: number;  // 0.0-1.0, fraction of repeat visits
+    pairedMode: boolean;  // Each office visited exactly 2x
+    stepMultiplier: number;  // max_steps = optimal * multiplier
+    minSteps: number;
+    memoryQueryMode: 'inject_once' | 'per_step' | 'both';
+    waitForConsolidation: boolean;
+    refreshInterval: number;  // 0 = disabled
+    includeBusiness: 'always' | 'never' | 'random';  // Include business name in package
+    // Advanced settings
+    preseedCoverage: number;  // 0.0-1.0, fraction of building knowledge to pre-seed
+    mmQueryType: 'recall' | 'reflect';  // Query method for MM modes (recall = raw facts, reflect = LLM synthesis)
+  }
+
+  // Chart settings - which charts to display
+  interface ChartSettings {
+    enabled: boolean;  // Master toggle
+    pathEfficiency: boolean;
+    stepsPerDelivery: boolean;
+    cumulativeSteps: boolean;
+    latencyPerDelivery: boolean;
+    cumulativeLatency: boolean;
+    tokensPerDelivery: boolean;
+    cumulativeTokens: boolean;
+    comparisonSummary: boolean;
   }
 
   // Generate short random ID for bank names
@@ -312,40 +363,65 @@ Your goal is to learn and remember:
 
 Use this knowledge to efficiently deliver packages by remembering where employees are located
 rather than searching the entire building each time.`;
-  const DEFAULT_BACKGROUND = "Delivery agent. Remember employee locations, building layout, and optimal paths.";
+  // Chart settings state
+  const DEFAULT_CHART_SETTINGS: ChartSettings = {
+    enabled: true,
+    pathEfficiency: true,
+    stepsPerDelivery: true,
+    cumulativeSteps: false,
+    latencyPerDelivery: true,
+    cumulativeLatency: false,
+    tokensPerDelivery: true,
+    cumulativeTokens: false,
+    comparisonSummary: true,
+  };
 
   // Config counter for naming
   const configCounterRef = useRef(0);
 
   // Evaluation configs state
+  // Default new benchmark settings
+  const DEFAULT_BENCHMARK_SETTINGS = {
+    repeatRatio: 0.4,
+    pairedMode: false,
+    stepMultiplier: 5.0,
+    minSteps: 15,
+    memoryQueryMode: 'inject_once' as const,
+    waitForConsolidation: true,
+    refreshInterval: 5,
+    includeBusiness: 'random' as const,
+    preseedCoverage: 0.0,  // 0 = no preseed, 1.0 = full building knowledge
+    mmQueryType: 'recall' as const,  // 'recall' or 'reflect' for MM modes
+  };
+
   const [evalConfigs, setEvalConfigs] = useState<EvalConfig[]>(() => {
     configCounterRef.current = 2;
     return [
       {
         id: 'config-1',
-        name: 'Config-1',
+        name: 'No Memory',
         model: 'openai/gpt-4o',
-        memoryMode: 'baseline',
-        bankId: `baseline-${Math.random().toString(36).slice(2, 8)}`,
+        memoryMode: 'no_memory',
+        bankId: `no_memory-${Math.random().toString(36).slice(2, 8)}`,
         color: configColors[0],
         enabled: true,
         results: [],
         query: DEFAULT_QUERY,
         mission: DEFAULT_MISSION,
-        background: DEFAULT_BACKGROUND,
+        ...DEFAULT_BENCHMARK_SETTINGS,
       },
       {
         id: 'config-2',
-        name: 'Config-2',
+        name: 'Hindsight MM',
         model: 'openai/gpt-4o',
-        memoryMode: 'recall',
-        bankId: `recall-${Math.random().toString(36).slice(2, 8)}`,
+        memoryMode: 'hindsight_mm',
+        bankId: `hindsight_mm-${Math.random().toString(36).slice(2, 8)}`,
         color: configColors[4],
         enabled: true,
         results: [],
         query: DEFAULT_QUERY,
         mission: DEFAULT_MISSION,
-        background: DEFAULT_BACKGROUND,
+        ...DEFAULT_BENCHMARK_SETTINGS,
       },
     ];
   });
@@ -355,7 +431,9 @@ rather than searching the entire building each time.`;
   const [ffRunning, setFfRunning] = useState(false);
   const [ffProgress, setFfProgress] = useState(0);
   const [ffCurrentConfig, setFfCurrentConfig] = useState<string | null>(null);
-  const [saveAllSteps, setSaveAllSteps] = useState(false);
+  const [saveBenchmark, setSaveBenchmark] = useState(true);  // Save benchmark results (on by default)
+  const [saveAllSteps, setSaveAllSteps] = useState(false);  // Save detailed step logs for each delivery
+  const [chartSettings, setChartSettings] = useState<ChartSettings>(DEFAULT_CHART_SETTINGS);
   const ffAbortRef = useRef(false);
 
   // UI Mode configs - tracks results per model+memoryMode combination
@@ -371,18 +449,19 @@ rather than searching the entire building each time.`;
     const modelName = modelOptions.find(m => m.id === model)?.name || model;
     const modeName = mode.charAt(0).toUpperCase() + mode.slice(1);
     const colorIndex = uiConfigs.length % configColors.length;
+    const agentMode = memoryModeToAgentMode(mode);
     const newConfig: EvalConfig = {
       id: configId,
       name: `${modeName} (${modelName})`,
       model,
-      memoryMode: mode,
+      memoryMode: agentMode,
       bankId: `${mode}-${shortId()}`,
       color: configColors[colorIndex],
       enabled: true,
       results: [],
       query: DEFAULT_QUERY,
       mission: DEFAULT_MISSION,
-      background: DEFAULT_BACKGROUND,
+      ...DEFAULT_BENCHMARK_SETTINGS,
     };
     setUiConfigs(prev => [...prev, newConfig]);
     return newConfig;
@@ -395,10 +474,8 @@ rather than searching the entire building each time.`;
   }, [uiConfigs, selectedModel, memoryMode]);
 
   // Current bank ID for UI mode
-  const currentUiBankId = useMemo(() => {
-    if (currentUiConfig) return currentUiConfig.bankId;
-    return `ui-${selectedModel}-${memoryMode}-${Date.now()}`;
-  }, [currentUiConfig, selectedModel, memoryMode]);
+  // Note: Computed but UI mode uses currentUiConfig.bankId directly where needed
+  void (currentUiConfig && `ui-${selectedModel}-${memoryMode}`);
 
   // Refresh building data function
   const refreshBuildingData = useCallback(() => {
@@ -597,9 +674,8 @@ rather than searching the entire building each time.`;
       bankId: config.bankId,
       query: hindsightQuery || undefined,  // Custom memory query (optional)
       mission: hindsightMission || undefined,  // Bank mission for mental models (optional)
-      background: hindsightBackground || undefined,  // Bank background context (deprecated)
     };
-  }, [getOrCreateUiConfig, selectedModel, memoryMode, hindsightInject, hindsightReflect, hindsightStore, hindsightQuery, hindsightMission, hindsightBackground]);
+  }, [getOrCreateUiConfig, selectedModel, memoryMode, hindsightInject, hindsightReflect, hindsightStore, hindsightQuery, hindsightMission]);
 
   const handleStartDelivery = () => {
     if (selectedRecipient) {
@@ -620,16 +696,24 @@ rather than searching the entire building each time.`;
   // Track UI mode delivery results
   const trackUiDeliveryResult = useCallback((success: boolean, steps: number, recipientName: string) => {
     const configId = `ui-${selectedModel}-${memoryMode}`;
+    const optimalSteps = 3; // Default estimate for UI mode
     setUiConfigs(prev => prev.map(c => {
       if (c.id === configId) {
+        const newResult: EvalResult = {
+          success,
+          steps,
+          optimalSteps,
+          pathEfficiency: Math.min(1.0, optimalSteps / steps),
+          recipientName,
+          deliveryNumber: c.results.length + 1,
+          tokens: { prompt: 0, completion: 0, total: 0 },
+          latencyMs: 0,
+          totalTimeMs: 0,
+          memoryInjected: false,
+        };
         return {
           ...c,
-          results: [...c.results, {
-            success,
-            steps,
-            recipientName,
-            deliveryNumber: c.results.length + 1,
-          }],
+          results: [...c.results, newResult],
         };
       }
       return c;
@@ -661,10 +745,24 @@ rather than searching the entire building each time.`;
     }
   };
 
-  // Helper to get hindsight settings for a memory mode
-  const getHindsightForMode = (mode: 'baseline' | 'recall' | 'reflect') => {
-    const preset = hindsightPresets.find(p => p.id === mode);
-    return preset ? { inject: preset.inject, reflect: preset.reflect, store: preset.store } : { inject: false, reflect: false, store: false };
+  // Helper to get hindsight settings for an agent mode
+  const getHindsightForMode = (mode: AgentMode) => {
+    // Map agent modes to hindsight settings
+    switch (mode) {
+      case 'no_memory':
+        return { inject: false, reflect: false, store: false };
+      case 'filesystem':
+        return { inject: false, reflect: false, store: false };
+      case 'recall':
+        return { inject: true, reflect: false, store: true };
+      case 'reflect':
+        return { inject: true, reflect: true, store: true };
+      case 'hindsight_mm':
+      case 'hindsight_mm_nowait':
+        return { inject: true, reflect: true, store: true };
+      default:
+        return { inject: false, reflect: false, store: false };
+    }
   };
 
   // Benchmark handlers - runs all enabled configs IN PARALLEL
@@ -687,20 +785,32 @@ rather than searching the entire building each time.`;
       const hs = getHindsightForMode(config.memoryMode);
 
       try {
+        // Backend calculates max_steps from optimal path: max(minSteps, optimal * stepMultiplier)
+        // maxSteps from UI is passed as hard cap (if set)
         const res = await fetch('/api/delivery/fast', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            includeBusiness,
-            maxSteps: maxSteps || 150,
+            includeBusiness: config.includeBusiness,
+            maxSteps: maxSteps || null,  // Hard cap from global UI setting (null = no cap)
+            stepMultiplier: config.stepMultiplier,
+            minSteps: config.minSteps,
             model: config.model,
+            // Per-config benchmark settings
+            repeatRatio: config.repeatRatio,
+            pairedMode: config.pairedMode,
+            memoryQueryMode: config.memoryQueryMode,
+            waitForConsolidation: config.waitForConsolidation,
+            refreshInterval: config.refreshInterval,
+            preseedCoverage: config.preseedCoverage || 0,
+            mmQueryType: config.mmQueryType || 'recall',
             hindsight: {
               inject: hs.inject,
               reflect: hs.reflect,
               store: hs.store,
               bankId: config.bankId,
               query: config.query || undefined,
-              background: config.background || undefined,
+              mission: config.mission || undefined,  // Always pass mission for bank setup
             },
           }),
         });
@@ -712,8 +822,21 @@ rather than searching the entire building each time.`;
             const newResult: EvalResult = {
               success: result.success,
               steps: result.steps,
+              optimalSteps: result.optimalSteps || 3,
+              pathEfficiency: result.pathEfficiency || 0,
               recipientName: result.recipientName || 'Unknown',
               deliveryNumber: deliveryNum,
+              tokens: result.tokens || { prompt: 0, completion: 0, total: 0 },
+              latencyMs: result.latencyMs || 0,
+              totalTimeMs: result.totalTimeMs || 0,
+              memoryInjected: result.memoryInjected || false,
+              // New fields for eval parity
+              apiCalls: result.apiCalls,
+              wrongTurns: result.wrongTurns,
+              path: result.path,
+              mentalModelCount: result.mentalModelCount,
+              mentalModelObservations: result.mentalModelObservations,
+              buildingCoverage: result.buildingCoverage,
             };
             // Include full action logs if saveAllSteps is enabled
             if (saveAllSteps && result.actions) {
@@ -751,27 +874,120 @@ rather than searching the entire building each time.`;
 
     // Update refresh interval status after all deliveries complete
     fetchRefreshIntervalStatus();
-  }, [evalConfigs, includeBusiness, maxSteps, saveAllSteps, fetchRefreshIntervalStatus]);
 
-  // Add a new config
-  const addEvalConfig = useCallback(() => {
-    configCounterRef.current += 1;
-    const configNum = configCounterRef.current;
-    const colorIndex = evalConfigs.length % configColors.length;
-    setEvalConfigs(prev => [...prev, {
-      id: `config-${configNum}`,
-      name: `Config-${configNum}`,
-      model: 'openai/gpt-4o',
-      memoryMode: 'recall',
-      bankId: `recall-${shortId()}`,
-      color: configColors[colorIndex],
-      enabled: true,
-      results: [],
-      query: DEFAULT_QUERY,
-      mission: DEFAULT_MISSION,
-      background: DEFAULT_BACKGROUND,
-    }]);
-  }, [evalConfigs.length]);
+    // Auto-save if saveBenchmark is enabled
+    if (saveBenchmark && !ffAbortRef.current) {
+      try {
+        // Get updated configs with results
+        const configsWithResults = evalConfigs.filter(c => c.enabled && c.results.length > 0);
+
+        // Format results for the save endpoint
+        const resultsToSave = configsWithResults.map(config => {
+          const results = config.results;
+          const successCount = results.filter(r => r.success).length;
+          const totalSteps = results.reduce((s, r) => s + r.steps, 0);
+          const totalOptimalSteps = results.reduce((s, r) => s + r.optimalSteps, 0);
+
+          // Use real efficiency from results
+          const efficiencyByEpisode = results.map(r => r.pathEfficiency);
+          const tokensByEpisode = results.map(r => r.tokens.total);
+          const latencyByEpisode = results.map(r => r.latencyMs);
+
+          // Token totals
+          const totalPromptTokens = results.reduce((s, r) => s + r.tokens.prompt, 0);
+          const totalCompletionTokens = results.reduce((s, r) => s + r.tokens.completion, 0);
+          const totalTokens = totalPromptTokens + totalCompletionTokens;
+          const totalLatencyMs = results.reduce((s, r) => s + r.latencyMs, 0);
+
+          // Learning metrics
+          const mid = Math.floor(results.length / 2);
+          const firstHalfEff = mid > 0 ? efficiencyByEpisode.slice(0, mid).reduce((a, b) => a + b, 0) / mid : 0;
+          const secondHalfEff = results.length - mid > 0 ? efficiencyByEpisode.slice(mid).reduce((a, b) => a + b, 0) / (results.length - mid) : 0;
+
+          // Find convergence (first episode with >= 90% efficiency)
+          let convergence = 0;
+          for (let i = 0; i < efficiencyByEpisode.length; i++) {
+            if (efficiencyByEpisode[i] >= 0.9) {
+              convergence = i + 1;
+              break;
+            }
+          }
+
+          return {
+            config: {
+              mode: config.memoryMode,
+              model: config.model,
+              numDeliveries: results.length,
+              repeatRatio: config.repeatRatio,
+              pairedMode: config.pairedMode,
+              difficulty: difficulty,
+              refreshInterval: config.refreshInterval,
+            },
+            summary: {
+              totalDeliveries: results.length,
+              successfulDeliveries: successCount,
+              failedDeliveries: results.length - successCount,
+              successRate: results.length > 0 ? successCount / results.length : 0,
+              totalSteps,
+              totalOptimalSteps,
+              avgPathEfficiency: efficiencyByEpisode.length > 0 ? efficiencyByEpisode.reduce((a, b) => a + b, 0) / efficiencyByEpisode.length : 0,
+              totalTokens: { prompt: totalPromptTokens, completion: totalCompletionTokens, total: totalTokens },
+              totalLatencyMs,
+              avgLatencyMs: results.length > 0 ? totalLatencyMs / results.length : 0,
+            },
+            learning: {
+              convergenceEpisode: convergence,
+              firstHalfEfficiency: firstHalfEff,
+              secondHalfEfficiency: secondHalfEff,
+              improvement: secondHalfEff - firstHalfEff,
+            },
+            timeSeries: {
+              efficiencyByEpisode,
+              tokensByEpisode,
+              latencyByEpisode,
+            },
+            deliveries: results.map((r, i) => ({
+              deliveryId: i + 1,
+              recipient: r.recipientName,
+              business: null,
+              success: r.success,
+              stepsTaken: r.steps,
+              optimalSteps: r.optimalSteps,
+              pathEfficiency: r.pathEfficiency,
+              tokens: r.tokens,
+              latencyMs: r.latencyMs,
+              memoryInjected: r.memoryInjected,
+              memoryQueryCount: r.memoryInjected ? 1 : 0,
+              consolidationTriggered: false,
+              isRepeat: r.isRepeat || false,
+              // New fields for eval parity
+              apiCalls: r.apiCalls || 0,
+              wrongTurns: r.wrongTurns || 0,
+              path: r.path || [],
+              mentalModelCount: r.mentalModelCount || 0,
+              mentalModelObservations: r.mentalModelObservations || 0,
+              buildingCoverage: r.buildingCoverage || 0,
+            })),
+          };
+        });
+
+        if (resultsToSave.length > 0) {
+          const saveRes = await fetch('/api/benchmark/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              results: resultsToSave,
+              generateCharts: chartSettings.enabled,
+            }),
+          });
+          const saveResult = await saveRes.json();
+          console.log('Benchmark saved:', saveResult);
+        }
+      } catch (err) {
+        console.error('Failed to save benchmark:', err);
+      }
+    }
+  }, [evalConfigs, includeBusiness, maxSteps, saveAllSteps, saveBenchmark, chartSettings.enabled, difficulty, fetchRefreshIntervalStatus]);
 
   // Remove a config
   const removeEvalConfig = useCallback((id: string) => {
@@ -861,7 +1077,7 @@ rather than searching the entire building each time.`;
           <div className="flex items-center gap-6">
             <div>
               <h1 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-400 font-mono">
-                DELIVERY AGENT DEMO
+                Delivery Agent Benchmark Demo
               </h1>
               <p className="text-slate-500 text-sm">
                 AI agent learning with Hindsight memory
@@ -1261,23 +1477,6 @@ rather than searching the entire building each time.`;
                     />
                     <p className="text-xs text-slate-500 mt-1">
                       Comprehensive description for mental models - what the agent should learn and remember.
-                    </p>
-                  </div>
-
-                  {/* Bank Background Input (Deprecated) */}
-                  <div className="mt-3">
-                    <label className="text-xs text-slate-400 block mb-1">
-                      Bank Background (optional) <span className="text-orange-400 text-[10px]">(deprecated)</span>
-                    </label>
-                    <textarea
-                      value={hindsightBackground}
-                      onChange={(e) => setHindsightBackground(e.target.value)}
-                      placeholder="Delivery agent. Remember employee locations, building layout, and optimal paths."
-                      rows={2}
-                      className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500 resize-none"
-                    />
-                    <p className="text-xs text-slate-500 mt-1">
-                      Guides memory extraction - use Mission instead for mental models.
                     </p>
                   </div>
 
@@ -1961,6 +2160,20 @@ rather than searching the entire building each time.`;
                   <label className="flex items-center gap-2 cursor-pointer group">
                     <input
                       type="checkbox"
+                      checked={saveBenchmark}
+                      onChange={(e) => setSaveBenchmark(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-green-500 focus:ring-green-500 focus:ring-offset-0"
+                      disabled={ffRunning}
+                    />
+                    <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
+                      Save benchmark
+                    </span>
+                  </label>
+                </div>
+                <div className="flex flex-col justify-end">
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <input
+                      type="checkbox"
                       checked={saveAllSteps}
                       onChange={(e) => setSaveAllSteps(e.target.checked)}
                       className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
@@ -1971,6 +2184,47 @@ rather than searching the entire building each time.`;
                     </span>
                   </label>
                 </div>
+              </div>
+
+              {/* Chart Settings */}
+              <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.enabled}
+                      onChange={(e) => setChartSettings({ ...chartSettings, enabled: e.target.checked })}
+                      className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-purple-500 focus:ring-purple-500 focus:ring-offset-0"
+                      disabled={ffRunning}
+                    />
+                    <span className="text-sm text-slate-300 font-medium">Show Charts</span>
+                  </label>
+                </div>
+                {chartSettings.enabled && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2">
+                    {[
+                      { key: 'pathEfficiency', label: 'Path Efficiency' },
+                      { key: 'stepsPerDelivery', label: 'Steps/Delivery' },
+                      { key: 'cumulativeSteps', label: 'Cumulative Steps' },
+                      { key: 'latencyPerDelivery', label: 'Latency/Delivery' },
+                      { key: 'cumulativeLatency', label: 'Cumulative Latency' },
+                      { key: 'tokensPerDelivery', label: 'Tokens/Delivery' },
+                      { key: 'cumulativeTokens', label: 'Cumulative Tokens' },
+                      { key: 'comparisonSummary', label: 'Comparison Summary' },
+                    ].map(({ key, label }) => (
+                      <label key={key} className="flex items-center gap-1.5 cursor-pointer text-xs">
+                        <input
+                          type="checkbox"
+                          checked={chartSettings[key as keyof ChartSettings] as boolean}
+                          onChange={(e) => setChartSettings({ ...chartSettings, [key]: e.target.checked })}
+                          className="w-3 h-3 rounded border-slate-600 bg-slate-700 text-purple-500 focus:ring-purple-500 focus:ring-offset-0"
+                          disabled={ffRunning}
+                        />
+                        <span className="text-slate-400">{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-2">
@@ -2025,36 +2279,42 @@ rather than searching the entire building each time.`;
             <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-slate-300">Configurations</h2>
-                <div className="flex gap-2">
-                  {['baseline', 'recall', 'reflect'].map(mode => (
+                <div className="flex gap-1 flex-wrap">
+                  {([
+                    { mode: 'no_memory', label: 'No Memory', color: 'slate', mmQueryType: 'recall' as const },
+                    { mode: 'filesystem', label: 'Filesystem', color: 'amber', mmQueryType: 'recall' as const },
+                    { mode: 'recall', label: 'Recall', color: 'purple', mmQueryType: 'recall' as const },
+                    { mode: 'reflect', label: 'Reflect', color: 'cyan', mmQueryType: 'reflect' as const },
+                    { mode: 'hindsight_mm', label: 'MM-Recall', color: 'emerald', mmQueryType: 'recall' as const },
+                    { mode: 'hindsight_mm', label: 'MM-Reflect', color: 'green', mmQueryType: 'reflect' as const },
+                    { mode: 'hindsight_mm_nowait', label: 'MM-Recall NW', color: 'teal', mmQueryType: 'recall' as const },
+                    { mode: 'hindsight_mm_nowait', label: 'MM-Reflect NW', color: 'sky', mmQueryType: 'reflect' as const },
+                  ] as const).map(({ mode, label, color, mmQueryType }) => (
                     <button
-                      key={mode}
+                      key={`${mode}-${mmQueryType}`}
                       onClick={() => {
                         configCounterRef.current += 1;
                         const configNum = configCounterRef.current;
                         const colorIndex = evalConfigs.length % configColors.length;
                         setEvalConfigs(prev => [...prev, {
                           id: `config-${configNum}`,
-                          name: `Config-${configNum}`,
+                          name: label,
                           model: 'openai/gpt-4o',
-                          memoryMode: mode as 'baseline' | 'recall' | 'reflect',
+                          memoryMode: mode,
                           bankId: `${mode}-${shortId()}`,
                           color: configColors[colorIndex],
                           enabled: true,
                           results: [],
                           query: DEFAULT_QUERY,
                           mission: DEFAULT_MISSION,
-                          background: DEFAULT_BACKGROUND,
+                          ...DEFAULT_BENCHMARK_SETTINGS,
+                          mmQueryType: mmQueryType,
                         }]);
                       }}
                       disabled={ffRunning}
-                      className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                        mode === 'baseline' ? 'border-slate-500 text-slate-400 hover:bg-slate-700' :
-                        mode === 'recall' ? 'border-purple-500/50 text-purple-400 hover:bg-purple-900/30' :
-                        'border-cyan-500/50 text-cyan-400 hover:bg-cyan-900/30'
-                      }`}
+                      className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-${color}-500/50 text-${color}-400 hover:bg-${color}-900/30`}
                     >
-                      + {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                      + {label}
                     </button>
                   ))}
                 </div>
@@ -2117,39 +2377,198 @@ rather than searching the entire building each time.`;
                       </select>
                     </div>
 
-                    {/* Memory Mode */}
+                    {/* Agent Mode */}
                     <div className="mb-3">
-                      <label className="block text-xs text-slate-500 mb-1">Memory Mode</label>
-                      <div className="flex gap-1">
-                        {(['baseline', 'recall', 'reflect'] as const).map(mode => (
-                          <button
-                            key={mode}
-                            onClick={() => {
-                              const modelName = modelOptions.find(m => m.id === config.model)?.name || config.model;
-                              const modeName = mode.charAt(0).toUpperCase() + mode.slice(1);
-                              updateEvalConfig(config.id, {
-                                memoryMode: mode,
-                                name: `${modeName} (${modelName})`,
-                                bankId: `${mode}-${shortId()}`
-                              });
-                            }}
+                      <label className="block text-xs text-slate-500 mb-1">Agent Mode</label>
+                      <select
+                        value={config.memoryMode}
+                        onChange={(e) => {
+                          const mode = e.target.value as AgentMode;
+                          const modeLabels: Record<AgentMode, string> = {
+                            'no_memory': 'No Memory',
+                            'filesystem': 'Filesystem',
+                            'recall': 'Recall',
+                            'reflect': 'Reflect',
+                            'hindsight_mm': 'Hindsight MM',
+                            'hindsight_mm_nowait': 'MM NoWait',
+                          };
+                          updateEvalConfig(config.id, {
+                            memoryMode: mode,
+                            name: modeLabels[mode],
+                            bankId: `${mode}-${shortId()}`
+                          });
+                        }}
+                        disabled={ffRunning}
+                        className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-sm text-slate-300"
+                      >
+                        <option value="no_memory">No Memory (Baseline)</option>
+                        <option value="filesystem">Filesystem (Agent Notes)</option>
+                        <option value="recall">Recall (Raw Facts)</option>
+                        <option value="reflect">Reflect (LLM Synthesis)</option>
+                        <option value="hindsight_mm">Hindsight MM (Wait)</option>
+                        <option value="hindsight_mm_nowait">MM NoWait</option>
+                      </select>
+                    </div>
+
+                    {/* Learning Settings */}
+                    <div className="mb-3 grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">Repeat Ratio</label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.1}
+                          value={config.repeatRatio}
+                          onChange={(e) => updateEvalConfig(config.id, { repeatRatio: parseFloat(e.target.value) || 0 })}
+                          disabled={ffRunning}
+                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <label className="flex items-center gap-1 text-xs text-slate-400">
+                          <input
+                            type="checkbox"
+                            checked={config.pairedMode}
+                            onChange={(e) => updateEvalConfig(config.id, { pairedMode: e.target.checked })}
                             disabled={ffRunning}
-                            className={`flex-1 px-2 py-1 text-xs rounded transition-colors disabled:cursor-not-allowed ${
-                              config.memoryMode === mode
-                                ? mode === 'baseline' ? 'bg-slate-600 text-white'
-                                  : mode === 'recall' ? 'bg-purple-600 text-white'
-                                  : 'bg-cyan-600 text-white'
-                                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                            }`}
-                          >
-                            {mode.charAt(0).toUpperCase() + mode.slice(1)}
-                          </button>
-                        ))}
+                            className="w-3 h-3 rounded"
+                          />
+                          Paired (2x each)
+                        </label>
                       </div>
                     </div>
 
-                    {/* Memory Settings - only for recall/reflect modes */}
-                    {config.memoryMode !== 'baseline' && (
+                    {/* Step Limits */}
+                    <div className="mb-3 grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">Step Mult</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={20}
+                          step={0.5}
+                          value={config.stepMultiplier}
+                          onChange={(e) => updateEvalConfig(config.id, { stepMultiplier: parseFloat(e.target.value) || 5 })}
+                          disabled={ffRunning}
+                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                          title="max_steps = optimal * multiplier"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">Min Steps</label>
+                        <input
+                          type="number"
+                          min={5}
+                          max={50}
+                          step={1}
+                          value={config.minSteps}
+                          onChange={(e) => updateEvalConfig(config.id, { minSteps: parseInt(e.target.value) || 15 })}
+                          disabled={ffRunning}
+                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                          title="Minimum step limit per delivery"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-slate-500 mb-1">Business</label>
+                        <select
+                          value={config.includeBusiness}
+                          onChange={(e) => updateEvalConfig(config.id, { includeBusiness: e.target.value as 'always' | 'never' | 'random' })}
+                          disabled={ffRunning}
+                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                          title="Include business name in package"
+                        >
+                          <option value="random">Random</option>
+                          <option value="always">Always</option>
+                          <option value="never">Never</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Memory Query Mode - only for hindsight modes */}
+                    {config.memoryMode !== 'no_memory' && config.memoryMode !== 'filesystem' && (
+                      <div className="mb-3 space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">Memory Injection</label>
+                            <select
+                              value={config.memoryQueryMode}
+                              onChange={(e) => updateEvalConfig(config.id, { memoryQueryMode: e.target.value as 'inject_once' | 'per_step' | 'both' })}
+                              disabled={ffRunning}
+                              className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                            >
+                              <option value="inject_once">Once at Start</option>
+                              <option value="per_step">Every Step</option>
+                              <option value="both">Both</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">Refresh Interval</label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={50}
+                              step={1}
+                              value={config.refreshInterval}
+                              onChange={(e) => updateEvalConfig(config.id, { refreshInterval: parseInt(e.target.value) || 0 })}
+                              disabled={ffRunning}
+                              className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                              title="Refresh mental models every N deliveries (0 = disabled)"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <label className="flex items-center gap-1 text-xs text-slate-400">
+                            <input
+                              type="checkbox"
+                              checked={config.waitForConsolidation}
+                              onChange={(e) => updateEvalConfig(config.id, { waitForConsolidation: e.target.checked })}
+                              disabled={ffRunning}
+                              className="w-3 h-3 rounded"
+                            />
+                            Wait for Consolidation
+                          </label>
+                        </div>
+                        {/* Preseed Coverage */}
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                          <div>
+                            <label className="block text-xs text-slate-500 mb-1">Preseed Coverage</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={10}
+                                value={Math.round((config.preseedCoverage || 0) * 100)}
+                                onChange={(e) => updateEvalConfig(config.id, { preseedCoverage: parseInt(e.target.value) / 100 })}
+                                disabled={ffRunning}
+                                className="flex-1 h-1"
+                              />
+                              <span className="text-xs text-slate-400 w-8">{Math.round((config.preseedCoverage || 0) * 100)}%</span>
+                            </div>
+                            <p className="text-[10px] text-slate-600 mt-0.5">Pre-seed building knowledge</p>
+                          </div>
+                          {/* MM Query Type - only for MM modes */}
+                          {(config.memoryMode === 'hindsight_mm' || config.memoryMode === 'hindsight_mm_nowait') && (
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">MM Query Type</label>
+                              <select
+                                value={config.mmQueryType || 'recall'}
+                                onChange={(e) => updateEvalConfig(config.id, { mmQueryType: e.target.value as 'recall' | 'reflect' })}
+                                disabled={ffRunning}
+                                className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                              >
+                                <option value="recall">Recall (Raw Facts)</option>
+                                <option value="reflect">Reflect (LLM Synthesis)</option>
+                              </select>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Memory Settings - only for hindsight modes */}
+                    {config.memoryMode !== 'no_memory' && config.memoryMode !== 'filesystem' && (
                       <div className="space-y-2 mb-3">
                         {/* Query */}
                         <div>
@@ -2170,18 +2589,6 @@ rather than searching the entire building each time.`;
                             value={config.mission}
                             onChange={(e) => updateEvalConfig(config.id, { mission: e.target.value })}
                             placeholder={DEFAULT_MISSION}
-                            rows={2}
-                            disabled={ffRunning}
-                            className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
-                          />
-                        </div>
-                        {/* Background (deprecated) */}
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">Bank Background <span className="text-orange-400">(deprecated)</span></label>
-                          <textarea
-                            value={config.background}
-                            onChange={(e) => updateEvalConfig(config.id, { background: e.target.value })}
-                            placeholder={DEFAULT_BACKGROUND}
                             rows={2}
                             disabled={ffRunning}
                             className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
@@ -2240,56 +2647,108 @@ rather than searching the entire building each time.`;
 
             {/* Bottom Section: Results */}
             {evalConfigs.some(c => c.results.length > 0) && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Learning Curve Chart */}
-                <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-semibold text-slate-300">Learning Curves</h2>
-                    <div className="flex flex-wrap gap-2">
-                      {evalConfigs.filter(c => c.results.length > 0).map(config => (
-                        <div key={config.id} className="flex items-center gap-1">
-                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: config.color }} />
-                          <span className="text-[10px] text-slate-400">{config.name}</span>
-                        </div>
-                      ))}
-                    </div>
+              <div className="space-y-6">
+                {/* Chart Legend */}
+                {chartSettings.enabled && (
+                  <div className="flex flex-wrap gap-3 justify-center">
+                    {evalConfigs.filter(c => c.results.length > 0).map(config => (
+                      <div key={config.id} className="flex items-center gap-1.5">
+                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: config.color }} />
+                        <span className="text-xs text-slate-400">{config.name}</span>
+                      </div>
+                    ))}
                   </div>
-                  <ResponsiveContainer width="100%" height={250}>
-                    <LineChart>
-                      <XAxis
-                        dataKey="delivery"
-                        stroke="#64748b"
-                        fontSize={10}
-                        tickLine={false}
-                        type="number"
-                        domain={[1, 'auto']}
-                        allowDecimals={false}
-                      />
-                      <YAxis stroke="#64748b" fontSize={10} tickLine={false} domain={[0, 'auto']} />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: '#1e293b',
-                          border: '1px solid #475569',
-                          borderRadius: '8px',
-                          fontSize: '12px',
-                        }}
-                      />
-                      <ReferenceLine y={3} stroke="#4ade80" strokeDasharray="3 3" />
-                      {evalConfigs.filter(c => c.results.length > 0).map(config => (
-                        <Line
-                          key={config.id}
-                          data={config.results.map((r, i) => ({ delivery: i + 1, steps: r.steps, name: config.name }))}
-                          type="monotone"
-                          dataKey="steps"
-                          name={config.name}
-                          stroke={config.color}
-                          strokeWidth={2}
-                          dot={{ r: 3, fill: config.color }}
-                        />
-                      ))}
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
+                )}
+
+                {/* Charts Grid */}
+                {chartSettings.enabled && (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Steps Per Delivery Chart */}
+                    {chartSettings.stepsPerDelivery && (
+                      <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+                        <h3 className="text-sm font-semibold text-slate-300 mb-3">Steps Per Delivery</h3>
+                        <ResponsiveContainer width="100%" height={200}>
+                          <LineChart>
+                            <XAxis dataKey="delivery" stroke="#64748b" fontSize={10} tickLine={false} type="number" domain={[1, 'auto']} allowDecimals={false} />
+                            <YAxis stroke="#64748b" fontSize={10} tickLine={false} domain={[0, 'auto']} />
+                            <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', fontSize: '12px' }} />
+                            <ReferenceLine y={3} stroke="#4ade80" strokeDasharray="3 3" label={{ value: 'optimal', position: 'right', fill: '#4ade80', fontSize: 10 }} />
+                            {evalConfigs.filter(c => c.results.length > 0).map(config => (
+                              <Line key={config.id} data={config.results.map((r, i) => ({ delivery: i + 1, steps: r.steps }))} type="monotone" dataKey="steps" name={config.name} stroke={config.color} strokeWidth={2} dot={{ r: 2, fill: config.color }} />
+                            ))}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+
+                    {/* Cumulative Steps Chart */}
+                    {chartSettings.cumulativeSteps && (
+                      <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+                        <h3 className="text-sm font-semibold text-slate-300 mb-3">Cumulative Steps</h3>
+                        <ResponsiveContainer width="100%" height={200}>
+                          <LineChart>
+                            <XAxis dataKey="delivery" stroke="#64748b" fontSize={10} tickLine={false} type="number" domain={[1, 'auto']} allowDecimals={false} />
+                            <YAxis stroke="#64748b" fontSize={10} tickLine={false} />
+                            <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', fontSize: '12px' }} />
+                            {evalConfigs.filter(c => c.results.length > 0).map(config => {
+                              let cumulative = 0;
+                              const data = config.results.map((r, i) => {
+                                cumulative += r.steps;
+                                return { delivery: i + 1, cumSteps: cumulative };
+                              });
+                              return <Line key={config.id} data={data} type="monotone" dataKey="cumSteps" name={config.name} stroke={config.color} strokeWidth={2} dot={{ r: 2, fill: config.color }} />;
+                            })}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+
+                    {/* Path Efficiency Chart (using steps - lower is better, show as efficiency %) */}
+                    {chartSettings.pathEfficiency && (
+                      <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+                        <h3 className="text-sm font-semibold text-slate-300 mb-3">Path Efficiency (optimal=3 steps)</h3>
+                        <ResponsiveContainer width="100%" height={200}>
+                          <LineChart>
+                            <XAxis dataKey="delivery" stroke="#64748b" fontSize={10} tickLine={false} type="number" domain={[1, 'auto']} allowDecimals={false} />
+                            <YAxis stroke="#64748b" fontSize={10} tickLine={false} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                            <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', fontSize: '12px' }} formatter={(value) => [`${value}%`, 'Efficiency']} />
+                            <ReferenceLine y={90} stroke="#4ade80" strokeDasharray="3 3" label={{ value: '90%', position: 'right', fill: '#4ade80', fontSize: 10 }} />
+                            {evalConfigs.filter(c => c.results.length > 0).map(config => {
+                              const data = config.results.map((r, i) => ({
+                                delivery: i + 1,
+                                efficiency: Math.round(r.pathEfficiency * 100)
+                              }));
+                              return <Line key={config.id} data={data} type="monotone" dataKey="efficiency" name={config.name} stroke={config.color} strokeWidth={2} dot={{ r: 2, fill: config.color }} />;
+                            })}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+
+                    {/* Comparison Summary Bar Chart */}
+                    {chartSettings.comparisonSummary && (
+                      <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+                        <h3 className="text-sm font-semibold text-slate-300 mb-3">Performance Summary</h3>
+                        <ResponsiveContainer width="100%" height={200}>
+                          <BarChart data={evalConfigs.filter(c => c.results.length > 0).map(config => ({
+                            name: config.name,
+                            avgSteps: parseFloat((config.results.reduce((s, r) => s + r.steps, 0) / config.results.length).toFixed(1)),
+                            successRate: Math.round(config.results.filter(r => r.success).length / config.results.length * 100),
+                            fill: config.color
+                          }))}>
+                            <XAxis dataKey="name" stroke="#64748b" fontSize={10} tickLine={false} />
+                            <YAxis yAxisId="left" stroke="#64748b" fontSize={10} tickLine={false} />
+                            <YAxis yAxisId="right" orientation="right" stroke="#64748b" fontSize={10} tickLine={false} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                            <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569', borderRadius: '8px', fontSize: '12px' }} />
+                            <Legend wrapperStyle={{ fontSize: '10px' }} />
+                            <Bar yAxisId="left" dataKey="avgSteps" name="Avg Steps" fill="#3b82f6" />
+                            <Bar yAxisId="right" dataKey="successRate" name="Success %" fill="#22c55e" />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Results Table */}
                 <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
@@ -2301,9 +2760,10 @@ rather than searching the entire building each time.`;
                           <th className="text-left py-2 px-3">Config</th>
                           <th className="text-center py-2 px-3">Runs</th>
                           <th className="text-center py-2 px-3">Success</th>
-                          <th className="text-center py-2 px-3">Avg</th>
+                          <th className="text-center py-2 px-3">Avg Steps</th>
                           <th className="text-center py-2 px-3">Min</th>
                           <th className="text-center py-2 px-3">Max</th>
+                          <th className="text-center py-2 px-3">Efficiency</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2312,6 +2772,7 @@ rather than searching the entire building each time.`;
                           const avgSteps = config.results.reduce((sum, r) => sum + r.steps, 0) / config.results.length;
                           const minSteps = Math.min(...config.results.map(r => r.steps));
                           const maxSteps = Math.max(...config.results.map(r => r.steps));
+                          const avgEfficiency = Math.round(config.results.reduce((sum, r) => sum + r.pathEfficiency, 0) / config.results.length * 100);
                           return (
                             <tr key={config.id} className="border-t border-slate-700">
                               <td className="py-2 px-3">
@@ -2329,6 +2790,11 @@ rather than searching the entire building each time.`;
                               <td className="text-center py-2 px-3 font-mono text-slate-300">{avgSteps.toFixed(1)}</td>
                               <td className="text-center py-2 px-3 font-mono text-green-400">{minSteps}</td>
                               <td className="text-center py-2 px-3 font-mono text-red-400">{maxSteps}</td>
+                              <td className="text-center py-2 px-3">
+                                <span className={avgEfficiency >= 90 ? 'text-green-400' : avgEfficiency >= 50 ? 'text-yellow-400' : 'text-red-400'}>
+                                  {avgEfficiency}%
+                                </span>
+                              </td>
                             </tr>
                           );
                         })}

@@ -77,3 +77,8 @@ class EventType:
     # Mental model refresh events
     MODELS_REFRESHING = "models_refreshing"
     MODELS_REFRESHED = "models_refreshed"
+    # Benchmark-specific events
+    BENCHMARK_START = "benchmark_start"  # Benchmark run starting
+    BENCHMARK_PROGRESS = "benchmark_progress"  # Progress update
+    BENCHMARK_COMPLETE = "benchmark_complete"  # Benchmark finished with results
+    DELIVERY_START = "delivery_start"  # Individual delivery starting

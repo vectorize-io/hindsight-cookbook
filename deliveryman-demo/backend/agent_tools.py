@@ -765,3 +765,174 @@ def execute_tool(tools: AgentTools, tool_name: str, arguments: dict) -> str:
         return tools.exit_building()
     else:
         return f"Unknown tool: {tool_name}"
+
+
+# =============================================================================
+# Benchmark Mode Tools (memory and filesystem)
+# =============================================================================
+
+# Memory tools - for per-step memory queries (Hindsight modes)
+_MEMORY_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": "Query your memory for relevant information about the building, employees, or past deliveries. "
+                          "Use this to recall where employees work, building layout, or lessons from previous deliveries. "
+                          "This does NOT count against your step limit.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What to search for in memory (e.g., 'Where does Alice work?', 'What is on floor 3?')"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+]
+
+# Filesystem tools - for filesystem agent mode
+_FILESYSTEM_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_notes",
+            "description": "Read your personal notes file to recall information from previous deliveries. "
+                          "Returns the full contents of your notes. This does NOT count against your step limit.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_notes",
+            "description": "Save information to your personal notes file for future deliveries. "
+                          "This REPLACES all existing notes, so include everything you want to remember. "
+                          "Good things to note: employee locations, building layout, shortcuts discovered. "
+                          "This does NOT count against your step limit.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The full contents to save to your notes file"
+                    }
+                },
+                "required": ["content"]
+            }
+        }
+    },
+]
+
+
+def get_tool_definitions_with_memory(
+    difficulty: str = "easy",
+    include_memory: bool = False,
+    include_filesystem: bool = False,
+) -> list:
+    """Get tool definitions with optional memory/filesystem tools.
+
+    Args:
+        difficulty: Building difficulty level
+        include_memory: Include 'remember' tool for per-step memory queries
+        include_filesystem: Include 'read_notes'/'write_notes' tools
+
+    Returns:
+        List of tool definitions
+    """
+    base_tools = get_tool_definitions(difficulty)
+
+    if include_memory:
+        base_tools = base_tools + _MEMORY_TOOLS
+
+    if include_filesystem:
+        base_tools = base_tools + _FILESYSTEM_TOOLS
+
+    return base_tools
+
+
+class MemoryToolHandler:
+    """Handles memory tool calls (remember, read_notes, write_notes).
+
+    These tools don't count against the step limit and are executed
+    outside the normal tool execution flow.
+    """
+
+    # Class-level storage for filesystem mode notes (keyed by bank_id or session)
+    _notes_storage: dict[str, str] = {}
+
+    def __init__(self, recall_fn=None, notes_key: str = "default"):
+        """Initialize the memory tool handler.
+
+        Args:
+            recall_fn: Async function to call for memory recall (takes query string, returns context)
+            notes_key: Key for filesystem notes storage (e.g., bank_id)
+        """
+        self.recall_fn = recall_fn
+        self.notes_key = notes_key
+        self.query_count = 0
+
+    async def execute(self, tool_name: str, arguments: dict) -> tuple[str, bool]:
+        """Execute a memory tool.
+
+        Args:
+            tool_name: Name of the tool
+            arguments: Tool arguments
+
+        Returns:
+            Tuple of (result string, is_memory_tool)
+            - result: Tool execution result
+            - is_memory_tool: True if this was a memory tool (doesn't count as step)
+        """
+        if tool_name == "remember":
+            query = arguments.get("query", "")
+            if not query:
+                return "Please provide a query to search memory.", True
+
+            self.query_count += 1
+
+            if self.recall_fn:
+                try:
+                    result = await self.recall_fn(query)
+                    if result:
+                        return f"Memory recall:\n{result}", True
+                    else:
+                        return "No relevant memories found.", True
+                except Exception as e:
+                    return f"Error querying memory: {e}", True
+            else:
+                return "Memory not available in this mode.", True
+
+        elif tool_name == "read_notes":
+            notes = self._notes_storage.get(self.notes_key, "")
+            if notes:
+                return f"Your notes:\n{notes}", True
+            else:
+                return "Your notes file is empty. Use write_notes to save information.", True
+
+        elif tool_name == "write_notes":
+            content = arguments.get("content", "")
+            self._notes_storage[self.notes_key] = content
+            return f"Notes saved ({len(content)} characters).", True
+
+        return "", False  # Not a memory tool
+
+    @classmethod
+    def clear_notes(cls, notes_key: str = None):
+        """Clear notes storage.
+
+        Args:
+            notes_key: Specific key to clear, or None to clear all
+        """
+        if notes_key:
+            cls._notes_storage.pop(notes_key, None)
+        else:
+            cls._notes_storage.clear()
+
+    @classmethod
+    def get_notes(cls, notes_key: str) -> str:
+        """Get notes for a key."""
+        return cls._notes_storage.get(notes_key, "")

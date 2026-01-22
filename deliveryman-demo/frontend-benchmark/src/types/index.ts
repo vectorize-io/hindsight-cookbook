@@ -106,7 +106,14 @@ export type ServerEventType =
   | 'delivery_failed'
   | 'step_limit_reached'
   | 'cancelled'
-  | 'error';
+  | 'error'
+  // Benchmark events
+  | 'benchmark_start'
+  | 'benchmark_progress'
+  | 'benchmark_complete'
+  | 'delivery_start'
+  | 'models_refreshing'
+  | 'models_refreshed';
 
 export interface ServerEvent<T = unknown> {
   type: ServerEventType;
@@ -115,3 +122,153 @@ export interface ServerEvent<T = unknown> {
 
 // Mode
 export type Mode = 'ui' | 'ff' | 'eval';
+
+// =============================================================================
+// Benchmark Types
+// =============================================================================
+
+// Agent modes for benchmarking
+export type AgentMode =
+  | 'no_memory'  // Stateless baseline
+  | 'filesystem'  // Agent manages own notes
+  | 'recall'  // Hindsight recall - raw facts
+  | 'reflect'  // Hindsight reflect - LLM synthesis
+  | 'hindsight_mm'  // Mental models with wait
+  | 'hindsight_mm_nowait';  // Mental models without wait
+
+// Memory query mode
+export type MemoryQueryMode = 'inject_once' | 'per_step' | 'both';
+
+// Include business option
+export type IncludeBusiness = 'always' | 'never' | 'random';
+
+// Benchmark configuration
+export interface BenchmarkConfig {
+  mode: AgentMode;
+  model: string;
+  numDeliveries: number;
+  repeatRatio: number;  // 0.0-1.0
+  pairedMode: boolean;  // Each office visited exactly 2x
+  includeBusiness: IncludeBusiness;
+  stepMultiplier: number;  // max_steps = optimal * multiplier
+  minSteps: number;
+  memoryQueryMode: MemoryQueryMode;
+  waitForConsolidation: boolean;
+  refreshInterval: number;  // 0 = disabled
+  difficulty: string;
+  seed?: number;  // For reproducibility
+}
+
+// Token usage
+export interface TokenUsage {
+  prompt: number;
+  completion: number;
+  total: number;
+}
+
+// Metrics for a single delivery
+export interface DeliveryMetrics {
+  deliveryId: number;
+  recipient: string;
+  business?: string;
+  success: boolean;
+  stepsTaken: number;
+  optimalSteps: number;
+  pathEfficiency: number;
+  tokens: TokenUsage;
+  latencyMs: number;
+  memoryInjected: boolean;
+  memoryQueryCount: number;
+  consolidationTriggered: boolean;
+  isRepeat: boolean;
+}
+
+// Benchmark results summary
+export interface BenchmarkSummary {
+  totalDeliveries: number;
+  successfulDeliveries: number;
+  failedDeliveries: number;
+  successRate: number;
+  totalSteps: number;
+  totalOptimalSteps: number;
+  avgPathEfficiency: number;
+  totalTokens: TokenUsage;
+  totalLatencyMs: number;
+  avgLatencyMs: number;
+}
+
+// Learning metrics
+export interface LearningMetrics {
+  convergenceEpisode: number;  // First episode with >= 90% efficiency
+  firstHalfEfficiency: number;
+  secondHalfEfficiency: number;
+  improvement: number;  // second - first
+}
+
+// Time series data
+export interface TimeSeries {
+  efficiencyByEpisode: number[];
+  tokensByEpisode: number[];
+}
+
+// Complete benchmark results
+export interface BenchmarkResults {
+  config: {
+    mode: AgentMode;
+    model: string;
+    numDeliveries: number;
+    repeatRatio: number;
+    pairedMode: boolean;
+    difficulty: string;
+    refreshInterval: number;
+  };
+  summary: BenchmarkSummary;
+  learning: LearningMetrics;
+  timeSeries: TimeSeries;
+  deliveries: DeliveryMetrics[];
+}
+
+// Agent mode info for display
+export interface AgentModeInfo {
+  id: AgentMode;
+  name: string;
+  description: string;
+}
+
+// Benchmark preset
+export interface BenchmarkPreset {
+  id: string;
+  name: string;
+  description: string;
+  config: Partial<BenchmarkConfig>;
+}
+
+// WebSocket benchmark events
+export type BenchmarkEventType =
+  | 'benchmark_start'
+  | 'benchmark_progress'
+  | 'benchmark_complete'
+  | 'delivery_start'
+  | 'models_refreshing'
+  | 'models_refreshed';
+
+export interface BenchmarkStartPayload {
+  mode: AgentMode;
+  numDeliveries: number;
+  difficulty: string;
+}
+
+export interface BenchmarkProgressPayload {
+  completed: number;
+  total: number;
+  currentEfficiency: number;
+  avgEfficiency: number;
+}
+
+export interface DeliveryStartPayload {
+  deliveryId: number;
+  recipient: string;
+  business?: string;
+  isRepeat: boolean;
+  progress: string;
+}

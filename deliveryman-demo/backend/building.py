@@ -663,3 +663,228 @@ def reset_building(difficulty: str = None):
             del _building_instances[difficulty]
     else:
         _building_instances = {}
+
+
+# =============================================================================
+# Optimal Path Calculation (for benchmarking efficiency)
+# =============================================================================
+
+def compute_optimal_steps_easy(target_floor: int, target_side: Side) -> int:
+    """Compute optimal steps for easy mode (single building with front/back).
+
+    Starting position: Floor 1, Front side.
+
+    Actions and their costs:
+    - go_up/go_down: 1 step (ends in middle)
+    - go_to_front/go_to_back: 1 step
+    - deliver_package: 1 step
+
+    Args:
+        target_floor: Target floor number (1-3)
+        target_side: Target side (FRONT or BACK)
+
+    Returns:
+        Minimum number of steps to reach target and deliver
+    """
+    steps = 0
+
+    # Starting: Floor 1, Front
+    current_floor = 1
+    current_side = Side.FRONT
+
+    # Move to target floor
+    floor_diff = abs(target_floor - current_floor)
+    if floor_diff > 0:
+        # Each floor change costs 1 step and ends in middle
+        steps += floor_diff
+        current_side = Side.MIDDLE
+
+    # Move to target side if needed
+    if current_side != target_side:
+        steps += 1
+
+    # Deliver package
+    steps += 1
+
+    return steps
+
+
+def compute_optimal_steps_medium(target_floor: int, target_building: Side) -> int:
+    """Compute optimal steps for medium mode (3 buildings with bridge at floor 3).
+
+    Starting position: Building A, Floor 1.
+
+    Actions and their costs:
+    - go_up/go_down: 1 step
+    - cross_bridge: 1 step (only on floor 3)
+    - go_to_building: 1 step (only on floor 1)
+    - deliver_package: 1 step
+
+    Args:
+        target_floor: Target floor number (1-4)
+        target_building: Target building (BUILDING_A, BUILDING_B, or BUILDING_C)
+
+    Returns:
+        Minimum number of steps to reach target and deliver
+    """
+    steps = 0
+
+    # Starting: Building A, Floor 1
+    current_floor = 1
+    current_building = Side.BUILDING_A
+
+    # If we need to change buildings, consider two strategies:
+    # 1. Go to floor 1 and use ground passage
+    # 2. Go to floor 3 and use bridge
+
+    if current_building != target_building:
+        # Strategy 1: Ground passage (floor 1)
+        steps_ground = abs(current_floor - 1) + 1  # Go to floor 1 + cross ground passage
+
+        # Strategy 2: Bridge (floor 3)
+        steps_bridge = abs(current_floor - 3) + 1  # Go to floor 3 + cross bridge
+
+        # Choose the better strategy
+        if steps_ground <= steps_bridge:
+            # Use ground passage
+            steps += abs(current_floor - 1)  # Go to floor 1
+            steps += 1  # Cross ground passage
+            current_floor = 1
+        else:
+            # Use bridge
+            steps += abs(current_floor - 3)  # Go to floor 3
+            steps += 1  # Cross bridge
+            current_floor = 3
+
+        current_building = target_building
+
+    # Move to target floor
+    steps += abs(target_floor - current_floor)
+
+    # Deliver package
+    steps += 1
+
+    return steps
+
+
+def compute_optimal_steps_hard(target_row: int, target_col: int, target_floor: int) -> int:
+    """Compute optimal steps for hard mode (city grid with buildings).
+
+    Starting position: Grid (0, 0), on street in front of Tech Corp.
+
+    Navigation rules:
+    - Can only move north/south on roads (odd columns)
+    - Can move east/west from any position
+    - Buildings are at even columns
+    - Must enter building to access floors
+
+    Actions and their costs:
+    - move_north/south/east/west: 1 step each
+    - enter_building: 1 step (enters at floor 1)
+    - go_up/go_down: 1 step
+    - deliver_package: 1 step
+
+    Args:
+        target_row: Target grid row (0-2)
+        target_col: Target grid column (0, 2, 4, or 6 for buildings)
+        target_floor: Target floor within the building (1-4)
+
+    Returns:
+        Minimum number of steps to reach target and deliver
+    """
+    steps = 0
+
+    # Starting: Grid (0, 0), on street (in front of Tech Corp at even column 0)
+    current_row = 0
+    current_col = 0
+
+    # Navigate to target building position
+    # Buildings are at even columns: 0, 2, 4, 6
+    # Roads are at odd columns: 1, 3, 5
+
+    # Horizontal movement (east/west)
+    col_diff = abs(target_col - current_col)
+    steps += col_diff
+    current_col = target_col
+
+    # Vertical movement (north/south) - must be on a road
+    if current_row != target_row:
+        # If at a building, move to adjacent road first
+        if current_col % 2 == 0:  # At building
+            steps += 1  # Move east to road
+            current_col += 1
+
+        # Move north/south
+        row_diff = abs(target_row - current_row)
+        steps += row_diff
+        current_row = target_row
+
+        # Move back to building column
+        steps += 1  # Move west to building
+        current_col = target_col
+
+    # Enter building
+    steps += 1
+
+    # Move to target floor (entering puts us at floor 1)
+    steps += abs(target_floor - 1)
+
+    # Deliver package
+    steps += 1
+
+    return steps
+
+
+def compute_optimal_steps(building: Building, recipient_name: str) -> int:
+    """Compute the optimal number of steps to deliver to a recipient.
+
+    Args:
+        building: The building to navigate
+        recipient_name: Name of the recipient
+
+    Returns:
+        Optimal number of steps, or -1 if recipient not found
+    """
+    # Find the recipient
+    found = building.find_employee(recipient_name)
+    if not found:
+        return -1
+
+    business, employee = found
+
+    if building.is_city_grid:
+        # Hard mode: find building location on grid
+        for emp_name, (building_name, biz, emp) in building.city_grid.all_employees.items():
+            if emp_name.lower() == recipient_name.lower():
+                city_building = building.city_grid.get_building_by_name(building_name)
+                if city_building:
+                    return compute_optimal_steps_hard(
+                        city_building.row,
+                        city_building.col,
+                        biz.floor
+                    )
+        return -1
+
+    elif building.is_multi_building:
+        # Medium mode
+        return compute_optimal_steps_medium(business.floor, business.side)
+
+    else:
+        # Easy mode
+        return compute_optimal_steps_easy(business.floor, business.side)
+
+
+def compute_path_efficiency(actual_steps: int, optimal_steps: int) -> float:
+    """Compute path efficiency as a ratio.
+
+    Args:
+        actual_steps: Number of steps actually taken
+        optimal_steps: Optimal number of steps
+
+    Returns:
+        Efficiency ratio (1.0 = optimal, lower = worse)
+        Returns 0.0 if optimal_steps is 0 or negative
+    """
+    if optimal_steps <= 0 or actual_steps <= 0:
+        return 0.0
+    return min(1.0, optimal_steps / actual_steps)

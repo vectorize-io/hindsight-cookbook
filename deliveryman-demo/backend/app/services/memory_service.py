@@ -117,18 +117,15 @@ def configure_memory(bank_id: str = None, set_background: bool = True, app_type:
     )
 
     # Configure static settings (API URL, storage options, etc.)
+    # Note: bank_id is tracked locally and passed to each call
     hindsight_litellm.configure(
         hindsight_api_url=HINDSIGHT_API_URL,
+        bank_id=new_bank_id,  # Set default bank_id
         store_conversations=False,  # We store manually after delivery
         inject_memories=False,  # We inject manually using recall/reflect
-        verbose=True,
-    )
-
-    # Set per-call defaults (bank_id, budget, reflect settings)
-    hindsight_litellm.set_defaults(
-        bank_id=new_bank_id,
+        recall_budget="high",  # Use high budget for better memory retrieval
         use_reflect=True,  # Use reflect for intelligent memory synthesis
-        budget="high",  # Use high budget for better memory retrieval
+        verbose=True,
     )
 
     # Enable the integration
@@ -165,35 +162,48 @@ def set_bank_id(bank_id: str, set_background: bool = True, add_to_history: bool 
     _app_bank_ids[key] = bank_id
     _current_app_type = app
     _current_difficulty = diff
-    # Update the defaults' bank_id
-    hindsight_litellm.set_defaults(bank_id=bank_id)
+
+    # Reconfigure hindsight with the new bank_id
+    hindsight_litellm.configure(
+        hindsight_api_url=HINDSIGHT_API_URL,
+        bank_id=bank_id,
+        store_conversations=False,
+        inject_memories=False,
+        recall_budget="high",
+        use_reflect=True,
+        verbose=True,
+    )
 
     if add_to_history:
         _add_to_history(bank_id, app, diff)
 
     if set_background:
-        try:
-            hindsight_litellm.set_bank_mission(mission=BANK_MISSION)
-            print(f"Bank mission set for: {bank_id}")
-        except Exception as e:
-            print(f"Warning: Failed to set bank mission: {e}")
+        # Set mission via HTTP API (async-safe)
+        set_bank_mission_sync(bank_id, BANK_MISSION)
+        print(f"Bank mission set for: {bank_id}")
 
 
-def set_bank_mission_async(mission: str = None):
-    """Set bank mission in a thread pool to avoid event loop issues.
+def set_bank_mission_sync(bank_id: str, mission: str = None):
+    """Set bank mission via HTTP API (synchronous).
 
-    This is a fire-and-forget operation that won't block.
+    Args:
+        bank_id: The bank ID to set mission for
+        mission: The mission text (defaults to BANK_MISSION)
     """
     m = mission or BANK_MISSION
-    def _set_mission():
-        try:
-            hindsight_litellm.set_bank_mission(mission=m)
-            bank_id = get_bank_id()
-            print(f"Bank mission set for: {bank_id}")
-        except Exception as e:
-            print(f"Warning: Failed to set bank mission: {e}")
-
-    _executor.submit(_set_mission)
+    try:
+        client = _get_http_client()
+        # Use PATCH on the bank endpoint to update mission
+        response = client.patch(
+            f"/v1/default/banks/{bank_id}",
+            json={"mission": m}
+        )
+        if response.status_code == 200:
+            print(f"[MEMORY] Bank mission set for: {bank_id}")
+        else:
+            print(f"[MEMORY] Failed to set bank mission: {response.status_code}")
+    except Exception as e:
+        print(f"[MEMORY] Failed to set bank mission: {e}")
 
 
 def ensure_bank_exists(app_type: str = None, difficulty: str = None) -> bool:
@@ -213,9 +223,19 @@ def ensure_bank_exists(app_type: str = None, difficulty: str = None) -> bool:
         return False
 
 
+# Current document ID for grouping related memories
+_current_document_id: str | None = None
+
+
 def set_document_id(document_id: str):
     """Set the document_id for grouping memories per delivery."""
-    hindsight_litellm.set_document_id(document_id)
+    global _current_document_id
+    _current_document_id = document_id
+
+
+def get_document_id() -> str | None:
+    """Get the current document_id."""
+    return _current_document_id
 
 
 def completion_sync(**kwargs):
@@ -268,7 +288,6 @@ async def retain_async(content: str, context: str = None, document_id: str = Non
                 content,
                 context=context,
                 document_id=document_id,
-                sync=True
             )
             print(f"[MEMORY] retain completed successfully", flush=True)
             return result
@@ -403,7 +422,16 @@ def set_active_app(app_type: str, difficulty: str = None):
     key = _get_bank_key(app_type, _current_difficulty)
     bank_id = _app_bank_ids.get(key)
     if bank_id:
-        hindsight_litellm.set_defaults(bank_id=bank_id)
+        # Reconfigure hindsight with the new bank_id
+        hindsight_litellm.configure(
+            hindsight_api_url=HINDSIGHT_API_URL,
+            bank_id=bank_id,
+            store_conversations=False,
+            inject_memories=False,
+            recall_budget="high",
+            use_reflect=True,
+            verbose=True,
+        )
         print(f"Switched to app {app_type} (difficulty: {_current_difficulty}) with bank: {bank_id}")
 
 
@@ -427,7 +455,16 @@ def set_difficulty(difficulty: str, app_type: str = None) -> str:
     # Check if we already have a bank for this app+difficulty
     if key in _app_bank_ids:
         bank_id = _app_bank_ids[key]
-        hindsight_litellm.set_defaults(bank_id=bank_id)
+        # Reconfigure hindsight with the existing bank_id
+        hindsight_litellm.configure(
+            hindsight_api_url=HINDSIGHT_API_URL,
+            bank_id=bank_id,
+            store_conversations=False,
+            inject_memories=False,
+            recall_budget="high",
+            use_reflect=True,
+            verbose=True,
+        )
         print(f"Switched to existing bank for {app}:{difficulty} - {bank_id}")
         return bank_id
 
@@ -498,8 +535,9 @@ def set_bank_mission(bank_id: str = None, mission: str = None) -> dict:
     client = _get_http_client()
 
     try:
-        response = client.put(
-            f"/v1/default/banks/{bid}/mission",
+        # Use PATCH on the bank endpoint to update mission
+        response = client.patch(
+            f"/v1/default/banks/{bid}",
             json={"mission": mission_text}
         )
         response.raise_for_status()
@@ -521,81 +559,110 @@ async def set_bank_mission_async(bank_id: str = None, mission: str = None) -> di
 
 
 def refresh_mental_models(bank_id: str = None, subtype: str = None, sync: bool = True, poll_interval: float = 0.5, timeout: float = 60.0) -> dict:
-    """Refresh mental models for a bank.
+    """Trigger consolidation to create/update mental models for a bank.
 
     This triggers the Hindsight backend to analyze memories and create/update
     mental models based on the bank's mission and stored experiences.
 
+    Uses the new /consolidate endpoint from benchmark-mm branch.
+
     Args:
         bank_id: Bank ID (uses current if not provided)
-        subtype: Optional subtype filter ('structural' or 'emergent')
-        sync: If True, poll until refresh completes before returning (default: True)
+        subtype: Optional subtype filter (currently unused in consolidate API)
+        sync: If True, wait for consolidation to complete before returning (default: True)
         poll_interval: Seconds between status polls when sync=True (default: 0.5)
         timeout: Maximum seconds to wait when sync=True (default: 60.0)
 
     Returns:
-        Response with operation status
+        Response with consolidation results:
+        - status: 'completed' or 'queued'
+        - created: number of mental models created
+        - updated: number of mental models updated
+        - message: human-readable status message
     """
     import time
 
     bid = bank_id or get_bank_id()
     if not bid:
-        print("[MEMORY] Cannot refresh mental models: no bank_id")
+        print("[MEMORY] Cannot trigger consolidation: no bank_id")
         return {}
 
     client = _get_http_client()
-    body = {}
-    if subtype:
-        body["subtype"] = subtype
 
     try:
-        # Submit the refresh operation
-        response = client.post(
-            f"/v1/default/banks/{bid}/mental-models/refresh",
-            json=body if body else None,
-        )
+        # Trigger consolidation using the new endpoint
+        response = client.post(f"/v1/default/banks/{bid}/consolidate")
         response.raise_for_status()
         result = response.json()
+
+        status = result.get("status", "unknown")
+        created = result.get("created", 0)
+        updated = result.get("updated", 0)
+        message = result.get("message", "")
         operation_id = result.get("operation_id")
-        print(f"[MEMORY] Mental models refresh triggered for {bid}, operation_id: {operation_id}")
 
-        if not sync or not operation_id:
-            return result
+        print(f"[MEMORY] Consolidation triggered for {bid}: status={status}, created={created}, updated={updated}")
 
-        # Poll for completion
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            time.sleep(poll_interval)
-            try:
-                status_response = client.get(
-                    f"/v1/default/banks/{bid}/operations/{operation_id}"
-                )
-                status_response.raise_for_status()
-                status = status_response.json()
-                op_status = status.get("status")
-                print(f"[MEMORY] Refresh operation {operation_id} status: {op_status}")
+        # If status is 'completed', we're done immediately
+        if status == "completed":
+            return {
+                "success": True,
+                "status": "completed",
+                "created": created,
+                "updated": updated,
+                "message": message,
+            }
 
-                if op_status == "completed":
-                    print(f"[MEMORY] Mental models refresh completed for {bid}")
-                    return {"success": True, "operation_id": operation_id, "status": "completed"}
-                elif op_status == "failed":
-                    error_msg = status.get("error_message", "Unknown error")
-                    print(f"[MEMORY] Mental models refresh failed for {bid}: {error_msg}")
-                    return {"success": False, "operation_id": operation_id, "status": "failed", "error": error_msg}
-                elif op_status == "not_found":
-                    # Operation completed and was removed from storage
-                    print(f"[MEMORY] Mental models refresh completed for {bid} (operation cleaned up)")
-                    return {"success": True, "operation_id": operation_id, "status": "completed"}
-                # Still pending, continue polling
-            except Exception as poll_error:
-                print(f"[MEMORY] Error polling operation status: {poll_error}")
+        # If status is 'queued' and we want sync, poll for completion
+        if sync and operation_id:
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                time.sleep(poll_interval)
+                try:
+                    status_response = client.get(
+                        f"/v1/default/banks/{bid}/operations/{operation_id}"
+                    )
+                    status_response.raise_for_status()
+                    op_status = status_response.json()
+                    current_status = op_status.get("status")
+                    print(f"[MEMORY] Consolidation operation {operation_id} status: {current_status}")
 
-        print(f"[MEMORY] Mental models refresh timed out after {timeout}s for {bid}")
-        return {"success": False, "operation_id": operation_id, "status": "timeout"}
+                    if current_status == "completed":
+                        print(f"[MEMORY] Consolidation completed for {bid}")
+                        return {
+                            "success": True,
+                            "status": "completed",
+                            "operation_id": operation_id,
+                            "created": op_status.get("created", created),
+                            "updated": op_status.get("updated", updated),
+                        }
+                    elif current_status == "failed":
+                        error_msg = op_status.get("error_message", "Unknown error")
+                        print(f"[MEMORY] Consolidation failed for {bid}: {error_msg}")
+                        return {"success": False, "status": "failed", "error": error_msg}
+                    elif current_status == "not_found":
+                        # Operation completed and was removed from storage
+                        print(f"[MEMORY] Consolidation completed for {bid} (operation cleaned up)")
+                        return {"success": True, "status": "completed", "operation_id": operation_id}
+                except Exception as poll_error:
+                    print(f"[MEMORY] Error polling operation status: {poll_error}")
+
+            print(f"[MEMORY] Consolidation timed out after {timeout}s for {bid}")
+            return {"success": False, "status": "timeout", "operation_id": operation_id}
+
+        # Return queued status without waiting
+        return {
+            "success": True,
+            "status": status,
+            "operation_id": operation_id,
+            "created": created,
+            "updated": updated,
+            "message": message,
+        }
 
     except Exception as e:
-        print(f"[MEMORY] Failed to refresh mental models: {e}")
-        return {}
+        print(f"[MEMORY] Failed to trigger consolidation: {e}")
+        return {"success": False, "error": str(e)}
 
 
 async def refresh_mental_models_async(bank_id: str = None, subtype: str = None) -> dict:
@@ -848,4 +915,86 @@ async def delete_mental_model_async(bank_id: str = None, model_id: str = None) -
     return await loop.run_in_executor(
         _executor,
         lambda: delete_mental_model(bank_id, model_id)
+    )
+
+
+def clear_mental_models(bank_id: str = None) -> dict:
+    """Clear all mental models for a bank.
+
+    This is useful for resetting the consolidated knowledge before starting
+    a new benchmark run.
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+
+    Returns:
+        Response with deletion status
+    """
+    bid = bank_id or get_bank_id()
+    if not bid:
+        print("[MEMORY] Cannot clear mental models: no bank_id")
+        return {"success": False, "error": "No bank_id"}
+
+    client = _get_http_client()
+
+    try:
+        response = client.delete(f"/v1/default/banks/{bid}/mental-models")
+        response.raise_for_status()
+        result = response.json()
+        deleted_count = result.get("deleted", 0)
+        print(f"[MEMORY] Cleared {deleted_count} mental models from {bid}")
+        return {"success": True, "deleted": deleted_count}
+    except Exception as e:
+        print(f"[MEMORY] Failed to clear mental models: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def clear_mental_models_async(bank_id: str = None) -> dict:
+    """Async version of clear_mental_models."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: clear_mental_models(bank_id)
+    )
+
+
+def get_bank_stats(bank_id: str = None) -> dict:
+    """Get statistics for a memory bank including consolidation status.
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+
+    Returns:
+        Bank statistics including:
+        - total_nodes: Total number of memory nodes
+        - total_links: Total number of links
+        - total_documents: Total documents stored
+        - pending_consolidation: Memories not yet processed into mental models
+        - total_mental_models: Total number of mental models
+        - last_consolidated_at: When consolidation last ran
+    """
+    bid = bank_id or get_bank_id()
+    if not bid:
+        print("[MEMORY] Cannot get bank stats: no bank_id")
+        return {}
+
+    client = _get_http_client()
+
+    try:
+        response = client.get(f"/v1/default/banks/{bid}/stats")
+        response.raise_for_status()
+        result = response.json()
+        print(f"[MEMORY] Got stats for {bid}: {result.get('total_nodes', 0)} nodes, {result.get('total_mental_models', 0)} mental models")
+        return result
+    except Exception as e:
+        print(f"[MEMORY] Failed to get bank stats: {e}")
+        return {}
+
+
+async def get_bank_stats_async(bank_id: str = None) -> dict:
+    """Async version of get_bank_stats."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: get_bank_stats(bank_id)
     )

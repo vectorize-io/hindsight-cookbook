@@ -53,7 +53,7 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   const isAnimatingRef = useRef(false);
 
   // Process next move in queue
-  const processNextMove = useCallback((customDelay?: number) => {
+  const processNextMove = useCallback((_customDelay?: number) => {
     // First check grid queue (hard mode city navigation)
     if (gridQueueRef.current.length > 0) {
       isAnimatingRef.current = true;
