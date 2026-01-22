@@ -263,6 +263,7 @@ const analysis = await reflectOnMemory(
 | `HINDSIGHT_BANK_ID` | Memory bank identifier | `blog-memory` |
 | `SANITY_PROJECT_ID` | Your Sanity project ID | (required) |
 | `SANITY_DATASET` | Sanity dataset name | `production` |
+| `SANITY_API_TOKEN` | Sanity API token (for private datasets) | (none) |
 | `SANITY_API_VERSION` | Sanity API version | `2024-01-09` |
 | `SITE_URL` | Your blog's base URL | `https://example.com` |
 
