@@ -2,7 +2,7 @@
  * Sanity CMS Client
  * Fetches blog posts from Sanity for syncing to Hindsight memory
  */
-import { createClient, type QueryParams } from '@sanity/client';
+import { createClient } from '@sanity/client';
 import 'dotenv/config';
 
 // Initialize Sanity client
@@ -10,6 +10,7 @@ export const sanityClient = createClient({
   projectId: process.env.SANITY_PROJECT_ID!,
   dataset: process.env.SANITY_DATASET || 'production',
   apiVersion: process.env.SANITY_API_VERSION || '2024-01-09',
+  token: process.env.SANITY_API_TOKEN,  // Optional: for authenticated requests
   useCdn: false, // Disabled for real-time updates
 });
 
@@ -86,8 +87,7 @@ export async function getAllPosts(): Promise<BlogPost[]> {
  */
 export async function getPostBySlug(slug: string): Promise<BlogPost | null> {
   const query = `*[_type == "post" && slug.current == $slug][0] {${postFields}}`;
-  const params: QueryParams = { slug };
-  const post = await sanityClient.fetch<SanityPost | null>(query, params);
+  const post = await sanityClient.fetch<SanityPost | null>(query, { slug });
   return post ? transformPost(post) : null;
 }
 
@@ -96,8 +96,7 @@ export async function getPostBySlug(slug: string): Promise<BlogPost | null> {
  */
 export async function getPostsByTag(tag: string): Promise<BlogPost[]> {
   const query = `*[_type == "post" && $tag in tags && draft != true] | order(date desc) {${postFields}}`;
-  const params: QueryParams = { tag };
-  const posts = await sanityClient.fetch<SanityPost[]>(query, params);
+  const posts = await sanityClient.fetch<SanityPost[]>(query, { tag } as Record<string, string>);
   return posts.map(transformPost);
 }
 
@@ -110,7 +109,6 @@ export async function getPostsByDateRange(
   endDate: string
 ): Promise<BlogPost[]> {
   const query = `*[_type == "post" && date >= $startDate && date <= $endDate && draft != true] | order(date desc) {${postFields}}`;
-  const params: QueryParams = { startDate, endDate };
-  const posts = await sanityClient.fetch<SanityPost[]>(query, params);
+  const posts = await sanityClient.fetch<SanityPost[]>(query, { startDate, endDate } as Record<string, string>);
   return posts.map(transformPost);
 }
