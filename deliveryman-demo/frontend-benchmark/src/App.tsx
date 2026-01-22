@@ -926,6 +926,7 @@ rather than searching the entire building each time.`;
 
           return {
             config: {
+              name: config.name,
               mode: config.memoryMode,
               model: config.model,
               numDeliveries: results.length,
@@ -957,28 +958,35 @@ rather than searching the entire building each time.`;
               tokensByEpisode,
               latencyByEpisode,
             },
-            deliveries: results.map((r, i) => ({
-              deliveryId: i + 1,
-              recipient: r.recipientName,
-              business: null,
-              success: r.success,
-              stepsTaken: r.steps,
-              optimalSteps: r.optimalSteps,
-              pathEfficiency: r.pathEfficiency,
-              tokens: r.tokens,
-              latencyMs: r.latencyMs,
-              memoryInjected: r.memoryInjected,
-              memoryQueryCount: r.memoryInjected ? 1 : 0,
-              consolidationTriggered: false,
-              isRepeat: r.isRepeat || false,
-              // New fields for eval parity
-              apiCalls: r.apiCalls || 0,
-              wrongTurns: r.wrongTurns || 0,
-              path: r.path || [],
-              mentalModelCount: r.mentalModelCount || 0,
-              mentalModelObservations: r.mentalModelObservations || 0,
-              buildingCoverage: r.buildingCoverage || 0,
-            })),
+            deliveries: results.map((r, i) => {
+              const delivery: Record<string, unknown> = {
+                deliveryId: i + 1,
+                recipient: r.recipientName,
+                business: null,
+                success: r.success,
+                stepsTaken: r.steps,
+                optimalSteps: r.optimalSteps,
+                pathEfficiency: r.pathEfficiency,
+                tokens: r.tokens,
+                latencyMs: r.latencyMs,
+                memoryInjected: r.memoryInjected,
+                memoryQueryCount: r.memoryInjected ? 1 : 0,
+                consolidationTriggered: false,
+                isRepeat: r.isRepeat || false,
+                // New fields for eval parity
+                apiCalls: r.apiCalls || 0,
+                wrongTurns: r.wrongTurns || 0,
+                path: r.path || [],
+                mentalModelCount: r.mentalModelCount || 0,
+                mentalModelObservations: r.mentalModelObservations || 0,
+                buildingCoverage: r.buildingCoverage || 0,
+              };
+              // Include actions if saveAllSteps is enabled
+              if (saveAllSteps && r.actions) {
+                delivery.actions = r.actions;
+              }
+              return delivery;
+            }),
           };
         });
 
@@ -989,6 +997,7 @@ rather than searching the entire building each time.`;
             body: JSON.stringify({
               results: resultsToSave,
               generateCharts: chartSettings.enabled,
+              saveDetailedLogs: saveAllSteps,
             }),
           });
           const saveResult = await saveRes.json();
@@ -2386,9 +2395,14 @@ rather than searching the entire building each time.`;
                         className="w-4 h-4 rounded"
                       />
                       <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: config.color }} />
-                      <span className="flex-1 text-slate-300 text-sm font-medium truncate">
-                        {config.name}
-                      </span>
+                      <input
+                        type="text"
+                        value={config.name}
+                        onChange={(e) => updateEvalConfig(config.id, { name: e.target.value })}
+                        disabled={ffRunning}
+                        className="flex-1 bg-transparent text-slate-300 text-sm font-medium truncate border-b border-transparent hover:border-slate-600 focus:border-blue-500 focus:outline-none px-0.5"
+                        placeholder="Config name"
+                      />
                       {evalConfigs.length > 1 && (
                         <button
                           onClick={() => removeEvalConfig(config.id)}

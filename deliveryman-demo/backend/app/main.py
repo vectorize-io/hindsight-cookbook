@@ -815,6 +815,7 @@ class SaveBenchmarkRequest(BaseModel):
     """Request to save benchmark results."""
     results: List[BenchmarkResultData]
     generateCharts: bool = True
+    saveDetailedLogs: bool = False  # Save per-delivery action logs in config subdirectories
     runName: Optional[str] = None  # Optional custom name for the run
 
 
@@ -822,14 +823,12 @@ class SaveBenchmarkRequest(BaseModel):
 async def save_benchmark_results(request: SaveBenchmarkRequest):
     """Save benchmark results to disk with optional chart generation.
 
-    Saves:
-    - JSON file with all results: {run_name}.json
-    - Dashboard SVG for each config: {run_name}_{mode}_dashboard.svg
-    - Comparison SVG if multiple configs: {run_name}_comparison.svg
+    Saves to results/{run_name}/ directory:
+    - results.json - All benchmark results (summary, without action logs)
+    - {config_name}/delivery_{n}.json - Detailed logs for each delivery (if saveDetailedLogs=true)
+    - {mode}_dashboard.svg - Dashboard for each config
+    - comparison.svg - Comparison chart if multiple configs
     """
-    # Create results directory if it doesn't exist
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
     # Generate run name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = request.runName or f"benchmark_{timestamp}"
@@ -837,18 +836,82 @@ async def save_benchmark_results(request: SaveBenchmarkRequest):
     # Sanitize run name for filesystem
     run_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in run_name)
 
+    # Create subdirectory for this benchmark run
+    run_dir = RESULTS_DIR / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
     saved_files = []
 
     # Convert results to dicts
     results_dicts = [r.model_dump() for r in request.results]
 
-    # Save JSON results
-    json_path = RESULTS_DIR / f"{run_name}.json"
+    # If saving detailed logs, extract actions and save to per-config subdirectories
+    if request.saveDetailedLogs:
+        for result in results_dicts:
+            # Get config name, fallback to mode
+            config_name = result["config"].get("name") or result["config"].get("mode", "unknown")
+            # Sanitize config name for filesystem
+            config_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in config_name)
+
+            # Create config subdirectory
+            config_dir = run_dir / config_name
+            config_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save each delivery's detailed log
+            for i, delivery in enumerate(result.get("deliveries", []), start=1):
+                if delivery.get("actions"):
+                    delivery_log = {
+                        "deliveryId": delivery.get("deliveryId", i),
+                        "recipient": delivery.get("recipient"),
+                        "business": delivery.get("business"),
+                        "success": delivery.get("success"),
+                        "stepsTaken": delivery.get("stepsTaken"),
+                        "optimalSteps": delivery.get("optimalSteps"),
+                        "pathEfficiency": delivery.get("pathEfficiency"),
+                        "path": delivery.get("path"),
+                        "tokens": delivery.get("tokens"),
+                        "latencyMs": delivery.get("latencyMs"),
+                        "actions": delivery.get("actions"),
+                    }
+                    log_path = config_dir / f"delivery_{i:03d}.json"
+                    with open(log_path, "w") as f:
+                        json.dump(delivery_log, f, indent=2)
+                    saved_files.append(str(log_path))
+
+            # Also save config summary in the config directory
+            config_summary = {
+                "config": result["config"],
+                "summary": result["summary"],
+                "learning": result["learning"],
+            }
+            summary_path = config_dir / "summary.json"
+            with open(summary_path, "w") as f:
+                json.dump(config_summary, f, indent=2)
+            saved_files.append(str(summary_path))
+
+    # Create summary results without action logs for main results.json
+    summary_results = []
+    for result in results_dicts:
+        summary_result = {
+            "config": result["config"],
+            "summary": result["summary"],
+            "learning": result["learning"],
+            "timeSeries": result["timeSeries"],
+            # Strip actions from deliveries for summary
+            "deliveries": [
+                {k: v for k, v in d.items() if k != "actions"}
+                for d in result.get("deliveries", [])
+            ],
+        }
+        summary_results.append(summary_result)
+
+    # Save JSON results (summary without action logs)
+    json_path = run_dir / "results.json"
     json_data = {
         "savedAt": datetime.now().isoformat(),
         "runName": run_name,
-        "numConfigs": len(results_dicts),
-        "results": results_dicts,
+        "numConfigs": len(summary_results),
+        "results": summary_results,
     }
     with open(json_path, "w") as f:
         json.dump(json_data, f, indent=2)
@@ -858,17 +921,19 @@ async def save_benchmark_results(request: SaveBenchmarkRequest):
     if request.generateCharts and results_dicts:
         # Dashboard for each config
         for result in results_dicts:
-            mode = result["config"].get("mode", "unknown")
-            svg_path = RESULTS_DIR / f"{run_name}_{mode}_dashboard.svg"
+            # Use config name for chart filename, fallback to mode
+            config_name = result["config"].get("name") or result["config"].get("mode", "unknown")
+            config_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in config_name)
+            svg_path = run_dir / f"{config_name}_dashboard.svg"
             try:
                 generate_dashboard_chart(result, svg_path)
                 saved_files.append(str(svg_path))
             except Exception as e:
-                print(f"Warning: Failed to generate dashboard chart for {mode}: {e}")
+                print(f"Warning: Failed to generate dashboard chart for {config_name}: {e}")
 
         # Comparison chart if multiple configs
         if len(results_dicts) > 1:
-            comparison_path = RESULTS_DIR / f"{run_name}_comparison.svg"
+            comparison_path = run_dir / "comparison.svg"
             try:
                 generate_comparison_chart(results_dicts, comparison_path)
                 saved_files.append(str(comparison_path))
@@ -879,43 +944,51 @@ async def save_benchmark_results(request: SaveBenchmarkRequest):
         "success": True,
         "runName": run_name,
         "savedFiles": saved_files,
-        "resultsDir": str(RESULTS_DIR),
+        "resultsDir": str(run_dir),
     }
 
 
 @app.get("/api/benchmark/results")
 async def list_benchmark_results():
-    """List all saved benchmark results."""
+    """List all saved benchmark results (each in its own subdirectory)."""
     if not RESULTS_DIR.exists():
         return {"results": []}
 
     results = []
-    for json_file in sorted(RESULTS_DIR.glob("*.json"), reverse=True):
+    # Scan subdirectories for results.json files
+    for run_dir in sorted(RESULTS_DIR.iterdir(), reverse=True):
+        if not run_dir.is_dir():
+            continue
+        json_file = run_dir / "results.json"
+        if not json_file.exists():
+            continue
         try:
             with open(json_file) as f:
                 data = json.load(f)
+            # List files in the directory
+            files = [f.name for f in run_dir.iterdir() if f.is_file()]
             results.append({
-                "filename": json_file.name,
-                "runName": data.get("runName", json_file.stem),
+                "runName": run_dir.name,
                 "savedAt": data.get("savedAt"),
                 "numConfigs": data.get("numConfigs", len(data.get("results", []))),
+                "files": files,
             })
         except Exception as e:
             results.append({
-                "filename": json_file.name,
+                "runName": run_dir.name,
                 "error": str(e),
             })
 
     return {"results": results, "resultsDir": str(RESULTS_DIR)}
 
 
-@app.get("/api/benchmark/results/{filename}")
-async def get_benchmark_result(filename: str):
-    """Get a specific benchmark result by filename."""
-    filepath = RESULTS_DIR / filename
+@app.get("/api/benchmark/results/{run_name}/{filename}")
+async def get_benchmark_result(run_name: str, filename: str):
+    """Get a specific file from a benchmark result directory."""
+    filepath = RESULTS_DIR / run_name / filename
 
     if not filepath.exists():
-        return {"error": f"File not found: {filename}"}
+        return {"error": f"File not found: {run_name}/{filename}"}
 
     if filepath.suffix == ".json":
         with open(filepath) as f:
@@ -926,25 +999,24 @@ async def get_benchmark_result(filename: str):
         return {"error": f"Unsupported file type: {filepath.suffix}"}
 
 
-@app.delete("/api/benchmark/results/{filename}")
-async def delete_benchmark_result(filename: str):
-    """Delete a benchmark result file."""
-    filepath = RESULTS_DIR / filename
+@app.delete("/api/benchmark/results/{run_name}")
+async def delete_benchmark_result(run_name: str):
+    """Delete a benchmark result directory and all its files."""
+    run_dir = RESULTS_DIR / run_name
 
-    if not filepath.exists():
-        return {"error": f"File not found: {filename}"}
+    if not run_dir.exists():
+        return {"error": f"Directory not found: {run_name}"}
 
-    # Also delete associated chart files if this is a JSON file
-    deleted = [str(filepath)]
-    if filepath.suffix == ".json":
-        run_name = filepath.stem
-        for svg_file in RESULTS_DIR.glob(f"{run_name}*.svg"):
-            svg_file.unlink()
-            deleted.append(str(svg_file))
+    # Delete all files in the directory
+    deleted = []
+    for f in run_dir.iterdir():
+        f.unlink()
+        deleted.append(str(f))
 
-    filepath.unlink()
+    # Remove the directory itself
+    run_dir.rmdir()
 
-    return {"success": True, "deleted": deleted}
+    return {"success": True, "deleted": deleted, "directory": str(run_dir)}
 
 
 if __name__ == "__main__":
