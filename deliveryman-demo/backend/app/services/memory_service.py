@@ -767,14 +767,16 @@ def reset_delivery_count(app_type: str = None, difficulty: str = None):
 
 
 def get_mental_models(bank_id: str = None, subtype: str = None) -> list:
-    """Get all mental models for a bank.
+    """Get all mental models (reflections) for a bank.
+
+    Note: The hindsight API renamed mental-models to reflections.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
         subtype: Optional filter ('structural', 'emergent', or 'pinned')
 
     Returns:
-        List of mental models
+        List of mental models/reflections
     """
     bid = bank_id or get_bank_id()
     if not bid:
@@ -787,8 +789,9 @@ def get_mental_models(bank_id: str = None, subtype: str = None) -> list:
         params["subtype"] = subtype
 
     try:
+        # Use /reflections endpoint (mental-models was renamed)
         response = client.get(
-            f"/v1/default/banks/{bid}/mental-models",
+            f"/v1/default/banks/{bid}/reflections",
             params=params if params else None
         )
         response.raise_for_status()
@@ -812,14 +815,16 @@ async def get_mental_models_async(bank_id: str = None, subtype: str = None) -> l
 
 
 def get_mental_model(bank_id: str = None, model_id: str = None) -> dict:
-    """Get a single mental model with full details including observations.
+    """Get a single mental model (reflection) with full details including observations.
+
+    Note: The hindsight API renamed mental-models to reflections.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
-        model_id: The mental model ID
+        model_id: The reflection ID
 
     Returns:
-        Mental model with observations and freshness metadata
+        Reflection with observations and freshness metadata
     """
     bid = bank_id or get_bank_id()
     if not bid or not model_id:
@@ -829,7 +834,8 @@ def get_mental_model(bank_id: str = None, model_id: str = None) -> dict:
     client = _get_http_client()
 
     try:
-        response = client.get(f"/v1/default/banks/{bid}/mental-models/{model_id}")
+        # Use /reflections endpoint (mental-models was renamed)
+        response = client.get(f"/v1/default/banks/{bid}/reflections/{model_id}")
         response.raise_for_status()
         result = response.json()
         print(f"[MEMORY] Got mental model {model_id} for {bid}")
@@ -849,15 +855,17 @@ async def get_mental_model_async(bank_id: str = None, model_id: str = None) -> d
 
 
 def create_pinned_model(bank_id: str = None, name: str = None, description: str = None) -> dict:
-    """Create a pinned mental model (user-defined topic to track).
+    """Create a pinned reflection (user-defined topic to track).
+
+    Note: The hindsight API renamed mental-models to reflections.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
-        name: Name of the model (e.g., "Employee Locations")
+        name: Name of the reflection (e.g., "Employee Locations")
         description: Description of what to track
 
     Returns:
-        Created mental model
+        Created reflection
     """
     bid = bank_id or get_bank_id()
     if not bid or not name:
@@ -867,8 +875,9 @@ def create_pinned_model(bank_id: str = None, name: str = None, description: str 
     client = _get_http_client()
 
     try:
+        # Use /reflections endpoint (mental-models was renamed)
         response = client.post(
-            f"/v1/default/banks/{bid}/mental-models",
+            f"/v1/default/banks/{bid}/reflections",
             json={
                 "name": name,
                 "description": description or name,
@@ -894,11 +903,13 @@ async def create_pinned_model_async(bank_id: str = None, name: str = None, descr
 
 
 def delete_mental_model(bank_id: str = None, model_id: str = None) -> bool:
-    """Delete a mental model.
+    """Delete a reflection (mental model).
+
+    Note: The hindsight API renamed mental-models to reflections.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
-        model_id: The mental model ID to delete
+        model_id: The reflection ID to delete
 
     Returns:
         True if successful
@@ -911,7 +922,8 @@ def delete_mental_model(bank_id: str = None, model_id: str = None) -> bool:
     client = _get_http_client()
 
     try:
-        response = client.delete(f"/v1/default/banks/{bid}/mental-models/{model_id}")
+        # Use /reflections endpoint (mental-models was renamed)
+        response = client.delete(f"/v1/default/banks/{bid}/reflections/{model_id}")
         response.raise_for_status()
         print(f"[MEMORY] Deleted mental model {model_id} from {bid}")
         return True
