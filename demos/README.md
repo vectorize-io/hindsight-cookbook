@@ -2,18 +2,29 @@
 
 Example applications showcasing Hindsight's memory capabilities across different use cases.
 
-## Setup
+## Available Demos
 
-### Option 1: Using Local Hindsight (Recommended for Testing)
+| Demo | Description | Python | Notebook |
+|------|-------------|--------|----------|
+| Movie Recommendation | Personalized movie recommender | `movie_recommendation.py` | `movie_recommendation.ipynb` |
+| Fitness Tracker | Fitness coach with workout memory | `fitness_tracker.py` | `fitness_tracker.ipynb` |
+| Study Buddy | Study assistant with spaced repetition | `study_buddy.py` | `study_buddy.ipynb` |
+| Personal Assistant | General-purpose assistant | `personal_assistant.py` | `personal_assistant.ipynb` |
+| Healthcare Assistant | Health chatbot (demo only) | `healthcare_assistant.py` | `healthcare_assistant.ipynb` |
+| Personalized Search | Context-aware search agent | `personalized_search.py` | `personalized_search.ipynb` |
 
-1. **Start Hindsight via Docker:**
+## Local Setup
+
+### Start Hindsight via Docker
+
+1. **Run Hindsight:**
 
 ```bash
 export OPENAI_API_KEY="your-openai-api-key"
 
 docker run --rm -it --pull always -p 8888:8888 -p 9999:9999 \
   -e HINDSIGHT_API_LLM_API_KEY=$OPENAI_API_KEY \
-  -e HINDSIGHT_API_LLM_MODEL=o3-mini \
+  -e HINDSIGHT_API_LLM_MODEL=gpt-4o-mini \
   -v $HOME/.hindsight-docker:/home/hindsight/.pg0 \
   ghcr.io/vectorize-io/hindsight:latest
 ```
@@ -44,36 +55,16 @@ export TAVILY_API_KEY="your-tavily-api-key"
 python movie_recommendation.py
 ```
 
-### Option 2: Using Hindsight Cloud
+### Running Jupyter Notebooks
 
-1. **Get a Hindsight API Key:**
-
-   Sign up at [https://ui.hindsight.vectorize.io/](https://ui.hindsight.vectorize.io/) to get your API key.
-
-2. **Install Dependencies:**
+The demos are also available as Jupyter notebooks for interactive exploration:
 
 ```bash
-pip install -r requirements.txt
+pip install jupyter
+jupyter notebook
 ```
 
-3. **Configure Environment:**
-
-```bash
-export HINDSIGHT_API_KEY="your-hindsight-api-key"
-export OPENAI_API_KEY="your-openai-api-key"
-
-# Optional: for real web search in personalized_search.py
-# Get a key at https://tavily.com/
-export TAVILY_API_KEY="your-tavily-api-key"
-```
-
-Note: The demos default to the Hindsight Cloud API at `https://api.hindsight.vectorize.io`. You can override this by setting `HINDSIGHT_BASE_URL`.
-
-3. **Run a demo:**
-
-```bash
-python movie_recommendation.py
-```
+Then open any `.ipynb` file. The notebooks include Docker setup instructions and will prompt for your OpenAI API key.
 
 ## Demo Applications
 
@@ -225,7 +216,7 @@ hindsight.close()
 Or use the context manager pattern:
 
 ```python
-with Hindsight(api_key=api_key, base_url=base_url) as hindsight:
+with Hindsight(base_url="http://localhost:8888") as hindsight:
     hindsight.retain(bank_id="user", content="Hello")
     # ... client automatically closed when exiting the block
 ```
