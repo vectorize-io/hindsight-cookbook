@@ -1021,3 +1021,59 @@ async def get_bank_stats_async(bank_id: str = None) -> dict:
         _executor,
         lambda: get_bank_stats(bank_id)
     )
+
+
+def wait_for_pending_consolidation(
+    bank_id: str = None,
+    poll_interval: float = 2.0,
+    timeout: float = 300.0
+) -> bool:
+    """Wait for pending_consolidation to reach 0 (all memories processed into mental models).
+
+    This matches the eval framework behavior where we wait for the background
+    consolidation worker to process memories after each retain.
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+        poll_interval: Seconds between status polls (default: 2.0)
+        timeout: Maximum seconds to wait (default: 300.0)
+
+    Returns:
+        True if consolidation completed, False if timed out
+    """
+    import time
+
+    bid = bank_id or get_bank_id()
+    if not bid:
+        print("[MEMORY] Cannot wait for consolidation: no bank_id")
+        return False
+
+    start_time = time.time()
+    while True:
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            print(f"[MEMORY] Consolidation did not complete within {timeout}s for {bid}")
+            return False
+
+        stats = get_bank_stats(bid)
+        pending = stats.get("pending_consolidation", 0)
+
+        if pending == 0:
+            print(f"[MEMORY] Consolidation complete for {bid} (no pending memories)")
+            return True
+
+        print(f"[MEMORY] Waiting for consolidation: {pending} pending, {elapsed:.1f}s elapsed for {bid}")
+        time.sleep(poll_interval)
+
+
+async def wait_for_pending_consolidation_async(
+    bank_id: str = None,
+    poll_interval: float = 2.0,
+    timeout: float = 300.0
+) -> bool:
+    """Async version of wait_for_pending_consolidation."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: wait_for_pending_consolidation(bank_id, poll_interval, timeout)
+    )

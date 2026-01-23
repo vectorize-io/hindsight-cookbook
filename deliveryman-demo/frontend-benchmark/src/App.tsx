@@ -203,8 +203,13 @@ function App() {
   const [hindsightMission, setHindsightMission] = useState('');
 
   // Global hindsight URL (can be overridden per-config)
-  const [globalHindsightUrl, setGlobalHindsightUrl] = useState('http://localhost:8888');
-  const [hindsightUrlInput, setHindsightUrlInput] = useState('http://localhost:8888');
+  // Two Hindsight URLs: one for MM-enabled instance, one for non-MM instance
+  // MM modes (hindsight_mm, hindsight_mm_nowait) use hindsightUrlMM
+  // Non-MM modes (recall, reflect) use hindsightUrlNoMM
+  const [hindsightUrlMM, setHindsightUrlMM] = useState('http://localhost:8888');
+  const [hindsightUrlNoMM, setHindsightUrlNoMM] = useState('');  // Empty = disabled
+  const [hindsightUrlMMInput, setHindsightUrlMMInput] = useState('http://localhost:8888');
+  const [hindsightUrlNoMMInput, setHindsightUrlNoMMInput] = useState('');
 
   // Bank management state
   const [bankHistory, setBankHistory] = useState<string[]>([]);
@@ -315,19 +320,38 @@ function App() {
     query: string;  // Memory query template (use {recipient} placeholder)
     mission: string;  // Bank mission for mental models
     hindsightUrl?: string;  // Optional override for hindsight URL (uses global if not set)
-    // New benchmark settings
-    repeatRatio: number;  // 0.0-1.0, fraction of repeat visits
+    // New benchmark settings (numbers can be undefined = empty field)
+    repeatRatio?: number;  // 0.0-1.0, fraction of repeat visits
     pairedMode: boolean;  // Each office visited exactly 2x
-    stepMultiplier: number;  // max_steps = optimal * multiplier
-    minSteps: number;
+    stepMultiplier?: number;  // max_steps = optimal * multiplier
+    minSteps?: number;
     memoryQueryMode: 'inject_once' | 'per_step' | 'both';
     waitForConsolidation: boolean;
-    refreshInterval: number;  // 0 = disabled
+    refreshInterval?: number;  // 0 = disabled
     includeBusiness: 'always' | 'never' | 'random';  // Include business name in package
     // Advanced settings
-    preseedCoverage: number;  // 0.0-1.0, fraction of building knowledge to pre-seed
+    preseedCoverage?: number;  // 0.0-1.0, fraction of building knowledge to pre-seed
     mmQueryType: 'recall' | 'reflect';  // Query method for MM modes (recall = raw facts, reflect = LLM synthesis)
   }
+
+  // Validation: check if a config has all required fields filled
+  const isConfigValid = (config: EvalConfig): boolean => {
+    // Required numeric fields that must have a value > 0
+    if (config.stepMultiplier === undefined || config.stepMultiplier <= 0) return false;
+    if (config.minSteps === undefined || config.minSteps <= 0) return false;
+    // repeatRatio can be 0 (no repeats)
+    if (config.repeatRatio === undefined) return false;
+    // refreshInterval can be 0 (disabled)
+    if (config.refreshInterval === undefined) return false;
+    // preseedCoverage can be 0 (no preseed)
+    if (config.preseedCoverage === undefined) return false;
+    return true;
+  };
+
+  // Check if any enabled config is invalid
+  const hasInvalidConfigs = (configs: EvalConfig[]): boolean => {
+    return configs.some(c => c.enabled && !isConfigValid(c));
+  };
 
   // Chart settings - which charts to display
   interface ChartSettings {
@@ -407,8 +431,25 @@ rather than searching the entire building each time.`;
     evalConfigsRef.current = evalConfigs;
   }, [evalConfigs]);
 
+  // Track which sections are expanded per config (configId -> sectionName -> boolean)
+  const [expandedSections, setExpandedSections] = useState<Record<string, Record<string, boolean>>>({});
+
+  const toggleSection = (configId: string, section: string) => {
+    setExpandedSections(prev => ({
+      ...prev,
+      [configId]: {
+        ...prev[configId],
+        [section]: !prev[configId]?.[section]
+      }
+    }));
+  };
+
+  const isSectionExpanded = (configId: string, section: string) => {
+    return expandedSections[configId]?.[section] ?? false;
+  };
+
   // Benchmark state
-  const [ffLoopCount, setFfLoopCount] = useState(10);
+  const [ffLoopCount, setFfLoopCount] = useState<number | undefined>(10);
   const [ffRunning, setFfRunning] = useState(false);
   const [ffProgress, setFfProgress] = useState(0);
   const [ffCurrentConfig, setFfCurrentConfig] = useState<string | null>(null);
@@ -478,16 +519,8 @@ rather than searching the entire building each time.`;
       .then(data => setDemoConfig(data))
       .catch(console.error);
 
-    // Fetch global config (hindsight URL, etc.)
-    fetch('/api/config')
-      .then(res => res.json())
-      .then(data => {
-        if (data.hindsightUrl) {
-          setGlobalHindsightUrl(data.hindsightUrl);
-          setHindsightUrlInput(data.hindsightUrl);
-        }
-      })
-      .catch(console.error);
+    // Note: Hindsight URLs are managed locally in frontend state
+    // MM URL defaults to localhost:8888, non-MM URL defaults to empty (disabled)
   }, []);
 
   // Fetch bank history and current bank
@@ -540,23 +573,8 @@ rather than searching the entire building each time.`;
     setBankInput('');
   }, [bankInput, switchToBank]);
 
-  // Update global hindsight URL
-  const updateHindsightUrl = useCallback(async (url: string) => {
-    try {
-      const res = await fetch('/api/config', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hindsightUrl: url || '' }),  // Empty string resets to default
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setGlobalHindsightUrl(data.hindsightUrl);
-        setHindsightUrlInput(data.hindsightUrl);
-      }
-    } catch (err) {
-      console.error('Failed to update hindsight URL:', err);
-    }
-  }, []);
+  // Helper to check if a mode requires MM-enabled Hindsight
+  const isMmMode = (mode: string) => mode === 'hindsight_mm' || mode === 'hindsight_mm_nowait';
 
   // Fetch mental models for the current bank
   const fetchMentalModels = useCallback(async () => {
@@ -775,6 +793,14 @@ rather than searching the entire building each time.`;
     }
   };
 
+  // Type for generated delivery queues
+  interface DeliveryQueue {
+    recipients: string[];
+    businesses: (string | null)[];
+    isRepeat: boolean[];
+    totalDeliveries: number;
+  }
+
   // Benchmark handlers - runs all enabled configs IN PARALLEL
   const runFastForward = useCallback(async (count: number) => {
     setFfRunning(true);
@@ -788,11 +814,42 @@ rather than searching the entire building each time.`;
     // Clear previous results for enabled configs
     setEvalConfigs(prev => prev.map(c => c.enabled ? { ...c, results: [] } : c));
 
-    // Run a single delivery for a config
-    const runSingleDelivery = async (config: EvalConfig, deliveryNum: number) => {
+    // Generate delivery queues for all enabled configs BEFORE running
+    // This ensures repeat ratio is properly handled
+    let queues: Record<string, DeliveryQueue> = {};
+    try {
+      const queueRes = await fetch('/api/benchmark/generate-queues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          configs: enabledConfigs.map(config => ({
+            configId: config.id,
+            numDeliveries: count,
+            repeatRatio: config.repeatRatio ?? 0.4,
+            pairedMode: config.pairedMode ?? false,
+            includeBusiness: config.includeBusiness ?? 'random',
+            seed: null,  // Could use config.id hash for reproducibility
+          })),
+        }),
+      });
+      const queueData = await queueRes.json();
+      queues = queueData.queues || {};
+      console.log('[Benchmark] Generated queues for', Object.keys(queues).length, 'configs');
+    } catch (err) {
+      console.error('[Benchmark] Failed to generate queues, falling back to random:', err);
+    }
+
+    // Run a single delivery for a config using pre-generated queue
+    const runSingleDelivery = async (config: EvalConfig, deliveryNum: number, queue?: DeliveryQueue) => {
       if (ffAbortRef.current) return;
 
       const hs = getHindsightForMode(config.memoryMode);
+
+      // Get pre-determined recipient/business from queue (0-indexed)
+      const queueIndex = deliveryNum - 1;
+      const recipientName = queue?.recipients[queueIndex] ?? null;
+      const businessName = queue?.businesses[queueIndex] ?? undefined;  // undefined to let backend decide
+      const isRepeat = queue?.isRepeat[queueIndex] ?? false;
 
       try {
         // Backend calculates max_steps from optimal path: max(minSteps, optimal * stepMultiplier)
@@ -801,11 +858,15 @@ rather than searching the entire building each time.`;
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            includeBusiness: config.includeBusiness,
+            recipientName: recipientName,  // Pre-determined from queue
+            businessName: businessName,    // Pre-determined from queue (null means no business in package)
+            isRepeat: isRepeat,            // From queue - whether this is a repeat visit
+            includeBusiness: config.includeBusiness,  // Fallback if no businessName
             maxSteps: maxSteps || null,  // Hard cap from global UI setting (null = no cap)
             stepMultiplier: config.stepMultiplier,
             minSteps: config.minSteps,
             model: config.model,
+            mode: config.memoryMode,  // Agent mode (no_memory, filesystem, recall, reflect, hindsight_mm, hindsight_mm_nowait)
             // Per-config benchmark settings
             repeatRatio: config.repeatRatio,
             pairedMode: config.pairedMode,
@@ -820,8 +881,8 @@ rather than searching the entire building each time.`;
               store: hs.store,
               bankId: config.bankId,
               query: config.query || undefined,
-              mission: config.mission || undefined,  // Always pass mission for bank setup
-              url: config.hindsightUrl || globalHindsightUrl,  // Per-config override or global
+              mission: config.mission || undefined,  // Only used for MM modes
+              url: config.hindsightUrl || (config.memoryMode === 'hindsight_mm' || config.memoryMode === 'hindsight_mm_nowait' ? hindsightUrlMM : hindsightUrlNoMM),  // Per-config override or mode-specific global
             },
           }),
         });
@@ -841,6 +902,7 @@ rather than searching the entire building each time.`;
               latencyMs: result.latencyMs || 0,
               totalTimeMs: result.totalTimeMs || 0,
               memoryInjected: result.memoryInjected || false,
+              isRepeat: result.isRepeat || false,  // From pre-generated queue
               // New fields for eval parity
               apiCalls: result.apiCalls,
               wrongTurns: result.wrongTurns,
@@ -871,10 +933,11 @@ rather than searching the entire building each time.`;
     // Run all configs in parallel - each config runs its deliveries sequentially
     // (sequential per config so memories build up, but configs run in parallel)
     const configPromises = enabledConfigs.map(async (config) => {
+      const queue = queues[config.id];  // Get pre-generated queue for this config
       for (let i = 0; i < count; i++) {
         if (ffAbortRef.current) break;
         setFfCurrentConfig(config.id);
-        await runSingleDelivery(config, i + 1);
+        await runSingleDelivery(config, i + 1, queue);
       }
     });
 
@@ -1007,7 +1070,7 @@ rather than searching the entire building each time.`;
         console.error('Failed to save benchmark:', err);
       }
     }
-  }, [includeBusiness, maxSteps, saveAllSteps, saveBenchmark, chartSettings.enabled, difficulty, fetchRefreshIntervalStatus]);
+  }, [includeBusiness, maxSteps, saveAllSteps, saveBenchmark, chartSettings.enabled, difficulty, fetchRefreshIntervalStatus, hindsightUrlMM, hindsightUrlNoMM]);
 
   // Remove a config
   const removeEvalConfig = useCallback((id: string) => {
@@ -1483,7 +1546,7 @@ rather than searching the entire building each time.`;
                     </p>
                   </div>
 
-                  {/* Bank Mission Input */}
+                  {/* Bank Mission Input - always available in manual mode for setting up mental models */}
                   <div className="mt-3">
                     <label className="text-xs text-slate-400 block mb-1">
                       Bank Mission (optional)
@@ -2134,38 +2197,90 @@ rather than searching the entire building each time.`;
                 )}
               </div>
 
-              {/* Hindsight URL Setting */}
-              <div className="mb-4">
-                <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
-                  Hindsight API URL
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={hindsightUrlInput}
-                    onChange={(e) => setHindsightUrlInput(e.target.value)}
-                    placeholder="http://localhost:8888"
-                    className="flex-1 bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-yellow-500 focus:outline-none font-mono"
-                    disabled={ffRunning}
-                  />
-                  <button
-                    onClick={() => updateHindsightUrl(hindsightUrlInput)}
-                    disabled={ffRunning || hindsightUrlInput === globalHindsightUrl}
-                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 text-slate-300 rounded-lg text-sm transition-colors"
-                  >
-                    Set
-                  </button>
-                  <button
-                    onClick={() => updateHindsightUrl('')}
-                    disabled={ffRunning}
-                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 text-slate-400 rounded-lg text-sm transition-colors"
-                    title="Reset to default"
-                  >
-                    Reset
-                  </button>
+              {/* Hindsight URL Settings - Two instances */}
+              <div className="mb-4 space-y-3">
+                <div className="text-xs text-slate-500 uppercase tracking-wider">
+                  Hindsight API URLs
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  Current: <span className="font-mono text-slate-400">{globalHindsightUrl}</span>
+
+                {/* MM-Enabled Instance (for hindsight_mm modes) */}
+                <div className="bg-emerald-900/20 border border-emerald-700/30 rounded-lg p-3">
+                  <label className="block text-xs text-emerald-400 mb-1.5 flex items-center gap-2">
+                    <span className="w-2 h-2 bg-emerald-500 rounded-full"></span>
+                    Mental Models Enabled (MM modes)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={hindsightUrlMMInput}
+                      onChange={(e) => setHindsightUrlMMInput(e.target.value)}
+                      placeholder="http://localhost:8888"
+                      className="flex-1 bg-slate-700/50 border border-slate-600 rounded px-2 py-1.5 text-white text-sm focus:border-emerald-500 focus:outline-none font-mono"
+                      disabled={ffRunning}
+                    />
+                    <button
+                      onClick={() => setHindsightUrlMM(hindsightUrlMMInput)}
+                      disabled={ffRunning || hindsightUrlMMInput === hindsightUrlMM}
+                      className="px-2 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-800 disabled:text-slate-500 text-emerald-100 rounded text-xs transition-colors"
+                    >
+                      Set
+                    </button>
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    Used for: <span className="text-emerald-400">hindsight_mm</span>, <span className="text-teal-400">hindsight_mm_nowait</span>
+                  </div>
+                  {hindsightUrlMM && (
+                    <div className="text-[10px] text-slate-500 mt-0.5">
+                      Active: <span className="font-mono text-emerald-300">{hindsightUrlMM}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Non-MM Instance (for recall/reflect without mental models) */}
+                <div className={`rounded-lg p-3 ${hindsightUrlNoMM ? 'bg-purple-900/20 border border-purple-700/30' : 'bg-slate-800/50 border border-slate-700/50'}`}>
+                  <label className="block text-xs text-purple-400 mb-1.5 flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${hindsightUrlNoMM ? 'bg-purple-500' : 'bg-slate-600'}`}></span>
+                    Mental Models Disabled (recall/reflect)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={hindsightUrlNoMMInput}
+                      onChange={(e) => setHindsightUrlNoMMInput(e.target.value)}
+                      placeholder="http://localhost:8889 (leave empty to disable)"
+                      className="flex-1 bg-slate-700/50 border border-slate-600 rounded px-2 py-1.5 text-white text-sm focus:border-purple-500 focus:outline-none font-mono"
+                      disabled={ffRunning}
+                    />
+                    <button
+                      onClick={() => setHindsightUrlNoMM(hindsightUrlNoMMInput)}
+                      disabled={ffRunning || hindsightUrlNoMMInput === hindsightUrlNoMM}
+                      className="px-2 py-1.5 bg-purple-700 hover:bg-purple-600 disabled:bg-slate-800 disabled:text-slate-500 text-purple-100 rounded text-xs transition-colors"
+                    >
+                      Set
+                    </button>
+                    {hindsightUrlNoMM && (
+                      <button
+                        onClick={() => { setHindsightUrlNoMM(''); setHindsightUrlNoMMInput(''); }}
+                        disabled={ffRunning}
+                        className="px-2 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 text-slate-400 rounded text-xs transition-colors"
+                        title="Clear to disable recall/reflect modes"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    Used for: <span className="text-purple-400">recall</span>, <span className="text-cyan-400">reflect</span>
+                  </div>
+                  {hindsightUrlNoMM ? (
+                    <div className="text-[10px] text-slate-500 mt-0.5">
+                      Active: <span className="font-mono text-purple-300">{hindsightUrlNoMM}</span>
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-amber-400 mt-1">
+                      Not configured - recall/reflect configs disabled
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -2176,11 +2291,16 @@ rather than searching the entire building each time.`;
                   </label>
                   <input
                     type="number"
-                    value={ffLoopCount}
-                    onChange={(e) => setFfLoopCount(parseInt(e.target.value) || 1)}
+                    value={ffLoopCount ?? ''}
+                    onChange={(e) => setFfLoopCount(e.target.value ? parseInt(e.target.value) : undefined)}
                     min={1}
                     max={100}
-                    className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
+                    placeholder="Required"
+                    className={`w-full bg-slate-700/50 border rounded-lg px-3 py-2 text-white focus:outline-none ${
+                      ffLoopCount === undefined || ffLoopCount < 1
+                        ? 'border-red-500 focus:border-red-500'
+                        : 'border-slate-600 focus:border-yellow-500'
+                    }`}
                     disabled={ffRunning}
                   />
                 </div>
@@ -2190,9 +2310,10 @@ rather than searching the entire building each time.`;
                   </label>
                   <input
                     type="number"
-                    value={maxSteps ?? 150}
-                    onChange={(e) => setMaxSteps(parseInt(e.target.value) || 150)}
+                    value={maxSteps ?? ''}
+                    onChange={(e) => setMaxSteps(e.target.value ? parseInt(e.target.value) : null)}
                     min={1}
+                    placeholder="No limit"
                     className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
                     disabled={ffRunning}
                   />
@@ -2284,11 +2405,12 @@ rather than searching the entire building each time.`;
 
               <div className="flex gap-2">
                 <button
-                  onClick={() => runFastForward(ffLoopCount)}
-                  disabled={ffRunning || evalConfigs.filter(c => c.enabled).length === 0}
+                  onClick={() => ffLoopCount && runFastForward(ffLoopCount)}
+                  disabled={ffRunning || evalConfigs.filter(c => c.enabled).length === 0 || !ffLoopCount || ffLoopCount < 1 || hasInvalidConfigs(evalConfigs)}
                   className="flex-1 bg-gradient-to-r from-yellow-600 to-orange-500 hover:from-yellow-500 hover:to-orange-400 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed px-4 py-2.5 rounded-lg font-medium transition-all shadow-lg shadow-yellow-500/20 disabled:shadow-none"
+                  title={hasInvalidConfigs(evalConfigs) ? 'Fill in all required fields (red borders)' : undefined}
                 >
-                  {ffRunning ? `Running...` : `Run ${ffLoopCount} deliveries × ${evalConfigs.filter(c => c.enabled).length} configs`}
+                  {ffRunning ? `Running...` : `Run ${ffLoopCount || '?'} deliveries × ${evalConfigs.filter(c => c.enabled).length} configs`}
                 </button>
                 <button
                   onClick={stopFastForward}
@@ -2336,42 +2458,54 @@ rather than searching the entire building each time.`;
                 <h2 className="text-lg font-semibold text-slate-300">Configurations</h2>
                 <div className="flex gap-1 flex-wrap">
                   {([
-                    { mode: 'no_memory', label: 'No Memory', color: 'slate', mmQueryType: 'recall' as const },
-                    { mode: 'filesystem', label: 'Filesystem', color: 'amber', mmQueryType: 'recall' as const },
-                    { mode: 'recall', label: 'Recall', color: 'purple', mmQueryType: 'recall' as const },
-                    { mode: 'reflect', label: 'Reflect', color: 'cyan', mmQueryType: 'reflect' as const },
-                    { mode: 'hindsight_mm', label: 'MM-Recall', color: 'emerald', mmQueryType: 'recall' as const },
-                    { mode: 'hindsight_mm', label: 'MM-Reflect', color: 'green', mmQueryType: 'reflect' as const },
-                    { mode: 'hindsight_mm_nowait', label: 'MM-Recall NW', color: 'teal', mmQueryType: 'recall' as const },
-                    { mode: 'hindsight_mm_nowait', label: 'MM-Reflect NW', color: 'sky', mmQueryType: 'reflect' as const },
-                  ] as const).map(({ mode, label, color, mmQueryType }) => (
-                    <button
-                      key={`${mode}-${mmQueryType}`}
-                      onClick={() => {
-                        configCounterRef.current += 1;
-                        const configNum = configCounterRef.current;
-                        const colorIndex = evalConfigs.length % configColors.length;
-                        setEvalConfigs(prev => [...prev, {
-                          id: `config-${configNum}`,
-                          name: label,
-                          model: 'openai/gpt-4o',
-                          memoryMode: mode,
-                          bankId: `${mode}-${shortId()}`,
-                          color: configColors[colorIndex],
-                          enabled: true,
-                          results: [],
-                          query: DEFAULT_QUERY,
-                          mission: DEFAULT_MISSION,
-                          ...DEFAULT_BENCHMARK_SETTINGS,
-                          mmQueryType: mmQueryType,
-                        }]);
-                      }}
-                      disabled={ffRunning}
-                      className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-${color}-500/50 text-${color}-400 hover:bg-${color}-900/30`}
-                    >
-                      + {label}
-                    </button>
-                  ))}
+                    { mode: 'no_memory', label: 'No Memory', color: 'slate', mmQueryType: 'recall' as const, requiresUrl: null },
+                    { mode: 'filesystem', label: 'Filesystem', color: 'amber', mmQueryType: 'recall' as const, requiresUrl: null },
+                    { mode: 'recall', label: 'Recall', color: 'purple', mmQueryType: 'recall' as const, requiresUrl: 'noMM' as const },
+                    { mode: 'reflect', label: 'Reflect', color: 'cyan', mmQueryType: 'reflect' as const, requiresUrl: 'noMM' as const },
+                    { mode: 'hindsight_mm', label: 'MM-Recall', color: 'emerald', mmQueryType: 'recall' as const, requiresUrl: 'MM' as const },
+                    { mode: 'hindsight_mm', label: 'MM-Reflect', color: 'green', mmQueryType: 'reflect' as const, requiresUrl: 'MM' as const },
+                    { mode: 'hindsight_mm_nowait', label: 'MM-Recall NW', color: 'teal', mmQueryType: 'recall' as const, requiresUrl: 'MM' as const },
+                    { mode: 'hindsight_mm_nowait', label: 'MM-Reflect NW', color: 'sky', mmQueryType: 'reflect' as const, requiresUrl: 'MM' as const },
+                  ] as const).map(({ mode, label, color, mmQueryType, requiresUrl }) => {
+                    // Check if required URL is configured
+                    const urlMissing = requiresUrl === 'noMM' ? !hindsightUrlNoMM : requiresUrl === 'MM' ? !hindsightUrlMM : false;
+                    const isDisabled = ffRunning || urlMissing;
+                    const tooltip = urlMissing
+                      ? requiresUrl === 'noMM'
+                        ? 'Configure non-MM Hindsight URL first'
+                        : 'Configure MM Hindsight URL first'
+                      : undefined;
+
+                    return (
+                      <button
+                        key={`${mode}-${mmQueryType}`}
+                        onClick={() => {
+                          configCounterRef.current += 1;
+                          const configNum = configCounterRef.current;
+                          const colorIndex = evalConfigs.length % configColors.length;
+                          setEvalConfigs(prev => [...prev, {
+                            id: `config-${configNum}`,
+                            name: label,
+                            model: 'openai/gpt-4o',
+                            memoryMode: mode,
+                            bankId: `${mode}-${shortId()}`,
+                            color: configColors[colorIndex],
+                            enabled: true,
+                            results: [],
+                            query: DEFAULT_QUERY,
+                            mission: DEFAULT_MISSION,
+                            ...DEFAULT_BENCHMARK_SETTINGS,
+                            mmQueryType: mmQueryType,
+                          }]);
+                        }}
+                        disabled={isDisabled}
+                        title={tooltip}
+                        className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-${color}-500/50 text-${color}-400 hover:bg-${color}-900/30`}
+                      >
+                        + {label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -2470,228 +2604,319 @@ rather than searching the entire building each time.`;
                       </select>
                     </div>
 
-                    {/* Learning Settings */}
-                    <div className="mb-3 grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">Repeat Ratio</label>
-                        <input
-                          type="number"
-                          min={0}
-                          max={1}
-                          step={0.1}
-                          value={config.repeatRatio}
-                          onChange={(e) => updateEvalConfig(config.id, { repeatRatio: parseFloat(e.target.value) || 0 })}
-                          disabled={ffRunning}
-                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
-                        />
-                      </div>
-                      <div className="flex items-end">
-                        <label className="flex items-center gap-1 text-xs text-slate-400">
-                          <input
-                            type="checkbox"
-                            checked={config.pairedMode}
-                            onChange={(e) => updateEvalConfig(config.id, { pairedMode: e.target.checked })}
-                            disabled={ffRunning}
-                            className="w-3 h-3 rounded"
-                          />
-                          Paired (2x each)
-                        </label>
-                      </div>
-                    </div>
-
-                    {/* Step Limits */}
-                    <div className="mb-3 grid grid-cols-3 gap-2">
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">Step Mult</label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={20}
-                          step={0.5}
-                          value={config.stepMultiplier}
-                          onChange={(e) => updateEvalConfig(config.id, { stepMultiplier: parseFloat(e.target.value) || 5 })}
-                          disabled={ffRunning}
-                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
-                          title="max_steps = optimal * multiplier"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">Min Steps</label>
-                        <input
-                          type="number"
-                          min={5}
-                          max={50}
-                          step={1}
-                          value={config.minSteps}
-                          onChange={(e) => updateEvalConfig(config.id, { minSteps: parseInt(e.target.value) || 15 })}
-                          disabled={ffRunning}
-                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
-                          title="Minimum step limit per delivery"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-slate-500 mb-1">Business</label>
-                        <select
-                          value={config.includeBusiness}
-                          onChange={(e) => updateEvalConfig(config.id, { includeBusiness: e.target.value as 'always' | 'never' | 'random' })}
-                          disabled={ffRunning}
-                          className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
-                          title="Include business name in package"
-                        >
-                          <option value="random">Random</option>
-                          <option value="always">Always</option>
-                          <option value="never">Never</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Memory Query Mode - only for hindsight modes */}
-                    {config.memoryMode !== 'no_memory' && config.memoryMode !== 'filesystem' && (
-                      <div className="mb-3 space-y-2">
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">Memory Injection</label>
-                            <select
-                              value={config.memoryQueryMode}
-                              onChange={(e) => updateEvalConfig(config.id, { memoryQueryMode: e.target.value as 'inject_once' | 'per_step' | 'both' })}
-                              disabled={ffRunning}
-                              className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
-                            >
-                              <option value="inject_once">Once at Start</option>
-                              <option value="per_step">Every Step</option>
-                              <option value="both">Both</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">Refresh Interval</label>
-                            <input
-                              type="number"
-                              min={0}
-                              max={50}
-                              step={1}
-                              value={config.refreshInterval}
-                              onChange={(e) => updateEvalConfig(config.id, { refreshInterval: parseInt(e.target.value) || 0 })}
-                              disabled={ffRunning}
-                              className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
-                              title="Refresh mental models every N deliveries (0 = disabled)"
-                            />
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <label className="flex items-center gap-1 text-xs text-slate-400">
-                            <input
-                              type="checkbox"
-                              checked={config.waitForConsolidation}
-                              onChange={(e) => updateEvalConfig(config.id, { waitForConsolidation: e.target.checked })}
-                              disabled={ffRunning}
-                              className="w-3 h-3 rounded"
-                            />
-                            Wait for Consolidation
-                          </label>
-                        </div>
-                        {/* Preseed Coverage */}
-                        <div className="grid grid-cols-2 gap-2 mt-2">
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">Preseed Coverage</label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="range"
-                                min={0}
-                                max={100}
-                                step={10}
-                                value={Math.round((config.preseedCoverage || 0) * 100)}
-                                onChange={(e) => updateEvalConfig(config.id, { preseedCoverage: parseInt(e.target.value) / 100 })}
-                                disabled={ffRunning}
-                                className="flex-1 h-1"
-                              />
-                              <span className="text-xs text-slate-400 w-8">{Math.round((config.preseedCoverage || 0) * 100)}%</span>
-                            </div>
-                            <p className="text-[10px] text-slate-600 mt-0.5">Pre-seed building knowledge</p>
-                          </div>
-                          {/* MM Query Type - only for MM modes */}
-                          {(config.memoryMode === 'hindsight_mm' || config.memoryMode === 'hindsight_mm_nowait') && (
+                    {/* Delivery Settings - Collapsible */}
+                    <div className="border border-slate-700 rounded bg-slate-800/30 mb-2">
+                      <button
+                        onClick={() => toggleSection(config.id, 'delivery')}
+                        className="w-full flex items-center justify-between px-2 py-1.5 text-left hover:bg-slate-700/30"
+                      >
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wide">Delivery Settings</span>
+                        <span className="text-slate-500 text-xs">{isSectionExpanded(config.id, 'delivery') ? '−' : '+'}</span>
+                      </button>
+                      {isSectionExpanded(config.id, 'delivery') && (
+                        <div className="px-2 pb-2 space-y-2">
+                          <div className="grid grid-cols-2 gap-2">
                             <div>
-                              <label className="block text-xs text-slate-500 mb-1">MM Query Type</label>
+                              <label className="block text-xs text-slate-500 mb-1">Repeat Ratio</label>
+                              <input
+                                type="number"
+                                min={0}
+                                max={1}
+                                step={0.1}
+                                value={config.repeatRatio ?? ''}
+                                onChange={(e) => updateEvalConfig(config.id, { repeatRatio: e.target.value ? parseFloat(e.target.value) : undefined })}
+                                disabled={ffRunning}
+                                placeholder="0-1"
+                                className={`w-full bg-slate-800 border rounded px-2 py-1 text-xs text-slate-300 ${
+                                  config.repeatRatio === undefined ? 'border-red-500' : 'border-slate-600'
+                                }`}
+                              />
+                            </div>
+                            <div className="flex items-end">
+                              <label className="flex items-center gap-1 text-xs text-slate-400">
+                                <input
+                                  type="checkbox"
+                                  checked={config.pairedMode}
+                                  onChange={(e) => updateEvalConfig(config.id, { pairedMode: e.target.checked })}
+                                  disabled={ffRunning}
+                                  className="w-3 h-3 rounded"
+                                />
+                                Paired (2x each)
+                              </label>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">Step Mult</label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={20}
+                                step={0.5}
+                                value={config.stepMultiplier ?? ''}
+                                onChange={(e) => updateEvalConfig(config.id, { stepMultiplier: e.target.value ? parseFloat(e.target.value) : undefined })}
+                                disabled={ffRunning}
+                                placeholder="1-20"
+                                className={`w-full bg-slate-800 border rounded px-2 py-1 text-xs text-slate-300 ${
+                                  config.stepMultiplier === undefined || config.stepMultiplier <= 0 ? 'border-red-500' : 'border-slate-600'
+                                }`}
+                                title="max_steps = optimal * multiplier"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">Min Steps</label>
+                              <input
+                                type="number"
+                                min={5}
+                                max={50}
+                                step={1}
+                                value={config.minSteps ?? ''}
+                                onChange={(e) => updateEvalConfig(config.id, { minSteps: e.target.value ? parseInt(e.target.value) : undefined })}
+                                disabled={ffRunning}
+                                placeholder="5-50"
+                                className={`w-full bg-slate-800 border rounded px-2 py-1 text-xs text-slate-300 ${
+                                  config.minSteps === undefined || config.minSteps <= 0 ? 'border-red-500' : 'border-slate-600'
+                                }`}
+                                title="Minimum step limit per delivery"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">Business</label>
                               <select
-                                value={config.mmQueryType || 'recall'}
-                                onChange={(e) => updateEvalConfig(config.id, { mmQueryType: e.target.value as 'recall' | 'reflect' })}
+                                value={config.includeBusiness}
+                                onChange={(e) => updateEvalConfig(config.id, { includeBusiness: e.target.value as 'always' | 'never' | 'random' })}
                                 disabled={ffRunning}
                                 className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                                title="Include business name in package"
                               >
-                                <option value="recall">Recall (Raw Facts)</option>
-                                <option value="reflect">Reflect (LLM Synthesis)</option>
+                                <option value="random">Random</option>
+                                <option value="always">Always</option>
+                                <option value="never">Never</option>
                               </select>
                             </div>
-                          )}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )}
+                    </div>
 
                     {/* Memory Settings - only for hindsight modes */}
                     {config.memoryMode !== 'no_memory' && config.memoryMode !== 'filesystem' && (
-                      <div className="space-y-2 mb-3">
-                        {/* Query */}
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">Memory Query</label>
-                          <textarea
-                            value={config.query}
-                            onChange={(e) => updateEvalConfig(config.id, { query: e.target.value })}
-                            placeholder={DEFAULT_QUERY}
-                            rows={2}
-                            disabled={ffRunning}
-                            className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
-                          />
+                      <div className="mb-2 space-y-2">
+                        {/* Memory Retrieval Section - Collapsible */}
+                        <div className="border border-slate-700 rounded bg-slate-800/30">
+                          <button
+                            onClick={() => toggleSection(config.id, 'memory')}
+                            className="w-full flex items-center justify-between px-2 py-1.5 text-left hover:bg-slate-700/30"
+                          >
+                            <span className="text-[10px] text-slate-500 uppercase tracking-wide">Memory Retrieval</span>
+                            <span className="text-slate-500 text-xs">{isSectionExpanded(config.id, 'memory') ? '−' : '+'}</span>
+                          </button>
+                          {isSectionExpanded(config.id, 'memory') && (
+                            <div className="px-2 pb-2">
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className="block text-xs text-slate-500 mb-1">Injection Mode</label>
+                                  <select
+                                    value={config.memoryQueryMode}
+                                    onChange={(e) => updateEvalConfig(config.id, { memoryQueryMode: e.target.value as 'inject_once' | 'per_step' | 'both' })}
+                                    disabled={ffRunning}
+                                    className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                                  >
+                                    <option value="inject_once">Once at Start</option>
+                                    <option value="per_step">Every Step</option>
+                                    <option value="both">Both</option>
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className="block text-xs text-slate-500 mb-1">Preseed Coverage</label>
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="range"
+                                      min={0}
+                                      max={100}
+                                      step={10}
+                                      value={Math.round((config.preseedCoverage || 0) * 100)}
+                                      onChange={(e) => updateEvalConfig(config.id, { preseedCoverage: parseInt(e.target.value) / 100 })}
+                                      disabled={ffRunning}
+                                      className="flex-1 h-1"
+                                    />
+                                    <span className="text-xs text-slate-400 w-8">{Math.round((config.preseedCoverage || 0) * 100)}%</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        {/* Mission */}
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">Bank Mission</label>
-                          <textarea
-                            value={config.mission}
-                            onChange={(e) => updateEvalConfig(config.id, { mission: e.target.value })}
-                            placeholder={DEFAULT_MISSION}
-                            rows={2}
-                            disabled={ffRunning}
-                            className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
-                          />
-                        </div>
-                        {/* Hindsight URL Override */}
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">
-                            Hindsight URL <span className="text-slate-600">(optional override)</span>
-                          </label>
-                          <input
-                            type="text"
-                            value={config.hindsightUrl || ''}
-                            onChange={(e) => updateEvalConfig(config.id, { hindsightUrl: e.target.value || undefined })}
-                            placeholder={globalHindsightUrl}
-                            disabled={ffRunning}
-                            className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 font-mono disabled:opacity-50"
-                          />
-                        </div>
+
+                        {/* Mental Model Settings - only for MM modes - Collapsible */}
+                        {(config.memoryMode === 'hindsight_mm' || config.memoryMode === 'hindsight_mm_nowait') && (
+                          <div className="border border-amber-800/50 rounded bg-amber-900/10">
+                            <button
+                              onClick={() => toggleSection(config.id, 'mm')}
+                              className="w-full flex items-center justify-between px-2 py-1.5 text-left hover:bg-amber-800/20"
+                            >
+                              <span className="text-[10px] text-amber-500 uppercase tracking-wide">Mental Model Settings</span>
+                              <span className="text-amber-500 text-xs">{isSectionExpanded(config.id, 'mm') ? '−' : '+'}</span>
+                            </button>
+                            {isSectionExpanded(config.id, 'mm') && (
+                              <div className="px-2 pb-2 space-y-2">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <label className="block text-xs text-slate-500 mb-1">MM Query Type</label>
+                                    <select
+                                      value={config.mmQueryType || 'recall'}
+                                      onChange={(e) => updateEvalConfig(config.id, { mmQueryType: e.target.value as 'recall' | 'reflect' })}
+                                      disabled={ffRunning}
+                                      className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300"
+                                    >
+                                      <option value="recall">Recall (Raw Facts)</option>
+                                      <option value="reflect">Reflect (LLM Synthesis)</option>
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="block text-xs text-slate-500 mb-1">MM Refresh Interval</label>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      max={50}
+                                      step={1}
+                                      value={config.refreshInterval ?? ''}
+                                      onChange={(e) => updateEvalConfig(config.id, { refreshInterval: e.target.value ? parseInt(e.target.value) : undefined })}
+                                      disabled={ffRunning}
+                                      placeholder="0=off"
+                                      className={`w-full bg-slate-800 border rounded px-2 py-1 text-xs text-slate-300 ${
+                                        config.refreshInterval === undefined ? 'border-red-500' : 'border-slate-600'
+                                      }`}
+                                      title="Trigger explicit consolidation every N deliveries (0 = disabled)"
+                                    />
+                                  </div>
+                                </div>
+                                {/* Only show wait checkbox for hindsight_mm (not nowait mode) */}
+                                {config.memoryMode === 'hindsight_mm' && (
+                                  <label className="flex items-center gap-1 text-xs text-slate-400">
+                                    <input
+                                      type="checkbox"
+                                      checked={config.waitForConsolidation}
+                                      onChange={(e) => updateEvalConfig(config.id, { waitForConsolidation: e.target.checked })}
+                                      disabled={ffRunning}
+                                      className="w-3 h-3 rounded"
+                                    />
+                                    Wait for Consolidation
+                                  </label>
+                                )}
+                                {config.memoryMode === 'hindsight_mm_nowait' && (
+                                  <div className="text-xs text-slate-500 italic">
+                                    NoWait mode: consolidation not awaited
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {/* Bank ID */}
-                    <div className="pt-2 border-t border-slate-600">
-                      <label className="block text-xs text-slate-500 mb-1">Bank ID</label>
-                      <div className="flex gap-1">
-                        <input
-                          type="text"
-                          value={config.bankId}
-                          onChange={(e) => updateEvalConfig(config.id, { bankId: e.target.value })}
-                          disabled={ffRunning}
-                          className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-slate-400 font-mono disabled:opacity-50"
-                        />
+                    {/* Prompts & Connection - only for hindsight modes - Collapsible */}
+                    {config.memoryMode !== 'no_memory' && config.memoryMode !== 'filesystem' && (
+                      <div className="border border-slate-700 rounded bg-slate-800/30 mb-2">
                         <button
-                          onClick={() => updateEvalConfig(config.id, { bankId: `${config.memoryMode}-${shortId()}` })}
-                          disabled={ffRunning}
-                          className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-400 text-[10px] rounded disabled:opacity-50"
-                          title="Generate new bank ID"
+                          onClick={() => toggleSection(config.id, 'prompts')}
+                          className="w-full flex items-center justify-between px-2 py-1.5 text-left hover:bg-slate-700/30"
                         >
-                          New
+                          <span className="text-[10px] text-slate-500 uppercase tracking-wide">Prompts & Connection</span>
+                          <span className="text-slate-500 text-xs">{isSectionExpanded(config.id, 'prompts') ? '−' : '+'}</span>
                         </button>
+                        {isSectionExpanded(config.id, 'prompts') && (
+                          <div className="px-2 pb-2 space-y-2">
+                            {/* Query */}
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">Memory Query</label>
+                              <textarea
+                                value={config.query}
+                                onChange={(e) => updateEvalConfig(config.id, { query: e.target.value })}
+                                placeholder={DEFAULT_QUERY}
+                                rows={2}
+                                disabled={ffRunning}
+                                className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
+                              />
+                            </div>
+                            {/* Mission - only for mental model modes */}
+                            {(config.memoryMode === 'hindsight_mm' || config.memoryMode === 'hindsight_mm_nowait') && (
+                              <div>
+                                <label className="block text-xs text-slate-500 mb-1">Bank Mission</label>
+                                <textarea
+                                  value={config.mission}
+                                  onChange={(e) => updateEvalConfig(config.id, { mission: e.target.value })}
+                                  placeholder={DEFAULT_MISSION}
+                                  rows={2}
+                                  disabled={ffRunning}
+                                  className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 resize-none disabled:opacity-50"
+                                />
+                              </div>
+                            )}
+                            {/* Hindsight URL Override */}
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">
+                                Hindsight URL <span className="text-slate-600">(optional)</span>
+                              </label>
+                              <input
+                                type="text"
+                                value={config.hindsightUrl || ''}
+                                onChange={(e) => updateEvalConfig(config.id, { hindsightUrl: e.target.value || undefined })}
+                                placeholder={isMmMode(config.memoryMode) ? hindsightUrlMM : hindsightUrlNoMM || 'Not configured'}
+                                disabled={ffRunning}
+                                className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 placeholder-slate-500 font-mono disabled:opacity-50"
+                              />
+                            </div>
+                            {/* Bank ID */}
+                            <div>
+                              <label className="block text-xs text-slate-500 mb-1">Bank ID</label>
+                              <div className="flex gap-1">
+                                <input
+                                  type="text"
+                                  value={config.bankId}
+                                  onChange={(e) => updateEvalConfig(config.id, { bankId: e.target.value })}
+                                  disabled={ffRunning}
+                                  className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-slate-400 font-mono disabled:opacity-50"
+                                />
+                                <button
+                                  onClick={() => updateEvalConfig(config.id, { bankId: `${config.memoryMode}-${shortId()}` })}
+                                  disabled={ffRunning}
+                                  className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-400 text-[10px] rounded disabled:opacity-50"
+                                  title="Generate new bank ID"
+                                >
+                                  New
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    </div>
+                    )}
+
+                    {/* Bank ID - for non-hindsight modes */}
+                    {(config.memoryMode === 'no_memory' || config.memoryMode === 'filesystem') && (
+                      <div className="pt-2 border-t border-slate-600">
+                        <label className="block text-xs text-slate-500 mb-1">Bank ID</label>
+                        <div className="flex gap-1">
+                          <input
+                            type="text"
+                            value={config.bankId}
+                            onChange={(e) => updateEvalConfig(config.id, { bankId: e.target.value })}
+                            disabled={ffRunning}
+                            className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-slate-400 font-mono disabled:opacity-50"
+                          />
+                          <button
+                            onClick={() => updateEvalConfig(config.id, { bankId: `${config.memoryMode}-${shortId()}` })}
+                            disabled={ffRunning}
+                            className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-400 text-[10px] rounded disabled:opacity-50"
+                            title="Generate new bank ID"
+                          >
+                            New
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Results Summary */}
                     {config.results.length > 0 && (

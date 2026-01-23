@@ -36,6 +36,7 @@ from .memory_service import (
     reset_delivery_count,
     set_refresh_interval,
     configure_memory,
+    wait_for_pending_consolidation_async,
 )
 from ..websocket.events import event, EventType
 from ..config import LLM_MODEL
@@ -350,31 +351,36 @@ async def run_benchmark_delivery(
             store_timing = time.time() - t_store
             if websocket:
                 await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
+
+            # For MM modes with wait_for_consolidation, wait for pending_consolidation to reach 0
+            # This matches the eval framework behavior - wait after EVERY retain, not just after N deliveries
+            if config.mode == AgentMode.HINDSIGHT_MM and config.wait_for_consolidation:
+                if websocket:
+                    await websocket.send_json(event(EventType.MODELS_REFRESHING, {"message": "Waiting for consolidation..."}))
+                try:
+                    t_consolidate = time.time()
+                    success_consolidation = await wait_for_pending_consolidation_async(poll_interval=2.0, timeout=300.0)
+                    consolidate_timing = time.time() - t_consolidate
+                    metrics.consolidation_triggered = True
+                    if websocket:
+                        await websocket.send_json(event(EventType.MODELS_REFRESHED, {
+                            "success": success_consolidation,
+                            "timing": consolidate_timing
+                        }))
+                except Exception as e:
+                    print(f"[BENCHMARK] Consolidation wait error: {e}")
+                    if websocket:
+                        await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": False, "error": str(e)}))
         except Exception as e:
             print(f"[BENCHMARK] Memory storage error: {e}")
 
-    # Check for mental model consolidation
+    # Track delivery count for refresh interval (used for periodic explicit consolidation)
     if config.mode in [AgentMode.HINDSIGHT_MM, AgentMode.HINDSIGHT_MM_NOWAIT]:
         should_refresh = record_delivery()
-        if should_refresh:
-            metrics.consolidation_triggered = True
-            if websocket:
-                await websocket.send_json(event(EventType.MODELS_REFRESHING, {}))
-
-            if config.mode == AgentMode.HINDSIGHT_MM and config.wait_for_consolidation:
-                # Wait for consolidation
-                try:
-                    result = await refresh_mental_models_async()
-                    if websocket:
-                        await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": True}))
-                except Exception as e:
-                    print(f"[BENCHMARK] Consolidation error: {e}")
-                    if websocket:
-                        await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": False, "error": str(e)}))
-            else:
-                # Fire and forget
-                asyncio.create_task(refresh_mental_models_async())
-
+        # For nowait mode, we can optionally trigger explicit consolidation at intervals
+        if should_refresh and config.mode == AgentMode.HINDSIGHT_MM_NOWAIT:
+            # Fire and forget - don't wait for consolidation
+            asyncio.create_task(refresh_mental_models_async())
             reset_delivery_count()
 
     # Send completion event
@@ -417,11 +423,18 @@ async def run_benchmark(
 
     # Set up memory bank
     if config.mode != AgentMode.NO_MEMORY and config.mode != AgentMode.FILESYSTEM:
-        configure_memory(app_type="bench", difficulty=config.difficulty)
+        # Only set mission for mental model modes (recall/reflect should NOT have mission)
+        # This matches the eval framework behavior where mission enables mental model generation
+        should_set_mission = config.mode in [AgentMode.HINDSIGHT_MM, AgentMode.HINDSIGHT_MM_NOWAIT]
+        configure_memory(
+            app_type="bench",
+            difficulty=config.difficulty,
+            set_mission=should_set_mission
+        )
         set_refresh_interval(config.refresh_interval, app_type="bench", difficulty=config.difficulty)
 
-        # Clear existing mental models for fresh start
-        if config.mode in [AgentMode.HINDSIGHT_MM, AgentMode.HINDSIGHT_MM_NOWAIT]:
+        # Clear existing mental models for fresh start (only for MM modes)
+        if should_set_mission:
             await clear_mental_models_async()
 
     # Clear filesystem notes for fresh start

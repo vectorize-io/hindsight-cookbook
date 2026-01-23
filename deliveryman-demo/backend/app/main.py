@@ -20,7 +20,7 @@ from agent_tools import get_tool_definitions
 from .routers import building as building_router
 from .services import memory_service, agent_service
 from .services.benchmark_service import run_benchmark
-from .services.benchmark_types import AgentMode, BenchmarkConfig
+from .services.benchmark_types import AgentMode, BenchmarkConfig, generate_delivery_queue, DeliveryQueue
 from .services.benchmark_charts import generate_dashboard_chart, generate_comparison_chart
 from .websocket.manager import manager
 from .websocket.events import event, EventType
@@ -135,10 +135,14 @@ class HindsightSettings(BaseModel):
 
 class FastDeliveryRequest(BaseModel):
     recipientName: Optional[str] = None  # None = random
-    includeBusiness: str = "random"  # 'always', 'never', or 'random'
+    businessName: Optional[str] = None  # Pre-determined business name from queue (None = determine by includeBusiness)
+    isRepeat: bool = False  # Whether this is a repeat visit (from pre-generated queue)
+    includeBusiness: str = "random"  # 'always', 'never', or 'random' (only used if businessName is None)
     maxSteps: Optional[int] = None  # Hard cap (None = use stepMultiplier calculation)
     model: Optional[str] = None  # None = use default
     hindsight: Optional[HindsightSettings] = None
+    # Agent mode (determines tools and behavior)
+    mode: str = "recall"  # no_memory, filesystem, recall, reflect, hindsight_mm, hindsight_mm_nowait
     # Benchmark settings (for eval framework parity)
     repeatRatio: float = 0.4
     pairedMode: bool = False
@@ -156,6 +160,54 @@ class FastLoopRequest(BaseModel):
     count: int = 10
     includeBusiness: bool = False
     maxSteps: int = 150
+
+
+# Request model for generating delivery queues
+class QueueConfigRequest(BaseModel):
+    """Configuration for a single queue to generate."""
+    configId: str  # Unique identifier for this config
+    numDeliveries: int = 10
+    repeatRatio: float = 0.4
+    pairedMode: bool = False
+    includeBusiness: str = "random"  # 'always', 'never', 'random'
+    seed: Optional[int] = None  # Random seed for reproducibility
+
+
+class GenerateQueuesRequest(BaseModel):
+    """Request to generate delivery queues for multiple configs."""
+    configs: List[QueueConfigRequest]
+
+
+@app.post("/api/benchmark/generate-queues")
+async def generate_benchmark_queues(request: GenerateQueuesRequest):
+    """Generate delivery queues for multiple benchmark configurations.
+
+    This pre-generates the delivery sequences with proper repeat ratios,
+    so that all configs can share the same queue structure for fair comparison.
+
+    Returns a dict mapping configId -> queue data (recipients, businesses, isRepeat flags).
+    """
+    building = get_building()
+    queues = {}
+
+    for config in request.configs:
+        queue = generate_delivery_queue(
+            building=building,
+            num_deliveries=config.numDeliveries,
+            repeat_ratio=config.repeatRatio,
+            paired_mode=config.pairedMode,
+            include_business=config.includeBusiness,
+            seed=config.seed,
+        )
+
+        queues[config.configId] = {
+            "recipients": queue.recipients,
+            "businesses": queue.businesses,
+            "isRepeat": queue.is_repeat,
+            "totalDeliveries": len(queue),
+        }
+
+    return {"queues": queues}
 
 
 # REST endpoints for difficulty
@@ -552,15 +604,20 @@ async def fast_delivery(request: FastDeliveryRequest):
     if not emp_info:
         return {"error": f"Employee {recipient_name} not found"}
 
-    # Determine if business name should be included based on includeBusiness setting
-    if request.includeBusiness == "always":
-        include_biz = True
-    elif request.includeBusiness == "never":
-        include_biz = False
-    else:  # "random"
-        include_biz = random.choice([True, False])
-
-    business_name = emp_info[0].name if include_biz else None
+    # Use pre-determined business name if provided (from generated queue)
+    # Otherwise, determine based on includeBusiness setting
+    if request.businessName is not None:
+        # Pre-determined from queue - use as-is (could be actual name or None)
+        business_name = request.businessName
+    else:
+        # Fallback: determine based on includeBusiness setting
+        if request.includeBusiness == "always":
+            include_biz = True
+        elif request.includeBusiness == "never":
+            include_biz = False
+        else:  # "random"
+            include_biz = random.choice([True, False])
+        business_name = emp_info[0].name if include_biz else None
 
     package = Package(
         id=f"{random.randint(1000, 9999)}",
@@ -608,6 +665,7 @@ async def fast_delivery(request: FastDeliveryRequest):
         model=request.model,
         hindsight=hindsight_dict,
         delivery_id=delivery_id,
+        mode=request.mode,
         memory_query_mode=request.memoryQueryMode,
         wait_for_consolidation=request.waitForConsolidation,
         preseed_coverage=request.preseedCoverage,
@@ -615,6 +673,8 @@ async def fast_delivery(request: FastDeliveryRequest):
     )
 
     result["recipientName"] = recipient_name
+    result["businessName"] = business_name
+    result["isRepeat"] = request.isRepeat
     result["optimalSteps"] = optimal_steps
     result["maxStepsAllowed"] = max_steps
     return result

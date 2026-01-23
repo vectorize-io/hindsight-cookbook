@@ -279,11 +279,17 @@ def generate_delivery_queue(
 ) -> DeliveryQueue:
     """Generate a queue of deliveries with configurable repeat ratio.
 
+    Matches eval framework behavior:
+    - Pre-calculates unique visits and repeat visits
+    - First 60% of deliveries favor unique visits (tests new exploration)
+    - Remaining 40% has more repeats (tests learning/memory)
+    - Creates "frequent employees" that get majority of repeat visits
+
     Args:
         building: The building to generate deliveries for
         num_deliveries: Total number of deliveries
-        repeat_ratio: Fraction of deliveries that revisit previous offices (0.0-1.0)
-        paired_mode: If True, each office is visited exactly 2x
+        repeat_ratio: Fraction of deliveries that are repeats (0.0-1.0)
+        paired_mode: If True, each employee is visited exactly 2x
         include_business: "always", "never", or "random"
         seed: Random seed for reproducibility
 
@@ -301,63 +307,125 @@ def generate_delivery_queue(
         return DeliveryQueue()
 
     queue = DeliveryQueue()
-    visited = set()  # Track visited employees for repeat detection
+
+    def get_business_name(emp_name: str) -> Optional[str]:
+        """Determine business name based on include_business setting."""
+        business, _ = building.all_employees[emp_name]
+        if include_business == "always":
+            return business.name
+        elif include_business == "never":
+            return None
+        else:  # random
+            return business.name if random.random() > 0.5 else None
 
     if paired_mode:
-        # Each employee is visited exactly 2x
-        # Shuffle employees and assign 2 deliveries each
+        # Each employee is visited exactly 2x (matches eval framework's generate_paired_deliveries)
         selected = all_employees.copy()
         random.shuffle(selected)
 
         # Limit to half of num_deliveries (since each gets 2 visits)
-        selected = selected[: num_deliveries // 2]
+        num_employees = min(len(selected), num_deliveries // 2)
+        selected = selected[:num_employees]
 
-        # Create pairs
-        deliveries = []
-        for emp_name in selected:
-            business, employee = building.all_employees[emp_name]
-            biz_name = business.name if include_business == "always" or (include_business == "random" and random.random() > 0.5) else None
+        # Track which employees have been visited once
+        first_visits = selected.copy()
+        second_visits = selected.copy()
+        random.shuffle(second_visits)
 
-            # First visit (not a repeat)
-            deliveries.append((emp_name, biz_name, False))
-            # Second visit (repeat)
-            deliveries.append((emp_name, biz_name, True))
+        # Interleave: put most first visits early, second visits later (but not strictly)
+        visit_order = []
+        first_queue = first_visits.copy()
+        second_queue = second_visits.copy()
+        visited_once = set()
 
-        # Shuffle to interleave
-        random.shuffle(deliveries)
+        # First 60% of deliveries - mostly first visits
+        first_portion = int(num_employees * 1.2)  # ~60% of 2*num_employees
+        for _ in range(first_portion):
+            if first_queue:
+                emp = first_queue.pop(0)
+                visit_order.append((emp, False))  # First visit
+                visited_once.add(emp)
+            elif second_queue:
+                # Find an employee that's been visited
+                for i, emp in enumerate(second_queue):
+                    if emp in visited_once:
+                        visit_order.append((emp, True))  # Second visit
+                        second_queue.pop(i)
+                        break
 
-        for emp_name, biz_name, is_repeat in deliveries:
+        # Remaining deliveries - mix of remaining first visits and second visits
+        remaining = [(emp, False) for emp in first_queue] + [(emp, True) for emp in second_queue]
+        random.shuffle(remaining)
+        visit_order.extend(remaining)
+
+        # Build the queue
+        for emp_name, is_repeat in visit_order:
             queue.recipients.append(emp_name)
-            queue.businesses.append(biz_name)
+            queue.businesses.append(get_business_name(emp_name))
             queue.is_repeat.append(is_repeat)
 
     else:
-        # Standard mode with configurable repeat ratio
-        for i in range(num_deliveries):
-            # Decide if this should be a repeat
-            if visited and random.random() < repeat_ratio:
-                # Pick from visited employees
-                emp_name = random.choice(list(visited))
-                is_repeat = True
+        # Standard mode with sophisticated repeat ratio (matches eval framework)
+        # Split deliveries: unique visits + repeat visits
+        num_repeats = int(num_deliveries * repeat_ratio)
+        num_unique = num_deliveries - num_repeats
+
+        # Ensure we don't request more unique visits than employees exist
+        num_unique = min(num_unique, len(all_employees))
+        num_repeats = num_deliveries - num_unique
+
+        # Select employees for unique visits
+        shuffled_employees = all_employees.copy()
+        random.shuffle(shuffled_employees)
+        unique_visits = shuffled_employees[:num_unique]
+
+        # Select employees for repeat visits (favor some employees more than others)
+        # This simulates "frequent customers" that a delivery person would remember
+        frequent_employees = unique_visits[:max(1, len(unique_visits) // 3)]
+        repeat_visits = []
+        for _ in range(num_repeats):
+            # 70% chance to pick from frequent employees, 30% from all unique
+            if random.random() < 0.7 and frequent_employees:
+                repeat_visits.append(random.choice(frequent_employees))
             else:
-                # Pick any employee (may be visited or new)
-                emp_name = random.choice(all_employees)
-                is_repeat = emp_name in visited
+                repeat_visits.append(random.choice(unique_visits))
 
-            business, employee = building.all_employees[emp_name]
+        # Build delivery sequence: spread repeats throughout
+        # First 60% - favor unique visits (tests exploration)
+        # Remaining 40% - more repeats (tests if agent learned)
+        visit_order = []
+        unique_queue = list(unique_visits)
+        repeat_queue = list(repeat_visits)
+        random.shuffle(unique_queue)
+        random.shuffle(repeat_queue)
+        visited = set()
 
-            # Determine business name inclusion
-            if include_business == "always":
-                biz_name = business.name
-            elif include_business == "never":
-                biz_name = None
-            else:  # random
-                biz_name = business.name if random.random() > 0.5 else None
+        # First 60% - favor unique visits (80% unique, 20% repeat)
+        first_portion = int(num_deliveries * 0.6)
+        for _ in range(first_portion):
+            if unique_queue and (not repeat_queue or random.random() < 0.8):
+                emp = unique_queue.pop()
+                is_repeat = emp in visited
+                visit_order.append((emp, is_repeat))
+                visited.add(emp)
+            elif repeat_queue:
+                emp = repeat_queue.pop()
+                is_repeat = emp in visited
+                visit_order.append((emp, is_repeat))
+                visited.add(emp)
 
+        # Remaining 40% - use what's left (more repeats)
+        remaining_emps = unique_queue + repeat_queue
+        random.shuffle(remaining_emps)
+        for emp in remaining_emps:
+            is_repeat = emp in visited
+            visit_order.append((emp, is_repeat))
+            visited.add(emp)
+
+        # Build the queue
+        for emp_name, is_repeat in visit_order:
             queue.recipients.append(emp_name)
-            queue.businesses.append(biz_name)
+            queue.businesses.append(get_business_name(emp_name))
             queue.is_repeat.append(is_repeat)
-
-            visited.add(emp_name)
 
     return queue

@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, str(__file__).rsplit("/app/", 1)[0])
 
 from building import Building, Package, AgentState, Side, get_building, compute_optimal_steps, compute_path_efficiency
-from agent_tools import AgentTools, get_tool_definitions, execute_tool
+from agent_tools import AgentTools, get_tool_definitions, execute_tool, get_tool_definitions_with_memory, MemoryToolHandler
 from .memory_service import (
     completion,
     retain,
@@ -28,6 +28,7 @@ from .memory_service import (
     reset_delivery_count,
     get_mental_models_async,
     get_bank_stats_async,
+    wait_for_pending_consolidation_async,  # Wait for consolidation after retain
     BANK_MISSION,  # Default mission for hindsight
 )
 from ..websocket.events import (
@@ -549,6 +550,7 @@ async def run_delivery_fast(
     model: Optional[str] = None,
     hindsight: Optional[dict] = None,
     delivery_id: int = 0,
+    mode: str = "recall",  # no_memory, filesystem, recall, reflect, hindsight_mm, hindsight_mm_nowait
     memory_query_mode: str = "inject_once",  # 'inject_once', 'per_step', 'both'
     wait_for_consolidation: bool = True,
     preseed_coverage: float = 0.0,  # 0.0-1.0, fraction of building knowledge to pre-seed
@@ -563,6 +565,7 @@ async def run_delivery_fast(
         model: LLM model to use (None = use default from config)
         hindsight: Hindsight settings (inject, reflect, store, query, mission)
         delivery_id: Unique ID for this delivery (for memory grouping)
+        mode: Agent mode - determines tools and memory behavior
         memory_query_mode: When to inject memory - 'inject_once' (start only),
                           'per_step' (every step), or 'both'
         wait_for_consolidation: Whether to wait after storing for consolidation
@@ -593,11 +596,12 @@ async def run_delivery_fast(
     if custom_bank_id:
         set_bank_id(custom_bank_id, set_background=False)
 
-    # ALWAYS set bank mission for hindsight modes (required for mental models)
-    # Priority: custom_mission > custom_background > BANK_MISSION (default)
-    if inject_memories or store_conversations:
+    # Only set bank mission for mental model modes (hindsight_mm, hindsight_mm_nowait)
+    # Recall and reflect modes should NOT have mission (matches eval framework behavior)
+    is_mm_mode = mode in ("hindsight_mm", "hindsight_mm_nowait")
+    if is_mm_mode and (inject_memories or store_conversations):
         mission_to_set = custom_mission or custom_background or BANK_MISSION
-        print(f"[AGENT] Setting bank mission: {mission_to_set[:50]}...", flush=True)
+        print(f"[AGENT] Setting bank mission for MM mode: {mission_to_set[:50]}...", flush=True)
         await set_bank_mission_async(custom_bank_id, mission_to_set)
 
     # Pre-seed building knowledge if coverage > 0
@@ -606,6 +610,12 @@ async def run_delivery_fast(
         if preseed_facts:
             await preseed_memory(preseed_facts, delivery_id)
             print(f"[MEMORY] Pre-seeded {len(preseed_facts)} facts ({preseed_coverage*100:.0f}% coverage)")
+            # For MM modes with wait_for_consolidation, wait for preseed to consolidate
+            # This ensures mental models are built from preseed data before delivery starts
+            if is_mm_mode and wait_for_consolidation:
+                print(f"[MEMORY] Waiting for preseed consolidation...")
+                await wait_for_pending_consolidation_async(timeout=120.0)
+                print(f"[MEMORY] Preseed consolidation complete")
 
     # Set up agent state - starting position depends on difficulty
     if building.is_city_grid:
@@ -655,11 +665,43 @@ async def run_delivery_fast(
         if memory_context:
             system_prompt = f"{base_system_prompt}\n\n# Relevant Memory\n{memory_context}"
 
+    # Set up filesystem mode if needed
+    is_filesystem_mode = mode == "filesystem"
+    memory_tool_handler = None
+    if is_filesystem_mode:
+        # Use filesystem-specific system prompt
+        system_prompt = """You are a delivery agent navigating a building to deliver packages.
+
+Your goal is to find the target office and deliver the package as efficiently as possible.
+
+IMPORTANT: You have a NOTES FILE to track what you learn!
+- Use read_notes() at the START of each delivery to check what you know
+- Use write_notes(content) AFTER learning something to save it
+- Notes persist between deliveries - use them to build a map!
+
+Strategy:
+1. First read_notes() to check if you know where the target office is.
+2. If found in notes, navigate directly there.
+3. If not in notes, explore systematically.
+4. After finding the office, write_notes() to save what you learned!"""
+        # Create memory tool handler for filesystem
+        notes_key = hindsight.get("bankId") if hindsight else f"filesystem-{delivery_id}"
+        memory_tool_handler = MemoryToolHandler(recall_fn=None, notes_key=notes_key)
+
     # Initial messages with (possibly augmented) system prompt
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Please deliver this package: {package}"}
     ]
+
+    # Get tools based on mode
+    include_filesystem = is_filesystem_mode
+    include_memory = is_mm_mode and memory_query_mode in ("per_step", "both")
+    tool_definitions = get_tool_definitions_with_memory(
+        difficulty=building.difficulty,
+        include_memory=include_memory,
+        include_filesystem=include_filesystem,
+    )
 
     tools = AgentTools(building, agent_state)
     success = False
@@ -696,7 +738,7 @@ async def run_delivery_fast(
             response = await completion(
                 model=llm_model,
                 messages=messages,
-                tools=get_tool_definitions(building.difficulty),
+                tools=tool_definitions,
                 tool_choice="required",
                 timeout=30,
             )
@@ -720,6 +762,26 @@ async def run_delivery_fast(
                 for tool_call in message.tool_calls:
                     tool_name = tool_call.function.name
                     arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+
+                    # Handle filesystem/memory tools (don't count against step limit)
+                    is_memory_tool = tool_name in ("read_notes", "write_notes", "remember")
+                    if is_memory_tool and memory_tool_handler:
+                        result, handled = await memory_tool_handler.execute(tool_name, arguments)
+                        if handled:
+                            tool_results.append({
+                                "tool_call_id": tool_call.id,
+                                "role": "tool",
+                                "content": result
+                            })
+                            actions.append({
+                                "step": agent_state.steps_taken,
+                                "tool": tool_name,
+                                "args": arguments,
+                                "result": result[:100] if len(result) > 100 else result,
+                                "timing": 0,
+                                "memoryCount": 0,
+                            })
+                            continue  # Skip normal tool execution
 
                     # Store position before tool execution to detect movement
                     prev_position = agent_state.position_str()
@@ -782,6 +844,12 @@ async def run_delivery_fast(
                             context=f"delivery:{package.recipient_name}:success",
                             document_id=f"delivery-{delivery_id}"
                         )
+                        # For MM modes with wait_for_consolidation, wait for pending_consolidation to reach 0
+                        # This matches eval framework behavior: wait after EVERY retain
+                        if is_mm_mode and wait_for_consolidation:
+                            print(f"[MEMORY] Waiting for consolidation after retain...")
+                            await wait_for_pending_consolidation_async(timeout=120.0)
+                            print(f"[MEMORY] Consolidation complete")
                     # Record delivery and check if mental model refresh is needed
                     should_refresh = record_delivery()
                     if should_refresh:
@@ -811,6 +879,11 @@ async def run_delivery_fast(
                     context=f"delivery:{package.recipient_name}:failed",
                     document_id=f"delivery-{delivery_id}"
                 )
+                # For MM modes with wait_for_consolidation, wait for pending_consolidation to reach 0
+                if is_mm_mode and wait_for_consolidation:
+                    print(f"[MEMORY] Waiting for consolidation after retain (failed delivery)...")
+                    await wait_for_pending_consolidation_async(timeout=120.0)
+                    print(f"[MEMORY] Consolidation complete")
             # Record delivery (even failures count) and check if mental model refresh is needed
             should_refresh = record_delivery()
             if should_refresh:
