@@ -82,6 +82,21 @@ npm i
 npm run dev
 ```
 
+## Quick Start Demos
+
+The [demos](./demos) directory contains ready-to-run example applications showcasing Hindsight's memory capabilities:
+
+| Demo | Description |
+|------|-------------|
+| Movie Recommendation | Personalized movie recommender that learns your tastes |
+| Fitness Tracker | Fitness coach with workout and diet memory |
+| Study Buddy | Study assistant with spaced repetition |
+| Personal Assistant | General-purpose assistant with long-term memory |
+| Healthcare Assistant | Health chatbot demo |
+| Personalized Search | Context-aware search agent |
+
+Each demo includes both a Python script and Jupyter notebook. See the [demos README](./demos/README.md) for setup instructions.
+
 ## Notebooks
 
 Interactive Jupyter notebooks demonstrating Hindsight features:
