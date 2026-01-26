@@ -372,13 +372,13 @@ You have access to read_notes() to check your memory at any time.
             memory_query = get_hindsight_query(recipient_name, config.query)
 
             if should_use_reflect():
-                result = await reflect_async(query=memory_query, budget="high")
+                result = await reflect_async(query=memory_query, budget="high", bank_id=config.bank_id)
                 if result and hasattr(result, 'text') and result.text:
                     memory_context = result.text
                     metrics.memory_injected = True
             else:
                 # Recall mode (including MM modes with mm_query_type="recall")
-                result = await recall_async(query=memory_query, budget="high")
+                result = await recall_async(query=memory_query, budget="high", bank_id=config.bank_id)
                 if result and len(result) > 0:
                     memory_context = format_recall_as_context(result)
                     metrics.memory_injected = True
@@ -459,7 +459,7 @@ You have access to read_notes() to check your memory at any time.
                     contextual_query = f"{memory_query}\n\nContext: {context_str}"
 
                     # Always reflect for per-step (recall doesn't benefit from per-step)
-                    result = await reflect_async(query=contextual_query, budget="high")
+                    result = await reflect_async(query=contextual_query, budget="high", bank_id=config.bank_id)
                     step_memory = result.text if result and hasattr(result, 'text') else None
 
                     if step_memory:
@@ -674,7 +674,8 @@ You have access to read_notes() to check your memory at any time.
             await retain_async(
                 final_convo,
                 context=f"delivery:{recipient_name}:{'success' if success else 'failed'}",
-                document_id=f"delivery-{delivery_id}"
+                document_id=f"delivery-{delivery_id}",
+                bank_id=config.bank_id
             )
             store_timing = time.time() - t_store
             if websocket:
@@ -687,7 +688,7 @@ You have access to read_notes() to check your memory at any time.
                     await websocket.send_json(event(EventType.MODELS_REFRESHING, {"message": "Waiting for consolidation..."}))
                 try:
                     t_consolidate = time.time()
-                    success_consolidation = await wait_for_pending_consolidation_async(poll_interval=2.0, timeout=300.0)
+                    success_consolidation = await wait_for_pending_consolidation_async(bank_id=config.bank_id, poll_interval=2.0, timeout=300.0)
                     consolidate_timing = time.time() - t_consolidate
                     metrics.consolidation_triggered = True
                     if websocket:
@@ -787,7 +788,8 @@ async def run_benchmark(
                 await retain_async(
                     preseed_facts,
                     context="building_knowledge:preseed",
-                    document_id="preseed-building-knowledge"
+                    document_id="preseed-building-knowledge",
+                    bank_id=config.bank_id
                 )
                 if websocket:
                     await websocket.send_json(event(EventType.MEMORY_STORED, {

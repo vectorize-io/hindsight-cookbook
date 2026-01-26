@@ -296,27 +296,29 @@ def retain(content: str, sync: bool = True):
     return hindsight_litellm.retain(content, sync=sync)
 
 
-async def retain_async(content: str, context: str = None, document_id: str = None):
+async def retain_async(content: str, context: str = None, document_id: str = None, bank_id: str = None):
     """Async store content to Hindsight memory.
 
     Args:
         content: The text content to store
         context: Context description for the memory
         document_id: Optional document ID for grouping related memories
+        bank_id: Override bank_id (for parallel execution with separate banks)
     """
-    print(f"[MEMORY] retain_async called - context={context}, doc_id={document_id}, content_len={len(content)}", flush=True)
-    print(f"[MEMORY] Current bank_id for retain: {get_bank_id()}", flush=True)
+    bid = bank_id or get_bank_id()
+    print(f"[MEMORY] retain_async called - bank={bid}, context={context}, doc_id={document_id}, content_len={len(content)}", flush=True)
     loop = asyncio.get_event_loop()
 
     def _do_retain():
-        print(f"[MEMORY] Starting hindsight_litellm.retain...", flush=True)
+        print(f"[MEMORY] Starting hindsight_litellm.retain to bank {bid}...", flush=True)
         try:
             result = hindsight_litellm.retain(
                 content,
+                bank_id=bid,
                 context=context,
                 document_id=document_id,
             )
-            print(f"[MEMORY] retain completed successfully", flush=True)
+            print(f"[MEMORY] retain completed successfully to bank {bid}", flush=True)
             return result
         except Exception as e:
             print(f"[MEMORY] retain FAILED: {e}", flush=True)
@@ -325,25 +327,28 @@ async def retain_async(content: str, context: str = None, document_id: str = Non
     return await loop.run_in_executor(_executor, _do_retain)
 
 
-def recall_sync(query: str, budget: str = "high", max_tokens: int = 4096):
+def recall_sync(query: str, budget: str = "high", max_tokens: int = 4096, bank_id: str = None):
     """Synchronous recall - get raw memories directly.
 
     Args:
         query: The question to search memories for
         budget: Search depth (low, mid, high)
         max_tokens: Maximum tokens to return
+        bank_id: Override bank_id (for parallel execution with separate banks)
 
     Returns:
         RecallResponse with list of RecallResult objects (each has text, fact_type, weight)
     """
+    bid = bank_id or get_bank_id()
     return hindsight_litellm.recall(
         query=query,
+        bank_id=bid,
         budget=budget,
         max_tokens=max_tokens,
     )
 
 
-async def recall_async(query: str, budget: str = "high", max_tokens: int = 4096):
+async def recall_async(query: str, budget: str = "high", max_tokens: int = 4096, bank_id: str = None):
     """Async recall - get raw memories directly.
 
     Returns a list of memory facts without LLM synthesis.
@@ -353,6 +358,7 @@ async def recall_async(query: str, budget: str = "high", max_tokens: int = 4096)
         query: The question to search memories for
         budget: Search depth (low, mid, high)
         max_tokens: Maximum tokens to return
+        bank_id: Override bank_id (for parallel execution with separate banks)
 
     Returns:
         RecallResponse with list of RecallResult objects
@@ -360,7 +366,7 @@ async def recall_async(query: str, budget: str = "high", max_tokens: int = 4096)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: recall_sync(query, budget, max_tokens)
+        lambda: recall_sync(query, budget, max_tokens, bank_id)
     )
 
 
@@ -382,25 +388,28 @@ def format_recall_as_context(recall_response) -> str:
     return "\n".join(lines)
 
 
-def reflect_sync(query: str, budget: str = "high", context: str = None):
+def reflect_sync(query: str, budget: str = "high", context: str = None, bank_id: str = None):
     """Synchronous reflect - get synthesized memory-based answer.
 
     Args:
         query: The question to answer based on memories
         budget: Search depth (low, mid, high)
         context: Additional context for reflection
+        bank_id: Override bank_id (for parallel execution with separate banks)
 
     Returns:
         ReflectResult with synthesized answer text
     """
+    bid = bank_id or get_bank_id()
     return hindsight_litellm.reflect(
         query=query,
+        bank_id=bid,
         budget=budget,
         context=context,
     )
 
 
-async def reflect_async(query: str, budget: str = "high", context: str = None):
+async def reflect_async(query: str, budget: str = "high", context: str = None, bank_id: str = None):
     """Async reflect - get synthesized memory-based answer.
 
     Uses an LLM to synthesize a coherent answer based on the bank's memories.
@@ -410,6 +419,7 @@ async def reflect_async(query: str, budget: str = "high", context: str = None):
         query: The question to answer based on memories (e.g., "Where does Alice work?")
         budget: Search depth (low, mid, high) - controls how many memories are considered
         context: Additional context for reflection
+        bank_id: Override bank_id (for parallel execution with separate banks)
 
     Returns:
         ReflectResult with synthesized answer text
@@ -417,7 +427,7 @@ async def reflect_async(query: str, budget: str = "high", context: str = None):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: reflect_sync(query, budget, context)
+        lambda: reflect_sync(query, budget, context, bank_id)
     )
 
 
