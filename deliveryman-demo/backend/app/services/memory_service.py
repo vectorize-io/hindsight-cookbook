@@ -5,7 +5,23 @@ import asyncio
 import concurrent.futures
 import httpx
 import hindsight_litellm
-from ..config import get_hindsight_url, HINDSIGHT_API_URL
+from ..config import get_hindsight_url, set_hindsight_url, HINDSIGHT_API_URL
+
+
+def initialize_memory(hindsight_url: str = None):
+    """Initialize the memory service with the specified Hindsight URL.
+
+    Args:
+        hindsight_url: URL of the Hindsight API (None = use default from env)
+    """
+    if hindsight_url:
+        set_hindsight_url(hindsight_url)
+
+    # Re-initialize the HTTP client with the new URL
+    global _http_client
+    if _http_client is not None:
+        _http_client.close()
+        _http_client = None
 
 # HTTP client for direct API calls (mental models, mission)
 _http_client: httpx.Client | None = None

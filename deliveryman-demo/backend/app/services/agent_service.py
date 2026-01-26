@@ -9,7 +9,7 @@ from fastapi import WebSocket
 import sys
 sys.path.insert(0, str(__file__).rsplit("/app/", 1)[0])
 
-from building import Building, Package, AgentState, Side, get_building, compute_optimal_steps, compute_path_efficiency
+from building import Building, Package, AgentState, Side, get_building, compute_optimal_steps, compute_path_efficiency, compute_remaining_steps
 from agent_tools import AgentTools, get_tool_definitions, execute_tool, get_tool_definitions_with_memory, MemoryToolHandler
 from .memory_service import (
     completion,
@@ -639,12 +639,17 @@ async def run_delivery_fast(
     memory_method = "reflect" if use_reflect else "recall"
 
     # Helper function to fetch memory context
-    async def fetch_memory_context():
-        """Fetch memory context using recall or reflect."""
+    async def fetch_memory_context(step_context: str = None):
+        """Fetch memory context using recall or reflect.
+
+        Args:
+            step_context: Optional context for per-step queries (e.g., current position)
+        """
         try:
             memory_query = get_hindsight_query(package.recipient_name, custom_query)
             if use_reflect:
-                result = await reflect_async(query=memory_query, budget="high")
+                # Pass context to reflect for better situational awareness
+                result = await reflect_async(query=memory_query, budget="high", context=step_context)
                 if result and hasattr(result, 'text') and result.text:
                     return result.text
             else:
@@ -716,6 +721,7 @@ Strategy:
     # Track additional metrics for eval parity
     api_calls = 0
     wrong_turns = 0
+    errors = 0  # Non-optimal moves
     path = [agent_state.position_str()]  # Track positions visited
     previous_positions = {agent_state.position_str()}  # Set for backtrack detection
 
@@ -724,11 +730,26 @@ Strategy:
     if optimal_steps < 0:
         optimal_steps = 3  # Fallback default
 
+    # Get target position for error tracking
+    target_floor, target_side, target_building_name = 1, Side.FRONT, None
+    if package.recipient_name in building.all_employees:
+        target_business, _ = building.all_employees[package.recipient_name]
+        target_floor = target_business.floor
+        target_side = target_business.side
+        if building.is_city_grid and hasattr(target_business, 'building_name'):
+            target_building_name = target_business.building_name
+
     try:
         while agent_state.steps_taken < max_steps:
             # Per-step memory injection if enabled
             if inject_memories and inject_per_step and agent_state.steps_taken > 0:
-                step_memory = await fetch_memory_context()
+                # Build context from recent conversation (last few tool results)
+                recent_context = []
+                for msg in messages[-6:]:  # Last 3 exchanges
+                    if msg.get("role") == "tool" and msg.get("content"):
+                        recent_context.append(msg["content"])
+                step_context = f"Delivering to {package.recipient_name}. Current position: {agent_state.position_str()}. Recent actions: {' | '.join(recent_context[-3:]) if recent_context else 'None'}"
+                step_memory = await fetch_memory_context(step_context)
                 if step_memory:
                     # Update the system message with fresh memory
                     messages[0]["content"] = f"{base_system_prompt}\n\n# Relevant Memory (Step {agent_state.steps_taken})\n{step_memory}"
@@ -786,6 +807,19 @@ Strategy:
                     # Store position before tool execution to detect movement
                     prev_position = agent_state.position_str()
 
+                    # Calculate remaining steps before tool execution (for error tracking)
+                    remaining_before = compute_remaining_steps(
+                        current_floor=agent_state.floor,
+                        current_side=agent_state.side,
+                        target_floor=target_floor,
+                        target_side=target_side,
+                        building=building,
+                        current_building=agent_state.current_building,
+                        target_building_name=target_building_name,
+                        grid_row=agent_state.grid_row,
+                        grid_col=agent_state.grid_col,
+                    )
+
                     result = execute_tool(tools, tool_name, arguments)
 
                     # Track path and detect wrong turns (backtracking)
@@ -797,6 +831,22 @@ Strategy:
                             # Backtracking to a previously visited position
                             wrong_turns += 1
                         previous_positions.add(new_position)
+
+                        # Error tracking: calculate remaining steps after move
+                        remaining_after = compute_remaining_steps(
+                            current_floor=agent_state.floor,
+                            current_side=agent_state.side,
+                            target_floor=target_floor,
+                            target_side=target_side,
+                            building=building,
+                            current_building=agent_state.current_building,
+                            target_building_name=target_building_name,
+                            grid_row=agent_state.grid_row,
+                            grid_col=agent_state.grid_col,
+                        )
+                        # If remaining steps didn't decrease, it was a non-optimal move
+                        if remaining_after >= remaining_before:
+                            errors += 1
 
                     # Detect failed moves (trying to go somewhere invalid)
                     if tool_name in ("go_up", "go_down", "go_to_front", "go_to_back", "move_north", "move_south", "move_east", "move_west"):
@@ -934,6 +984,8 @@ Strategy:
             # New fields for eval parity
             "apiCalls": api_calls,
             "wrongTurns": wrong_turns,
+            "errors": errors,
+            "errorRate": errors / max(agent_state.steps_taken, 1),  # Non-optimal moves / total moves
             "path": path,
             "mentalModelCount": mental_model_count,
             "mentalModelObservations": mental_model_observations,
@@ -960,6 +1012,8 @@ Strategy:
             # New fields for eval parity (with defaults for errors)
             "apiCalls": api_calls,
             "wrongTurns": wrong_turns,
+            "errors": errors,
+            "errorRate": errors / max(agent_state.steps_taken, 1),
             "path": path,
             "mentalModelCount": 0,
             "mentalModelObservations": 0,

@@ -24,6 +24,7 @@ class BenchmarkConfig:
     # Agent settings
     mode: AgentMode = AgentMode.RECALL
     model: str = "openai/gpt-4o"
+    name: Optional[str] = None  # Custom name for this config (defaults to mode)
 
     # Delivery settings
     num_deliveries: int = 10
@@ -34,11 +35,20 @@ class BenchmarkConfig:
     # Step limits
     step_multiplier: float = 5.0  # max_steps = optimal * multiplier
     min_steps: int = 15  # Minimum step limit per delivery
+    max_steps: Optional[int] = None  # Hard cap on steps (optional)
 
     # Memory settings
     memory_query_mode: str = "inject_once"  # "inject_once", "per_step", "both"
     wait_for_consolidation: bool = True  # Wait after store operations
     refresh_interval: int = 5  # Refresh mental models every N deliveries (0=disabled)
+    preseed_coverage: float = 0.0  # Pre-seed building knowledge (0.0-1.0)
+    mm_query_type: str = "recall"  # "recall" or "reflect" for MM modes
+
+    # Hindsight settings
+    hindsight_url: Optional[str] = None  # Override hindsight API URL
+    bank_id: Optional[str] = None  # Custom bank ID (None = auto-generated)
+    mission: Optional[str] = None  # Custom bank mission for mental models
+    query: Optional[str] = None  # Custom memory query template ({recipient} placeholder)
 
     # Building settings
     difficulty: str = "easy"
@@ -47,20 +57,10 @@ class BenchmarkConfig:
     offices_per_floor: int = 2  # Only for procedural
     seed: Optional[int] = None  # For reproducible runs
 
-
-@dataclass
-class TokenUsage:
-    """Token usage for a single LLM call."""
-
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-
-    def add(self, other: "TokenUsage"):
-        """Add another TokenUsage to this one."""
-        self.prompt_tokens += other.prompt_tokens
-        self.completion_tokens += other.completion_tokens
-        self.total_tokens += other.total_tokens
+    @property
+    def display_name(self) -> str:
+        """Get display name (custom name or mode)."""
+        return self.name or self.mode.value
 
 
 @dataclass
@@ -76,14 +76,8 @@ class DeliveryMetrics:
     steps_taken: int = 0
     optimal_steps: int = 0
     path_efficiency: float = 0.0
-
-    # Token usage
-    tokens: TokenUsage = field(default_factory=TokenUsage)
-
-    # Timing
-    start_time: float = 0.0
-    end_time: float = 0.0
-    latency_ms: float = 0.0
+    errors: int = 0  # Non-optimal moves (wrong direction OR failed tool calls)
+    error_rate: float = 0.0  # errors / steps_taken
 
     # Memory
     memory_injected: bool = False
@@ -95,8 +89,6 @@ class DeliveryMetrics:
 
     def compute_derived(self):
         """Compute derived metrics."""
-        if self.end_time > 0 and self.start_time > 0:
-            self.latency_ms = (self.end_time - self.start_time) * 1000
         if self.optimal_steps > 0 and self.steps_taken > 0:
             self.path_efficiency = min(1.0, self.optimal_steps / self.steps_taken)
 
@@ -110,12 +102,8 @@ class DeliveryMetrics:
             "stepsTaken": self.steps_taken,
             "optimalSteps": self.optimal_steps,
             "pathEfficiency": self.path_efficiency,
-            "tokens": {
-                "prompt": self.tokens.prompt_tokens,
-                "completion": self.tokens.completion_tokens,
-                "total": self.tokens.total_tokens,
-            },
-            "latencyMs": self.latency_ms,
+            "errors": self.errors,
+            "errorRate": self.error_rate,
             "memoryInjected": self.memory_injected,
             "memoryQueryCount": self.memory_query_count,
             "consolidationTriggered": self.consolidation_triggered,
@@ -140,9 +128,8 @@ class BenchmarkResults:
     total_steps: int = 0
     total_optimal_steps: int = 0
     avg_path_efficiency: float = 0.0
-
-    total_tokens: TokenUsage = field(default_factory=TokenUsage)
-    total_latency_ms: float = 0.0
+    total_errors: int = 0
+    avg_error_rate: float = 0.0
 
     # Learning metrics
     convergence_episode: int = 0  # First episode with efficiency >= 90%
@@ -152,7 +139,6 @@ class BenchmarkResults:
 
     # Efficiency over time
     efficiency_by_episode: list[float] = field(default_factory=list)
-    tokens_by_episode: list[int] = field(default_factory=list)
 
     def add_delivery(self, metrics: DeliveryMetrics):
         """Add a delivery result and update aggregates."""
@@ -167,11 +153,9 @@ class BenchmarkResults:
 
         self.total_steps += metrics.steps_taken
         self.total_optimal_steps += metrics.optimal_steps
-        self.total_tokens.add(metrics.tokens)
-        self.total_latency_ms += metrics.latency_ms
+        self.total_errors += metrics.errors
 
         self.efficiency_by_episode.append(metrics.path_efficiency)
-        self.tokens_by_episode.append(metrics.tokens.total_tokens)
 
     def compute_final_metrics(self):
         """Compute final aggregate metrics after all deliveries."""
@@ -181,6 +165,10 @@ class BenchmarkResults:
         # Average efficiency
         if self.efficiency_by_episode:
             self.avg_path_efficiency = sum(self.efficiency_by_episode) / len(self.efficiency_by_episode)
+
+        # Average error rate
+        if self.total_steps > 0:
+            self.avg_error_rate = self.total_errors / self.total_steps
 
         # Convergence episode (first with efficiency >= 90%)
         for i, eff in enumerate(self.efficiency_by_episode):
@@ -199,6 +187,7 @@ class BenchmarkResults:
         """Convert to dictionary for JSON serialization."""
         return {
             "config": {
+                "name": self.config.display_name,
                 "mode": self.config.mode.value,
                 "model": self.config.model,
                 "numDeliveries": self.config.num_deliveries,
@@ -206,6 +195,11 @@ class BenchmarkResults:
                 "pairedMode": self.config.paired_mode,
                 "difficulty": self.config.difficulty,
                 "refreshInterval": self.config.refresh_interval,
+                "mmQueryType": self.config.mm_query_type,
+                "memoryQueryMode": self.config.memory_query_mode,
+                "waitForConsolidation": self.config.wait_for_consolidation,
+                "hindsightUrl": self.config.hindsight_url,
+                "bankId": self.config.bank_id,
             },
             "summary": {
                 "totalDeliveries": self.total_deliveries,
@@ -215,13 +209,8 @@ class BenchmarkResults:
                 "totalSteps": self.total_steps,
                 "totalOptimalSteps": self.total_optimal_steps,
                 "avgPathEfficiency": self.avg_path_efficiency,
-                "totalTokens": {
-                    "prompt": self.total_tokens.prompt_tokens,
-                    "completion": self.total_tokens.completion_tokens,
-                    "total": self.total_tokens.total_tokens,
-                },
-                "totalLatencyMs": self.total_latency_ms,
-                "avgLatencyMs": self.total_latency_ms / self.total_deliveries if self.total_deliveries > 0 else 0,
+                "totalErrors": self.total_errors,
+                "avgErrorRate": self.avg_error_rate,
             },
             "learning": {
                 "convergenceEpisode": self.convergence_episode,
@@ -231,7 +220,6 @@ class BenchmarkResults:
             },
             "timeSeries": {
                 "efficiencyByEpisode": self.efficiency_by_episode,
-                "tokensByEpisode": self.tokens_by_episode,
             },
             "deliveries": [d.to_dict() for d in self.deliveries],
         }

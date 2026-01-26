@@ -82,26 +82,26 @@ def generate_dashboard_chart(
     ax3.set_title('Cumulative Steps')
     ax3.legend(loc='upper left', fontsize=8)
 
-    # 4. Latency per delivery
+    # 4. Errors per delivery
     ax4 = axes[1, 0]
-    latencies = [d["latencyMs"] / 1000 for d in deliveries]  # Convert to seconds
-    ax4.bar(episodes, latencies, color=primary_color, alpha=0.7)
-    avg_latency = sum(latencies) / len(latencies) if latencies else 0
-    ax4.axhline(y=avg_latency, color=warning_color, linestyle='--', label=f'Avg: {avg_latency:.1f}s')
+    errors = [d.get("errors", 0) for d in deliveries]
+    ax4.bar(episodes, errors, color='#ef4444', alpha=0.7)
+    avg_errors = sum(errors) / len(errors) if errors else 0
+    ax4.axhline(y=avg_errors, color=warning_color, linestyle='--', label=f'Avg: {avg_errors:.1f}')
     ax4.set_xlabel('Delivery')
-    ax4.set_ylabel('Latency (s)')
-    ax4.set_title('Latency Per Delivery')
+    ax4.set_ylabel('Errors')
+    ax4.set_title('Errors Per Delivery')
     ax4.legend(loc='upper right', fontsize=8)
 
-    # 5. Tokens per delivery
+    # 5. Error rate over time
     ax5 = axes[1, 1]
-    tokens = time_series["tokensByEpisode"]
-    ax5.bar(episodes, tokens, color=primary_color, alpha=0.7)
-    avg_tokens = sum(tokens) / len(tokens) if tokens else 0
-    ax5.axhline(y=avg_tokens, color=warning_color, linestyle='--', label=f'Avg: {avg_tokens:.0f}')
+    error_rates = [d.get("errorRate", 0) * 100 for d in deliveries]
+    ax5.bar(episodes, error_rates, color='#ef4444', alpha=0.7)
+    avg_error_rate = sum(error_rates) / len(error_rates) if error_rates else 0
+    ax5.axhline(y=avg_error_rate, color=warning_color, linestyle='--', label=f'Avg: {avg_error_rate:.1f}%')
     ax5.set_xlabel('Delivery')
-    ax5.set_ylabel('Tokens')
-    ax5.set_title('Tokens Per Delivery')
+    ax5.set_ylabel('Error Rate (%)')
+    ax5.set_title('Error Rate Per Delivery')
     ax5.legend(loc='upper right', fontsize=8)
 
     # 6. Summary stats
@@ -117,12 +117,11 @@ def generate_dashboard_chart(
 
     Success Rate: {summary['successRate']*100:.1f}%
     Avg Efficiency: {summary['avgPathEfficiency']*100:.1f}%
+    Avg Error Rate: {summary['avgErrorRate']*100:.1f}%
 
     Total Steps: {summary['totalSteps']}
     Optimal Steps: {summary['totalOptimalSteps']}
-
-    Total Tokens: {summary['totalTokens']['total']:,}
-    Avg Latency: {summary['avgLatencyMs']/1000:.1f}s
+    Total Errors: {summary['totalErrors']}
 
     Learning Metrics
     ──────────────────
@@ -211,25 +210,25 @@ def generate_comparison_chart(
         ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
                 f'{steps:.1f}', ha='center', va='bottom', fontsize=9)
 
-    # 4. Total Tokens
+    # 4. Error Rate
     ax4 = axes[1, 0]
-    total_tokens = [r["summary"]["totalTokens"]["total"] for r in results_list]
-    bars = ax4.bar(modes, total_tokens, color=colors)
-    ax4.set_ylabel('Total Tokens')
-    ax4.set_title('Total Token Usage')
-    for bar, tokens in zip(bars, total_tokens):
-        ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 100,
-                f'{tokens:,}', ha='center', va='bottom', fontsize=8)
+    error_rates = [r["summary"]["avgErrorRate"] * 100 for r in results_list]
+    bars = ax4.bar(modes, error_rates, color=['#ef4444'] * len(modes), alpha=0.7)
+    ax4.set_ylabel('Error Rate (%)')
+    ax4.set_title('Average Error Rate')
+    for bar, rate in zip(bars, error_rates):
+        ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                f'{rate:.1f}%', ha='center', va='bottom', fontsize=9)
 
-    # 5. Average Latency
+    # 5. Total Errors
     ax5 = axes[1, 1]
-    avg_latencies = [r["summary"]["avgLatencyMs"] / 1000 for r in results_list]
-    bars = ax5.bar(modes, avg_latencies, color=colors)
-    ax5.set_ylabel('Avg Latency (s)')
-    ax5.set_title('Average Latency')
-    for bar, lat in zip(bars, avg_latencies):
+    total_errors = [r["summary"]["totalErrors"] for r in results_list]
+    bars = ax5.bar(modes, total_errors, color=['#ef4444'] * len(modes), alpha=0.7)
+    ax5.set_ylabel('Total Errors')
+    ax5.set_title('Total Errors')
+    for bar, errs in zip(bars, total_errors):
         ax5.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
-                f'{lat:.1f}s', ha='center', va='bottom', fontsize=9)
+                f'{errs}', ha='center', va='bottom', fontsize=9)
 
     # 6. Learning Improvement
     ax6 = axes[1, 2]

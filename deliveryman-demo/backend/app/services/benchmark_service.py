@@ -11,7 +11,7 @@ sys.path.insert(0, str(__file__).rsplit("/app/", 1)[0])
 
 from building import (
     Building, Package, AgentState, Side, get_building,
-    compute_optimal_steps, compute_path_efficiency,
+    compute_optimal_steps, compute_path_efficiency, compute_remaining_steps,
 )
 from agent_tools import (
     AgentTools, get_tool_definitions_with_memory, execute_tool,
@@ -19,7 +19,7 @@ from agent_tools import (
 )
 from .benchmark_types import (
     AgentMode, BenchmarkConfig, BenchmarkResults,
-    DeliveryMetrics, TokenUsage, DeliveryQueue, generate_delivery_queue,
+    DeliveryMetrics, DeliveryQueue, generate_delivery_queue,
 )
 from .memory_service import (
     completion,
@@ -37,9 +37,50 @@ from .memory_service import (
     set_refresh_interval,
     configure_memory,
     wait_for_pending_consolidation_async,
+    initialize_memory,
+    BANK_MISSION,
 )
+from ..config import set_hindsight_url
 from ..websocket.events import event, EventType
 from ..config import LLM_MODEL
+
+
+def generate_preseed_facts(building: Building, coverage: float) -> str:
+    """Generate pre-seed facts about the building for memory.
+
+    Args:
+        building: The building to generate facts for
+        coverage: Fraction of employees to include (0.0-1.0)
+
+    Returns:
+        String of facts separated by newlines
+    """
+    import random
+
+    facts = []
+
+    # Building structure facts
+    if hasattr(building, 'floors') and building.floors:
+        facts.append(f"The building has {len(building.floors)} floors.")
+
+    # Get all employees and select subset based on coverage
+    all_employees = list(building.all_employees.items())
+    num_to_include = max(1, int(len(all_employees) * coverage))
+    selected = random.sample(all_employees, min(num_to_include, len(all_employees)))
+
+    # Generate facts for selected employees
+    businesses_mentioned = set()
+    for emp_name, (business, _) in selected:
+        # Employee location fact
+        facts.append(f"{emp_name} works at {business.name} on floor {business.floor}.")
+
+        # Business location fact (once per business)
+        if business.name not in businesses_mentioned:
+            side_name = business.side.value if hasattr(business.side, 'value') else str(business.side)
+            facts.append(f"{business.name} is located on floor {business.floor}, {side_name} side.")
+            businesses_mentioned.add(business.name)
+
+    return "\n".join(facts)
 
 
 def get_hindsight_query(recipient_name: str, custom_query: str = None) -> str:
@@ -47,6 +88,49 @@ def get_hindsight_query(recipient_name: str, custom_query: str = None) -> str:
     if custom_query:
         return custom_query.replace("{recipient}", recipient_name)
     return f"Where does {recipient_name} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries."
+
+
+def _format_delivery_context_for_query(messages: list, recipient: str = None) -> str:
+    """Format the current delivery conversation as context for per-step Hindsight queries.
+
+    This gives Hindsight the running delivery history so it can provide more contextual responses.
+
+    Args:
+        messages: The current conversation messages
+        recipient: The delivery recipient name
+
+    Returns:
+        Formatted context string with delivery progress
+    """
+    items = []
+    if recipient:
+        items.append(f"Delivering to: {recipient}")
+
+    for msg in messages:
+        role = msg.get("role", "").upper()
+        content = msg.get("content", "")
+        tool_calls = msg.get("tool_calls", [])
+
+        # Skip system prompt (too verbose for context)
+        if role == "SYSTEM":
+            continue
+
+        if role == "TOOL":
+            # Include tool results (these show what the agent has discovered)
+            items.append(f"Observed: {content[:200]}")  # Truncate long results
+            continue
+
+        if tool_calls:
+            # Show what actions the agent took
+            for tc in tool_calls:
+                if hasattr(tc, 'function'):
+                    items.append(f"Action: {tc.function.name}")
+                elif isinstance(tc, dict) and 'function' in tc:
+                    items.append(f"Action: {tc['function'].get('name', '')}")
+
+    # Limit context length to avoid making query too long
+    context = "\n".join(items[-10:])  # Keep last 10 items
+    return context
 
 
 def format_messages_for_retain(messages: list, success: bool, steps: int, recipient: str = None) -> str:
@@ -90,14 +174,94 @@ def format_messages_for_retain(messages: list, success: bool, steps: int, recipi
     return "\n\n".join(items)
 
 
-def extract_token_usage(response) -> TokenUsage:
-    """Extract token usage from an LLM response."""
-    usage = TokenUsage()
-    if hasattr(response, 'usage') and response.usage:
-        usage.prompt_tokens = getattr(response.usage, 'prompt_tokens', 0) or 0
-        usage.completion_tokens = getattr(response.usage, 'completion_tokens', 0) or 0
-        usage.total_tokens = getattr(response.usage, 'total_tokens', 0) or 0
-    return usage
+async def update_filesystem_notes_with_llm(
+    existing_notes: str,
+    recipient: str,
+    business_name: str,
+    target_floor: int,
+    target_side: str,
+    success: bool,
+    steps_taken: int,
+    model: str,
+) -> str:
+    """Use an LLM to update notes based on delivery outcome.
+
+    This makes filesystem mode more comparable to Hindsight, which also uses
+    LLM processing to extract and organize information.
+
+    Args:
+        existing_notes: Current notes content
+        recipient: Recipient name
+        business_name: Business name where recipient works
+        target_floor: Floor number
+        target_side: Side of building (e.g., "front", "back")
+        success: Whether delivery succeeded
+        steps_taken: Number of steps taken in this delivery
+        model: LLM model to use
+
+    Returns:
+        Updated notes content
+    """
+    # Build the delivery summary
+    if success:
+        delivery_summary = f"""DELIVERY COMPLETED SUCCESSFULLY
+- Recipient: {recipient}
+- Location: Floor {target_floor}, {target_side} side
+- Business: {business_name or "Unknown"}
+- Steps taken: {steps_taken}"""
+    else:
+        delivery_summary = f"""DELIVERY FAILED
+- Recipient: {recipient}
+- Target was: Floor {target_floor}, {target_side} side, {business_name or "Unknown business"}
+- Steps taken before failure: {steps_taken}
+- Note: Could not complete delivery within step limit"""
+
+    # Build the prompt for the LLM
+    system_prompt = """You are a note-taking assistant for a delivery agent. Your job is to maintain concise, useful notes about building layouts and employee locations.
+
+Guidelines:
+- Keep notes concise and scannable (use short lines, not paragraphs)
+- Focus on information useful for future deliveries: employee names, their locations (floor, side), business names
+- Update or correct existing information if the new delivery provides better data
+- Remove outdated or incorrect information
+- You can also note patterns, shortcuts, or tips discovered during deliveries
+- If a delivery failed, still note any useful information learned (e.g., "John Smith is NOT on Floor 1")
+
+Output ONLY the updated notes, nothing else. No explanations or commentary."""
+
+    user_prompt = f"""Here are the current notes:
+---
+{existing_notes if existing_notes else "(No notes yet)"}
+---
+
+Here is information from the most recent delivery:
+---
+{delivery_summary}
+---
+
+Please update the notes to incorporate any useful information from this delivery. Output only the updated notes."""
+
+    try:
+        response = await completion(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            timeout=30,
+        )
+
+        updated_notes = response.choices[0].message.content.strip()
+        return updated_notes
+    except Exception as e:
+        print(f"[BENCHMARK] LLM notes update error: {e}")
+        # Fallback to simple append if LLM fails
+        if success:
+            new_line = f"{recipient} - Floor {target_floor} {target_side}, {business_name or 'Unknown'}"
+            if existing_notes:
+                return f"{existing_notes}\n{new_line}"
+            return new_line
+        return existing_notes or ""
 
 
 async def run_benchmark_delivery(
@@ -128,7 +292,6 @@ async def run_benchmark_delivery(
         recipient=recipient_name,
         business=business_name,
         is_repeat=is_repeat,
-        start_time=time.time(),
     )
 
     # Compute optimal steps
@@ -150,44 +313,71 @@ async def run_benchmark_delivery(
         agent_state = AgentState(floor=1, side=Side.FRONT)
     agent_state.current_package = package
 
-    # Determine max steps
+    # Determine max steps: max(min_steps, optimal * multiplier), capped by max_steps if set
     max_steps = max(config.min_steps, int(metrics.optimal_steps * config.step_multiplier))
+    if config.max_steps is not None:
+        max_steps = min(max_steps, config.max_steps)
 
-    # Build system prompt
-    base_system_prompt = "You are a delivery agent. Use the tools provided to get it delivered."
+    # Error tracking: get target position
+    errors = 0
+    target_floor, target_side, target_building_name = 1, Side.FRONT, None
+    if recipient_name in building.all_employees:
+        target_business, _ = building.all_employees[recipient_name]
+        target_floor = target_business.floor
+        target_side = target_business.side
+        if building.is_city_grid and hasattr(target_business, 'building_name'):
+            target_building_name = target_business.building_name
+
+    # Build system prompt based on mode
+    if config.mode == AgentMode.FILESYSTEM:
+        if config.memory_query_mode in ["per_step", "both"]:
+            # Per-step or both: agent can read notes during delivery
+            base_system_prompt = """You are a delivery agent navigating a building to deliver packages.
+
+Your goal is to find the target office and deliver the package as efficiently as possible.
+
+You have access to read_notes() to check your memory at any time.
+- Use read_notes() to recall what you know about the building and employees
+- Notes contain information from previous deliveries - use them to navigate efficiently!"""
+        else:
+            # inject_once: notes are auto-injected, no tools needed
+            base_system_prompt = "You are a delivery agent. Use the tools provided to get it delivered."
+    else:
+        base_system_prompt = "You are a delivery agent. Use the tools provided to get it delivered."
+
     system_prompt = base_system_prompt
     memory_context = None
 
-    # Determine tools and memory handling based on mode
-    include_memory = config.mode in [AgentMode.HINDSIGHT_MM, AgentMode.HINDSIGHT_MM_NOWAIT] and config.memory_query_mode in ["per_step", "both"]
-    include_filesystem = config.mode == AgentMode.FILESYSTEM
+    # Determine tools based on mode
+    # Filesystem gets read_notes tool in per_step or both modes
+    include_filesystem = config.mode == AgentMode.FILESYSTEM and config.memory_query_mode in ["per_step", "both"]
 
-    # Memory recall function for per-step queries
-    async def recall_fn(query: str) -> str:
-        if config.mode == AgentMode.REFLECT:
-            result = await reflect_async(query=query, budget="high")
-            return result.text if result and hasattr(result, 'text') else ""
-        else:
-            result = await recall_async(query=query, budget="high")
-            return format_recall_as_context(result) if result else ""
-
+    # Memory handler for filesystem mode (read_notes/write_notes)
+    filesystem_notes_key = get_bank_id() or f"delivery-{delivery_id}"
     memory_handler = MemoryToolHandler(
-        recall_fn=recall_fn if include_memory else None,
-        notes_key=get_bank_id() or f"delivery-{delivery_id}",
+        recall_fn=None,
+        notes_key=filesystem_notes_key,
     )
 
-    # MEMORY INJECTION at start (unless no_memory mode)
-    if config.mode != AgentMode.NO_MEMORY and config.memory_query_mode in ["inject_once", "both"]:
-        try:
-            memory_query = get_hindsight_query(recipient_name)
+    # Helper to determine if we should use reflect vs recall
+    def should_use_reflect() -> bool:
+        return (
+            config.mode == AgentMode.REFLECT or
+            (config.mode in [AgentMode.HINDSIGHT_MM, AgentMode.HINDSIGHT_MM_NOWAIT] and config.mm_query_type == "reflect")
+        )
 
-            if config.mode == AgentMode.REFLECT:
+    # MEMORY INJECTION at start (unless no_memory or filesystem mode)
+    if config.mode not in [AgentMode.NO_MEMORY, AgentMode.FILESYSTEM] and config.memory_query_mode in ["inject_once", "both"]:
+        try:
+            memory_query = get_hindsight_query(recipient_name, config.query)
+
+            if should_use_reflect():
                 result = await reflect_async(query=memory_query, budget="high")
                 if result and hasattr(result, 'text') and result.text:
                     memory_context = result.text
                     metrics.memory_injected = True
-            elif config.mode != AgentMode.FILESYSTEM:
-                # Recall mode (including MM modes)
+            else:
+                # Recall mode (including MM modes with mm_query_type="recall")
                 result = await recall_async(query=memory_query, budget="high")
                 if result and len(result) > 0:
                     memory_context = format_recall_as_context(result)
@@ -198,7 +388,7 @@ async def run_benchmark_delivery(
 
                 if websocket:
                     await websocket.send_json(event(EventType.MEMORY_REFLECT, {
-                        "method": "reflect" if config.mode == AgentMode.REFLECT else "recall",
+                        "method": "reflect" if should_use_reflect() else "recall",
                         "query": memory_query,
                         "text": memory_context,
                         "bankId": get_bank_id(),
@@ -206,6 +396,21 @@ async def run_benchmark_delivery(
 
         except Exception as e:
             print(f"[BENCHMARK] Memory injection error: {e}")
+
+    # FILESYSTEM NOTES INJECTION at start (for inject_once or both modes)
+    if config.mode == AgentMode.FILESYSTEM and config.memory_query_mode in ["inject_once", "both"]:
+        existing_notes = MemoryToolHandler.get_notes(filesystem_notes_key)
+        if existing_notes:
+            system_prompt = f"{base_system_prompt}\n\n# Your Notes\n{existing_notes}"
+            metrics.memory_injected = True
+
+            if websocket:
+                await websocket.send_json(event(EventType.MEMORY_REFLECT, {
+                    "method": "filesystem",
+                    "query": "read_notes",
+                    "text": existing_notes,
+                    "bankId": filesystem_notes_key,
+                }))
 
     # Initial messages
     messages = [
@@ -216,8 +421,17 @@ async def run_benchmark_delivery(
     tools = AgentTools(building, agent_state)
     tool_defs = get_tool_definitions_with_memory(
         difficulty=building.difficulty,
-        include_memory=include_memory,
+        include_memory=False,  # No remember tool - we use automatic per-step injection
         include_filesystem=include_filesystem,
+    )
+
+    # Determine if we should do per-step memory injection
+    # Per-step only makes sense for REFLECT (not RECALL) because:
+    # - Recall returns static facts that don't change during a delivery
+    # - Reflect synthesizes context-aware guidance that benefits from knowing current location/progress
+    do_per_step_injection = (
+        config.memory_query_mode in ["per_step", "both"] and
+        should_use_reflect()  # Only for reflect mode or MM modes with mm_query_type="reflect"
     )
 
     success = False
@@ -226,6 +440,47 @@ async def run_benchmark_delivery(
         while agent_state.steps_taken < max_steps:
             if websocket:
                 await websocket.send_json(event(EventType.AGENT_THINKING))
+
+            # PER-STEP MEMORY INJECTION (REFLECT ONLY): Query Hindsight before each LLM call
+            # This only runs for reflect mode - recall returns static facts that don't benefit from per-step queries
+            if do_per_step_injection:
+                try:
+                    # Build query with current location and full delivery history as context
+                    current_location = agent_state.position_str()
+                    memory_query = f"How do I reach {recipient_name}?"
+
+                    # Build context from delivery history (reflects benefits from knowing what's been tried)
+                    delivery_context = _format_delivery_context_for_query(messages, recipient_name)
+                    context_str = f"I am at {current_location}. I need to deliver to {recipient_name}."
+                    if delivery_context:
+                        context_str += f"\n\nDelivery progress:\n{delivery_context}"
+
+                    # Include context in query (per Hindsight API recommendation)
+                    contextual_query = f"{memory_query}\n\nContext: {context_str}"
+
+                    # Always reflect for per-step (recall doesn't benefit from per-step)
+                    result = await reflect_async(query=contextual_query, budget="high")
+                    step_memory = result.text if result and hasattr(result, 'text') else None
+
+                    if step_memory:
+                        # Inject memory guidance as a system message
+                        messages.append({
+                            "role": "system",
+                            "content": f"Memory guidance: {step_memory}"
+                        })
+                        metrics.memory_query_count += 1
+
+                        if websocket:
+                            await websocket.send_json(event(EventType.MEMORY_REFLECT, {
+                                "method": "reflect",
+                                "query": contextual_query,
+                                "text": step_memory,
+                                "bankId": get_bank_id(),
+                                "perStep": True,
+                            }))
+
+                except Exception as e:
+                    print(f"[BENCHMARK] Per-step memory injection error: {e}")
 
             # Call LLM
             t0 = time.time()
@@ -237,10 +492,6 @@ async def run_benchmark_delivery(
                 timeout=60,
             )
             timing = time.time() - t0
-
-            # Track tokens
-            token_usage = extract_token_usage(response)
-            metrics.tokens.add(token_usage)
 
             message = response.choices[0].message
 
@@ -262,8 +513,52 @@ async def run_benchmark_delivery(
                         })
                         continue
 
+                    # Track position for error detection
+                    prev_position = agent_state.position_str()
+                    remaining_before = compute_remaining_steps(
+                        current_floor=agent_state.floor,
+                        current_side=agent_state.side,
+                        target_floor=target_floor,
+                        target_side=target_side,
+                        building=building,
+                        current_building=agent_state.current_building,
+                        target_building_name=target_building_name,
+                        grid_row=agent_state.grid_row,
+                        grid_col=agent_state.grid_col,
+                    )
+
                     # Execute regular tool
                     result = execute_tool(tools, tool_name, arguments)
+
+                    # Check for non-optimal move (error tracking)
+                    # An error is: failed tool call (position unchanged) OR move that doesn't improve distance
+                    new_position = agent_state.position_str()
+                    is_movement_tool = tool_name in ["go_up", "go_down", "go_to_front", "go_to_back",
+                                                      "cross_bridge", "go_to_building", "enter_building",
+                                                      "exit_building", "move_north", "move_south",
+                                                      "move_east", "move_west"]
+
+                    if is_movement_tool:
+                        if new_position == prev_position:
+                            # Failed tool call (e.g., "Cannot go up. Already at top floor")
+                            errors += 1
+                        else:
+                            # Position changed - check if it improved distance
+                            remaining_after = compute_remaining_steps(
+                                current_floor=agent_state.floor,
+                                current_side=agent_state.side,
+                                target_floor=target_floor,
+                                target_side=target_side,
+                                building=building,
+                                current_building=agent_state.current_building,
+                                target_building_name=target_building_name,
+                                grid_row=agent_state.grid_row,
+                                grid_col=agent_state.grid_col,
+                            )
+                            if remaining_after >= remaining_before:
+                                # Moved in wrong direction
+                                errors += 1
+
                     tool_results.append({
                         "tool_call_id": tool_call.id,
                         "role": "tool",
@@ -329,10 +624,43 @@ async def run_benchmark_delivery(
     # Record results
     metrics.success = success
     metrics.steps_taken = agent_state.steps_taken
-    metrics.end_time = time.time()
+    metrics.errors = errors
+    metrics.error_rate = errors / max(agent_state.steps_taken, 1)
 
-    # Store memory (unless no_memory mode)
-    if config.mode != AgentMode.NO_MEMORY and config.mode != AgentMode.FILESYSTEM:
+    # FILESYSTEM AUTO-WRITE: Use LLM to update notes with delivery learnings
+    if config.mode == AgentMode.FILESYSTEM:
+        try:
+            existing_notes = MemoryToolHandler.get_notes(filesystem_notes_key)
+            target_side_str = target_side.value if hasattr(target_side, 'value') else str(target_side)
+
+            if websocket:
+                await websocket.send_json(event(EventType.MEMORY_STORING))
+
+            updated_notes = await update_filesystem_notes_with_llm(
+                existing_notes=existing_notes,
+                recipient=recipient_name,
+                business_name=business_name,
+                target_floor=target_floor,
+                target_side=target_side_str,
+                success=success,
+                steps_taken=agent_state.steps_taken,
+                model=config.model,
+            )
+
+            # Save updated notes
+            MemoryToolHandler._notes_storage[filesystem_notes_key] = updated_notes
+
+            if websocket:
+                await websocket.send_json(event(EventType.MEMORY_STORED, {
+                    "method": "filesystem",
+                    "notes": updated_notes,
+                    "bankId": filesystem_notes_key,
+                }))
+        except Exception as e:
+            print(f"[BENCHMARK] Filesystem notes update error: {e}")
+
+    # Store memory to Hindsight (unless no_memory or filesystem mode)
+    if config.mode not in [AgentMode.NO_MEMORY, AgentMode.FILESYSTEM]:
         try:
             final_convo = format_messages_for_retain(
                 messages,
@@ -421,21 +749,51 @@ async def run_benchmark(
     # Get building
     building = get_building(config.difficulty)
 
+    # Set hindsight URL if specified in config
+    if config.hindsight_url:
+        set_hindsight_url(config.hindsight_url)
+        initialize_memory(config.hindsight_url)
+
     # Set up memory bank
     if config.mode != AgentMode.NO_MEMORY and config.mode != AgentMode.FILESYSTEM:
         # Only set mission for mental model modes (recall/reflect should NOT have mission)
         # This matches the eval framework behavior where mission enables mental model generation
         should_set_mission = config.mode in [AgentMode.HINDSIGHT_MM, AgentMode.HINDSIGHT_MM_NOWAIT]
-        configure_memory(
-            app_type="bench",
-            difficulty=config.difficulty,
-            set_mission=should_set_mission
-        )
+
+        # Use custom bank_id if provided
+        if config.bank_id:
+            set_bank_id(config.bank_id, app_type="bench", difficulty=config.difficulty)
+        else:
+            configure_memory(
+                app_type="bench",
+                difficulty=config.difficulty,
+                set_mission=should_set_mission
+            )
+
         set_refresh_interval(config.refresh_interval, app_type="bench", difficulty=config.difficulty)
+
+        # Set custom mission if provided
+        if config.mission:
+            await set_bank_mission_async(get_bank_id(), config.mission)
 
         # Clear existing mental models for fresh start (only for MM modes)
         if should_set_mission:
             await clear_mental_models_async()
+
+        # Pre-seed memory with building knowledge if preseed_coverage > 0
+        if config.preseed_coverage > 0:
+            preseed_facts = generate_preseed_facts(building, config.preseed_coverage)
+            if preseed_facts:
+                await retain_async(
+                    preseed_facts,
+                    context="building_knowledge:preseed",
+                    document_id="preseed-building-knowledge"
+                )
+                if websocket:
+                    await websocket.send_json(event(EventType.MEMORY_STORED, {
+                        "message": f"Pre-seeded {len(preseed_facts.splitlines())} facts",
+                        "preseed": True,
+                    }))
 
     # Clear filesystem notes for fresh start
     if config.mode == AgentMode.FILESYSTEM:

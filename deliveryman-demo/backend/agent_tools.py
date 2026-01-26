@@ -794,7 +794,7 @@ _MEMORY_TOOLS = [
     },
 ]
 
-# Filesystem tools - for filesystem agent mode
+# Filesystem tools - for filesystem agent mode (read only, writing is controlled by the system)
 _FILESYSTEM_TOOLS = [
     {
         "type": "function",
@@ -803,26 +803,6 @@ _FILESYSTEM_TOOLS = [
             "description": "Read your personal notes file to recall information from previous deliveries. "
                           "Returns the full contents of your notes. This does NOT count against your step limit.",
             "parameters": {"type": "object", "properties": {}, "required": []}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_notes",
-            "description": "Save information to your personal notes file for future deliveries. "
-                          "This REPLACES all existing notes, so include everything you want to remember. "
-                          "Good things to note: employee locations, building layout, shortcuts discovered. "
-                          "This does NOT count against your step limit.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "The full contents to save to your notes file"
-                    }
-                },
-                "required": ["content"]
-            }
         }
     },
 ]
@@ -838,7 +818,7 @@ def get_tool_definitions_with_memory(
     Args:
         difficulty: Building difficulty level
         include_memory: Include 'remember' tool for per-step memory queries
-        include_filesystem: Include 'read_notes'/'write_notes' tools
+        include_filesystem: Include 'read_notes' tool for filesystem mode
 
     Returns:
         List of tool definitions
@@ -855,10 +835,11 @@ def get_tool_definitions_with_memory(
 
 
 class MemoryToolHandler:
-    """Handles memory tool calls (remember, read_notes, write_notes).
+    """Handles memory tool calls (remember, read_notes).
 
     These tools don't count against the step limit and are executed
-    outside the normal tool execution flow.
+    outside the normal tool execution flow. Note: write_notes is controlled
+    by the system, not the agent.
     """
 
     # Class-level storage for filesystem mode notes (keyed by bank_id or session)

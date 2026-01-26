@@ -888,3 +888,66 @@ def compute_path_efficiency(actual_steps: int, optimal_steps: int) -> float:
     if optimal_steps <= 0 or actual_steps <= 0:
         return 0.0
     return min(1.0, optimal_steps / actual_steps)
+
+
+def compute_remaining_steps(
+    current_floor: int,
+    current_side: Side,
+    target_floor: int,
+    target_side: Side,
+    building: "Building" = None,
+    current_building: str = None,
+    target_building_name: str = None,
+    grid_row: int = 0,
+    grid_col: int = 0,
+) -> int:
+    """Compute optimal remaining steps from current position to target.
+
+    Works for all difficulty modes (easy, medium, hard).
+
+    Returns:
+        Minimum steps remaining to reach target and deliver (excluding deliver action)
+    """
+    # Hard mode (city grid)
+    if building and building.is_city_grid and building.city_grid:
+        if current_building is None:
+            # On street - need to enter building first
+            target_bldg = building.city_grid.get_building_by_name(target_building_name)
+            if not target_bldg:
+                return 999  # Can't find building
+            # Manhattan distance to building + enter + floors + side + deliver
+            street_dist = abs(grid_row - target_bldg.row) + abs(grid_col - target_bldg.col)
+            floor_dist = abs(target_floor - 1)  # Enter at floor 1
+            side_dist = 1 if target_side != Side.MIDDLE else 0
+            return street_dist + 1 + floor_dist + side_dist  # +1 for enter
+        elif current_building != target_building_name:
+            # In wrong building - need to exit and navigate
+            return 999  # Simplified - would need full pathfinding
+        else:
+            # In correct building
+            floor_dist = abs(target_floor - current_floor)
+            side_dist = 0 if current_side == target_side else 1
+            if floor_dist > 0 and current_side != Side.MIDDLE:
+                side_dist = 1  # Will end in middle after elevator
+            return floor_dist + side_dist
+
+    # Medium mode (3 buildings with bridge)
+    if building and building.is_multi_building:
+        # Simplified - just track floor and side distance
+        floor_dist = abs(target_floor - current_floor)
+        if current_side != target_side:
+            # Need to cross bridge (at floor 3)
+            if current_floor != 3:
+                floor_dist = abs(3 - current_floor) + abs(target_floor - 3)
+            return floor_dist + 1  # +1 for bridge
+        return floor_dist
+
+    # Easy mode (single building)
+    floor_dist = abs(target_floor - current_floor)
+    if floor_dist > 0:
+        # After elevator, we're in middle
+        side_dist = 0 if target_side == Side.MIDDLE else 1
+    else:
+        # Same floor - just need to change side if different
+        side_dist = 0 if current_side == target_side else 1
+    return floor_dist + side_dist
