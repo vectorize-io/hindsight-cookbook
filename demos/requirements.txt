@@ -1,0 +1,6 @@
+# Core dependencies
+hindsight-client>=0.1.0
+openai>=1.0.0
+
+# Optional for personalized_search.py
+tavily-python>=0.3.0
