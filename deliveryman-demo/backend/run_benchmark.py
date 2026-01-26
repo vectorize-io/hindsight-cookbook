@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """CLI to run benchmarks from a JSON config file.
 
+All configs run in PARALLEL with separate memory banks for faster execution.
+Each config gets a unique bank_id auto-generated to avoid conflicts.
+
 Usage:
     python run_benchmark.py configs/all_memory_modes.json
     python run_benchmark.py configs/all_memory_modes.json --hindsight-url http://localhost:8888
@@ -112,13 +115,14 @@ def load_config(config_path: str, overrides: dict = None) -> BenchmarkRunConfig:
         global_defaults = {k: data[k] for k in GLOBAL_CONFIG_KEYS if k in data}
 
     # Auto-generate seed if not specified (ensures all configs get same deliveries)
+    import random
+    import uuid
     if "seed" not in global_defaults:
-        import random
         global_defaults["seed"] = random.randint(1, 1000000)
 
     # Parse configs
     configs = []
-    for cfg in config_list:
+    for i, cfg in enumerate(config_list):
         # Apply global defaults first (per-config values override)
         merged_cfg = {**global_defaults, **cfg}
         # Convert mode string to enum
@@ -129,6 +133,15 @@ def load_config(config_path: str, overrides: dict = None) -> BenchmarkRunConfig:
             for key, value in overrides.items():
                 if value is not None:
                     merged_cfg[key] = value
+        # Auto-generate unique bank_id for parallel execution (if not specified)
+        if "bank_id" not in merged_cfg or not merged_cfg["bank_id"]:
+            mode_name = merged_cfg.get("mode", AgentMode.RECALL)
+            if isinstance(mode_name, AgentMode):
+                mode_name = mode_name.value
+            config_name = merged_cfg.get("name", f"config{i}")
+            # Sanitize name for bank_id
+            safe_name = "".join(c if c.isalnum() else "_" for c in config_name).lower()
+            merged_cfg["bank_id"] = f"bench-{safe_name}-{uuid.uuid4().hex[:8]}"
         configs.append(BenchmarkConfig(**merged_cfg))
 
     return BenchmarkRunConfig(
@@ -597,25 +610,46 @@ Examples:
     if not args.quiet:
         print(f"Output directory: {run_dir}")
 
-    # Run each config
-    all_results = []
-    for i, config in enumerate(run_config.configs):
-        if not args.quiet:
-            print(f"\n{'='*50}")
-            print(f"Running config {i+1}/{len(run_config.configs)}: {config.display_name}")
-            print(f"  Mode: {config.mode.value}, Deliveries: {config.num_deliveries}, Model: {config.model}")
-            print(f"{'='*50}")
+    # Run all configs in parallel
+    if not args.quiet:
+        print(f"\nRunning {len(run_config.configs)} configs in parallel...")
+        for i, config in enumerate(run_config.configs, 1):
+            print(f"  {i}. {config.display_name} (mode: {config.mode.value}, bank: {config.bank_id})")
+        print()
 
+    async def run_single_config(config: BenchmarkConfig, index: int):
+        """Run a single config and return results with index for ordering."""
+        if not args.quiet:
+            print(f"[{index}] Starting: {config.display_name}")
         result = await run_benchmark(config)
-        result_dict = result.to_dict()
-        all_results.append(result_dict)
-
         if not args.quiet:
-            print(f"\nResults for {config.display_name}:")
-            print(f"  Success rate: {result.successful_deliveries}/{result.total_deliveries}")
-            print(f"  Avg efficiency: {result.avg_path_efficiency:.1%}")
-            print(f"  Avg error rate: {result.avg_error_rate:.1%}")
-            print(f"  Total steps: {result.total_steps} (optimal: {result.total_optimal_steps})")
+            print(f"[{index}] Completed: {config.display_name} - "
+                  f"{result.successful_deliveries}/{result.total_deliveries} success, "
+                  f"{result.avg_path_efficiency:.1%} efficiency")
+        return index, result
+
+    # Run all configs concurrently
+    tasks = [
+        run_single_config(config, i)
+        for i, config in enumerate(run_config.configs, 1)
+    ]
+    results_with_indices = await asyncio.gather(*tasks)
+
+    # Sort by original index to maintain config order
+    results_with_indices.sort(key=lambda x: x[0])
+    all_results = [result.to_dict() for _, result in results_with_indices]
+
+    if not args.quiet:
+        print(f"\n{'='*50}")
+        print("ALL CONFIGS COMPLETED")
+        print(f"{'='*50}")
+        for i, (_, result) in enumerate(results_with_indices, 1):
+            config = run_config.configs[i-1]
+            print(f"\n{i}. {config.display_name}:")
+            print(f"   Success rate: {result.successful_deliveries}/{result.total_deliveries}")
+            print(f"   Avg efficiency: {result.avg_path_efficiency:.1%}")
+            print(f"   Avg error rate: {result.avg_error_rate:.1%}")
+            print(f"   Total steps: {result.total_steps} (optimal: {result.total_optimal_steps})")
 
     # Save results (main JSON file)
     if not args.quiet:

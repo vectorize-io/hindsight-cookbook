@@ -1,0 +1,30 @@
+{
+  "runName": "recall_vs_reflect",
+  "generateCharts": true,
+  "saveDetailedLogs": true,
+  "num_deliveries": 20,
+  "model": "openai/gpt-4o",
+  "difficulty": "easy",
+  "paired_mode": true,
+  "repeat_ratio": 0.5,
+  "step_multiplier": 5.0,
+  "min_steps": 15,
+  "include_business": "random",
+  "configs": [
+    {
+      "name": "Recall (Raw Facts)",
+      "mode": "recall",
+      "memory_query_mode": "inject_once"
+    },
+    {
+      "name": "Reflect (LLM Synthesis)",
+      "mode": "reflect",
+      "memory_query_mode": "inject_once"
+    },
+    {
+      "name": "Reflect Per-Step",
+      "mode": "reflect",
+      "memory_query_mode": "per_step"
+    }
+  ]
+}

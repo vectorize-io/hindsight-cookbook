@@ -1,8 +1,8 @@
 {
-  "runName": "all_memory_modes",
+  "runName": "comprehensive_benchmark",
   "generateCharts": true,
   "saveDetailedLogs": true,
-  "num_deliveries": 15,
+  "num_deliveries": 20,
   "model": "openai/gpt-4o",
   "difficulty": "easy",
   "paired_mode": true,
@@ -28,32 +28,23 @@
       "memory_query_mode": "inject_once"
     },
     {
-      "name": "MM + Recall (Wait)",
+      "name": "Reflect Per-Step",
+      "mode": "reflect",
+      "memory_query_mode": "per_step"
+    },
+    {
+      "name": "MM + Recall",
       "mode": "hindsight_mm",
       "memory_query_mode": "inject_once",
       "mm_query_type": "recall",
       "wait_for_consolidation": true
     },
     {
-      "name": "MM + Reflect (Wait)",
+      "name": "MM + Reflect",
       "mode": "hindsight_mm",
       "memory_query_mode": "inject_once",
       "mm_query_type": "reflect",
       "wait_for_consolidation": true
-    },
-    {
-      "name": "MM + Recall (NoWait)",
-      "mode": "hindsight_mm_nowait",
-      "memory_query_mode": "inject_once",
-      "mm_query_type": "recall",
-      "wait_for_consolidation": false
-    },
-    {
-      "name": "MM + Reflect (NoWait)",
-      "mode": "hindsight_mm_nowait",
-      "memory_query_mode": "inject_once",
-      "mm_query_type": "reflect",
-      "wait_for_consolidation": false
     }
   ]
 }
