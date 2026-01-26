@@ -1,0 +1,26 @@
+{
+  "runName": "ci_benchmark",
+  "generateCharts": false,
+  "saveDetailedLogs": false,
+  "configs": [
+    {
+      "mode": "no_memory",
+      "model": "openai/gpt-4o-mini",
+      "num_deliveries": 10,
+      "difficulty": "easy",
+      "repeat_ratio": 0.4,
+      "step_multiplier": 5.0,
+      "min_steps": 15
+    },
+    {
+      "mode": "hindsight_mm",
+      "model": "openai/gpt-4o-mini",
+      "num_deliveries": 10,
+      "difficulty": "easy",
+      "repeat_ratio": 0.4,
+      "memory_query_mode": "inject_once",
+      "wait_for_consolidation": true,
+      "refresh_interval": 5
+    }
+  ]
+}
