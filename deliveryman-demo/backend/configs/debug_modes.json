@@ -1,57 +1,48 @@
 {
-  "runName": "all_memory_modes",
-  "generateCharts": true,
+  "runName": "debug_modes",
+  "generateCharts": false,
   "saveDetailedLogs": true,
-  "num_deliveries": 15,
+  "num_deliveries": 2,
   "model": "openai/gpt-4o",
   "difficulty": "easy",
   "paired_mode": true,
   "repeat_ratio": 0.5,
   "step_multiplier": 5.0,
   "min_steps": 15,
-  "include_business": "random",
-  "refresh_interval": 5,
+  "include_business": "always",
+  "refresh_interval": 0,
   "hindsight_url_mm": "http://localhost:8888",
   "hindsight_url_no_mm": "http://localhost:8889",
   "configs": [
     {
-      "name": "Filesystem",
+      "name": "1_Filesystem",
       "mode": "filesystem",
       "memory_query_mode": "inject_once"
     },
     {
-      "name": "Recall",
+      "name": "2_Recall",
       "mode": "recall",
       "memory_query_mode": "inject_once"
     },
     {
-      "name": "Reflect",
+      "name": "3_Reflect",
       "mode": "reflect",
       "memory_query_mode": "inject_once"
     },
     {
-      "name": "MM + Recall (Wait)",
+      "name": "4_Reflect_PerStep",
+      "mode": "reflect",
+      "memory_query_mode": "per_step"
+    },
+    {
+      "name": "5_MM_Recall_Wait",
       "mode": "hindsight_mm",
       "memory_query_mode": "inject_once",
       "mm_query_type": "recall",
       "wait_for_consolidation": true
     },
     {
-      "name": "MM + Reflect (Wait)",
-      "mode": "hindsight_mm",
-      "memory_query_mode": "inject_once",
-      "mm_query_type": "reflect",
-      "wait_for_consolidation": true
-    },
-    {
-      "name": "MM + Recall (NoWait)",
-      "mode": "hindsight_mm_nowait",
-      "memory_query_mode": "inject_once",
-      "mm_query_type": "recall",
-      "wait_for_consolidation": false
-    },
-    {
-      "name": "MM + Reflect (NoWait)",
+      "name": "6_MM_Reflect_NoWait",
       "mode": "hindsight_mm_nowait",
       "memory_query_mode": "inject_once",
       "mm_query_type": "reflect",

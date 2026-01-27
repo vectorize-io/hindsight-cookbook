@@ -87,6 +87,10 @@ class DeliveryMetrics:
     # Is this a repeat visit?
     is_repeat: bool = False
 
+    # Detailed logs (for saveDetailedLogs option)
+    path: list[str] = field(default_factory=list)  # Sequence of locations visited
+    actions: list[dict] = field(default_factory=list)  # Tool calls and responses
+
     def compute_derived(self):
         """Compute derived metrics."""
         if self.optimal_steps > 0 and self.steps_taken > 0:
@@ -94,7 +98,7 @@ class DeliveryMetrics:
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
-        return {
+        result = {
             "deliveryId": self.delivery_id,
             "recipient": self.recipient,
             "business": self.business,
@@ -109,6 +113,12 @@ class DeliveryMetrics:
             "consolidationTriggered": self.consolidation_triggered,
             "isRepeat": self.is_repeat,
         }
+        # Only include path/actions if they have data (to keep results.json smaller)
+        if self.path:
+            result["path"] = self.path
+        if self.actions:
+            result["actions"] = self.actions
+        return result
 
 
 @dataclass

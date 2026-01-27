@@ -19,7 +19,6 @@ from .memory_service import (
     reflect_async,
     format_recall_as_context,
     get_last_injection_debug,
-    set_document_id,
     set_bank_id,
     get_bank_id,
     set_bank_mission_async,
@@ -28,8 +27,8 @@ from .memory_service import (
     reset_delivery_count,
     get_mental_models_async,
     get_bank_stats_async,
-    wait_for_pending_consolidation_async,  # Wait for consolidation after retain
-    BANK_MISSION,  # Default mission for hindsight
+    wait_for_pending_consolidation_async,
+    BANK_MISSION,
 )
 from ..websocket.events import (
     event, EventType, AgentActionPayload, DeliverySuccessPayload,
@@ -130,7 +129,7 @@ async def preseed_memory(facts: list[str], delivery_id: int) -> None:
         await retain_async(
             content,
             context="Pre-seeded building knowledge for delivery agent",
-            document_id=f"preseed-{delivery_id}"
+            session_id=f"preseed-{delivery_id}"
         )
     except Exception as e:
         print(f"[MEMORY] Failed to preseed facts: {e}")
@@ -248,8 +247,8 @@ async def run_delivery(
         agent_state = AgentState(floor=1, side=Side.FRONT)
     agent_state.current_package = package
 
-    # Set document ID for memory grouping
-    set_document_id(f"delivery-{delivery_id}")
+    # Session ID for memory grouping (used in retain_async calls)
+    session_id = f"delivery-{delivery_id}"
 
     # Build system prompt - may be augmented with memory
     base_system_prompt = "You are a delivery agent. Use the tools provided to get it delivered."
@@ -438,7 +437,7 @@ async def run_delivery(
                         await retain_async(
                             final_convo,
                             context=f"delivery:{package.recipient_name}:success",
-                            document_id=f"delivery-{delivery_id}"
+                            session_id=f"delivery-{delivery_id}"
                         )
                         store_timing = time.time() - t_store
                         print(f"[MEMORY] Stored successfully in {store_timing:.2f}s to bank: {get_bank_id()}")
@@ -503,7 +502,7 @@ async def run_delivery(
             await retain_async(
                 final_convo,
                 context=f"delivery:{package.recipient_name}:failed",
-                document_id=f"delivery-{delivery_id}"
+                session_id=f"delivery-{delivery_id}"
             )
             store_timing = time.time() - t_store
             await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
@@ -629,8 +628,8 @@ async def run_delivery_fast(
         agent_state = AgentState(floor=1, side=Side.FRONT)
     agent_state.current_package = package
 
-    # Set document ID for memory grouping
-    set_document_id(f"delivery-{delivery_id}")
+    # Session ID for memory grouping (used in retain_async calls)
+    session_id = f"delivery-{delivery_id}"
 
     # Build system prompt - may be augmented with memory
     base_system_prompt = "You are a delivery agent. Use the tools provided to get it delivered."
@@ -892,7 +891,7 @@ Strategy:
                         await retain_async(
                             final_convo,
                             context=f"delivery:{package.recipient_name}:success",
-                            document_id=f"delivery-{delivery_id}"
+                            session_id=f"delivery-{delivery_id}"
                         )
                         # For MM modes with wait_for_consolidation, wait for pending_consolidation to reach 0
                         # This matches eval framework behavior: wait after EVERY retain
@@ -927,7 +926,7 @@ Strategy:
                 await retain_async(
                     final_convo,
                     context=f"delivery:{package.recipient_name}:failed",
-                    document_id=f"delivery-{delivery_id}"
+                    session_id=f"delivery-{delivery_id}"
                 )
                 # For MM modes with wait_for_consolidation, wait for pending_consolidation to reach 0
                 if is_mm_mode and wait_for_consolidation:

@@ -28,7 +28,7 @@ export function useWebSocket() {
     // In dev, connect directly to backend; in prod, use same host
     const port = window.location.port;
     const isDev = port === '5173' || port === '5174' || port.startsWith('517');
-    const wsHost = isDev ? `${window.location.hostname}:8002` : window.location.host;
+    const wsHost = isDev ? `${window.location.hostname}:8000` : window.location.host;
     // Pass app=demo and difficulty to identify this as the demo frontend
     const wsUrl = `${protocol}//${wsHost}/ws/${CLIENT_ID}?app=demo&difficulty=${difficulty}`;
     console.log('Connecting to WebSocket:', wsUrl, 'difficulty:', difficulty);

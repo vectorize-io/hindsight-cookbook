@@ -137,29 +137,29 @@ const HARD_CONFIG: DifficultyConfig = {
   // Positions measured from the city_grid.png image scaled to 800x533
   cityGridPositions: {
     // Row 0: Tech Corp, road, City Bank, road, Law Office, road, Medical
-    '0_0': { x: 150, y: 125 },  // Tech Corp
-    '0_1': { x: 230, y: 125 },  // road
-    '0_2': { x: 315, y: 125 },  // City Bank
-    '0_3': { x: 400, y: 125 },  // road
-    '0_4': { x: 480, y: 125 },  // Law Office
-    '0_5': { x: 565, y: 125 },  // road
-    '0_6': { x: 645, y: 125 },  // Medical
+    '0_0': { x: 150, y: 145 },  // Tech Corp
+    '0_1': { x: 230, y: 145 },  // road
+    '0_2': { x: 315, y: 145 },  // City Bank
+    '0_3': { x: 400, y: 145 },  // road
+    '0_4': { x: 480, y: 145 },  // Law Office
+    '0_5': { x: 565, y: 145 },  // road
+    '0_6': { x: 645, y: 145 },  // Medical
     // Row 1: Real Estate, road, News Studio, road, Accounting, road, Insurance Co
-    '1_0': { x: 150, y: 275 },  // Real Estate
-    '1_1': { x: 230, y: 275 },  // road
-    '1_2': { x: 315, y: 275 },  // News Studio
-    '1_3': { x: 400, y: 275 },  // road
-    '1_4': { x: 480, y: 275 },  // Accounting
-    '1_5': { x: 565, y: 275 },  // road
-    '1_6': { x: 645, y: 275 },  // Insurance Co
+    '1_0': { x: 150, y: 295 },  // Real Estate
+    '1_1': { x: 230, y: 295 },  // road
+    '1_2': { x: 315, y: 295 },  // News Studio
+    '1_3': { x: 400, y: 295 },  // road
+    '1_4': { x: 480, y: 295 },  // Accounting
+    '1_5': { x: 565, y: 295 },  // road
+    '1_6': { x: 645, y: 295 },  // Insurance Co
     // Row 2: Marketing, road, Consulting, road, Engineering, road, Data Center
-    '2_0': { x: 150, y: 430 },  // Marketing
-    '2_1': { x: 230, y: 430 },  // road
-    '2_2': { x: 315, y: 430 },  // Consulting
-    '2_3': { x: 400, y: 430 },  // road
-    '2_4': { x: 480, y: 430 },  // Engineering
-    '2_5': { x: 565, y: 430 },  // road
-    '2_6': { x: 645, y: 430 },  // Data Center
+    '2_0': { x: 150, y: 450 },  // Marketing
+    '2_1': { x: 230, y: 450 },  // road
+    '2_2': { x: 315, y: 450 },  // Consulting
+    '2_3': { x: 400, y: 450 },  // road
+    '2_4': { x: 480, y: 450 },  // Engineering
+    '2_5': { x: 565, y: 450 },  // road
+    '2_6': { x: 645, y: 450 },  // Data Center
   },
 
   // Building names at each grid position (EVEN columns only)

@@ -9,6 +9,15 @@ from fastapi import WebSocket
 import sys
 sys.path.insert(0, str(__file__).rsplit("/app/", 1)[0])
 
+# Debug logging - set to True for verbose benchmark debugging
+DEBUG_BENCHMARK = True
+
+def debug_log(msg: str, config_name: str = None):
+    """Print debug message if DEBUG_BENCHMARK is enabled."""
+    if DEBUG_BENCHMARK:
+        prefix = f"[DEBUG:{config_name}]" if config_name else "[DEBUG]"
+        print(f"{prefix} {msg}", flush=True)
+
 from building import (
     Building, Package, AgentState, Side, get_building,
     compute_optimal_steps, compute_path_efficiency, compute_remaining_steps,
@@ -294,6 +303,16 @@ async def run_benchmark_delivery(
         is_repeat=is_repeat,
     )
 
+    # Debug: Log delivery start with mode info
+    cfg_name = config.display_name or config.mode.value
+    debug_log(f"=== DELIVERY {delivery_id} START ===", cfg_name)
+    debug_log(f"Mode: {config.mode.value}", cfg_name)
+    debug_log(f"Bank ID: {config.bank_id}", cfg_name)
+    debug_log(f"Recipient: {recipient_name} (repeat={is_repeat})", cfg_name)
+    debug_log(f"Memory Query Mode: {config.memory_query_mode}", cfg_name)
+    debug_log(f"Wait for Consolidation: {config.wait_for_consolidation}", cfg_name)
+    debug_log(f"MM Query Type: {config.mm_query_type}", cfg_name)
+
     # Compute optimal steps
     metrics.optimal_steps = compute_optimal_steps(building, recipient_name)
 
@@ -353,7 +372,10 @@ You have access to read_notes() to check your memory at any time.
     include_filesystem = config.mode == AgentMode.FILESYSTEM and config.memory_query_mode in ["per_step", "both"]
 
     # Memory handler for filesystem mode (read_notes/write_notes)
-    filesystem_notes_key = get_bank_id() or f"delivery-{delivery_id}"
+    # IMPORTANT: Use config.bank_id to ensure isolation in parallel execution
+    # (get_bank_id() is global and gets overwritten by other parallel configs)
+    filesystem_notes_key = config.bank_id or f"filesystem-{delivery_id}"
+    debug_log(f"Filesystem notes key: {filesystem_notes_key}", cfg_name)
     memory_handler = MemoryToolHandler(
         recall_fn=None,
         notes_key=filesystem_notes_key,
@@ -368,20 +390,36 @@ You have access to read_notes() to check your memory at any time.
 
     # MEMORY INJECTION at start (unless no_memory or filesystem mode)
     if config.mode not in [AgentMode.NO_MEMORY, AgentMode.FILESYSTEM] and config.memory_query_mode in ["inject_once", "both"]:
+        debug_log(f">>> MEMORY INJECTION (inject_once/both) - Mode requires Hindsight API call", cfg_name)
         try:
             memory_query = get_hindsight_query(recipient_name, config.query)
+            debug_log(f"Memory query: {memory_query[:100]}...", cfg_name)
 
             if should_use_reflect():
-                result = await reflect_async(query=memory_query, budget="high", bank_id=config.bank_id)
+                debug_log(f">>> Calling REFLECT API (bank={config.bank_id})", cfg_name)
+                t_reflect = time.time()
+                result = await reflect_async(query=memory_query, budget="high", bank_id=config.bank_id, hindsight_url=config.hindsight_url)
+                reflect_time = time.time() - t_reflect
+                debug_log(f"<<< REFLECT returned in {reflect_time:.2f}s", cfg_name)
                 if result and hasattr(result, 'text') and result.text:
                     memory_context = result.text
                     metrics.memory_injected = True
+                    debug_log(f"Got reflect context ({len(memory_context)} chars): {memory_context[:150]}...", cfg_name)
+                else:
+                    debug_log(f"REFLECT returned empty result", cfg_name)
             else:
                 # Recall mode (including MM modes with mm_query_type="recall")
-                result = await recall_async(query=memory_query, budget="high", bank_id=config.bank_id)
+                debug_log(f">>> Calling RECALL API (bank={config.bank_id})", cfg_name)
+                t_recall = time.time()
+                result = await recall_async(query=memory_query, budget="high", bank_id=config.bank_id, hindsight_url=config.hindsight_url)
+                recall_time = time.time() - t_recall
+                debug_log(f"<<< RECALL returned in {recall_time:.2f}s", cfg_name)
                 if result and len(result) > 0:
                     memory_context = format_recall_as_context(result)
                     metrics.memory_injected = True
+                    debug_log(f"Got {len(result)} recall facts ({len(memory_context)} chars): {memory_context[:150]}...", cfg_name)
+                else:
+                    debug_log(f"RECALL returned 0 facts", cfg_name)
 
             if memory_context:
                 system_prompt = f"{base_system_prompt}\n\n# Relevant Memory\n{memory_context}"
@@ -399,10 +437,12 @@ You have access to read_notes() to check your memory at any time.
 
     # FILESYSTEM NOTES INJECTION at start (for inject_once or both modes)
     if config.mode == AgentMode.FILESYSTEM and config.memory_query_mode in ["inject_once", "both"]:
+        debug_log(f">>> FILESYSTEM MODE - Reading local notes (no Hindsight API)", cfg_name)
         existing_notes = MemoryToolHandler.get_notes(filesystem_notes_key)
         if existing_notes:
             system_prompt = f"{base_system_prompt}\n\n# Your Notes\n{existing_notes}"
             metrics.memory_injected = True
+            debug_log(f"Got filesystem notes ({len(existing_notes)} chars): {existing_notes[:150]}...", cfg_name)
 
             if websocket:
                 await websocket.send_json(event(EventType.MEMORY_REFLECT, {
@@ -411,6 +451,8 @@ You have access to read_notes() to check your memory at any time.
                     "text": existing_notes,
                     "bankId": filesystem_notes_key,
                 }))
+        else:
+            debug_log(f"No filesystem notes found (key={filesystem_notes_key})", cfg_name)
 
     # Initial messages
     messages = [
@@ -436,6 +478,10 @@ You have access to read_notes() to check your memory at any time.
 
     success = False
 
+    # Track actions and path for detailed logs
+    actions_log = []
+    path_log = [agent_state.position_str()]  # Start position
+
     try:
         while agent_state.steps_taken < max_steps:
             if websocket:
@@ -459,7 +505,7 @@ You have access to read_notes() to check your memory at any time.
                     contextual_query = f"{memory_query}\n\nContext: {context_str}"
 
                     # Always reflect for per-step (recall doesn't benefit from per-step)
-                    result = await reflect_async(query=contextual_query, budget="high", bank_id=config.bank_id)
+                    result = await reflect_async(query=contextual_query, budget="high", bank_id=config.bank_id, hindsight_url=config.hindsight_url)
                     step_memory = result.text if result and hasattr(result, 'text') else None
 
                     if step_memory:
@@ -565,22 +611,31 @@ You have access to read_notes() to check your memory at any time.
                         "content": result
                     })
 
+                    # Build action payload
+                    action_payload = {
+                        "step": agent_state.steps_taken,
+                        "toolName": tool_name,
+                        "toolArgs": arguments,
+                        "toolResult": result,
+                        "thinking": message.content if message.content else None,
+                        "floor": agent_state.floor,
+                        "side": agent_state.side.value,
+                        "timing": timing,
+                    }
+                    if hasattr(agent_state, 'grid_row'):
+                        action_payload["gridRow"] = agent_state.grid_row
+                        action_payload["gridCol"] = agent_state.grid_col
+                        action_payload["currentBuilding"] = agent_state.current_building
+
+                    # Record action for detailed logs
+                    actions_log.append(action_payload)
+
+                    # Track path (position after movement)
+                    if is_movement_tool:
+                        path_log.append(agent_state.position_str())
+
                     # Send action event
                     if websocket:
-                        action_payload = {
-                            "step": agent_state.steps_taken,
-                            "toolName": tool_name,
-                            "toolArgs": arguments,
-                            "toolResult": result,
-                            "thinking": message.content if message.content else None,
-                            "floor": agent_state.floor,
-                            "side": agent_state.side.value,
-                            "timing": timing,
-                        }
-                        if hasattr(agent_state, 'grid_row'):
-                            action_payload["gridRow"] = agent_state.grid_row
-                            action_payload["gridCol"] = agent_state.grid_col
-                            action_payload["currentBuilding"] = agent_state.current_building
                         await websocket.send_json(event(EventType.AGENT_ACTION, action_payload))
 
                     await asyncio.sleep(0.05)  # Small delay
@@ -626,9 +681,17 @@ You have access to read_notes() to check your memory at any time.
     metrics.steps_taken = agent_state.steps_taken
     metrics.errors = errors
     metrics.error_rate = errors / max(agent_state.steps_taken, 1)
+    metrics.path = path_log
+    metrics.actions = actions_log
+
+    # Debug: Log delivery completion summary
+    debug_log(f"=== DELIVERY {delivery_id} COMPLETE ===", cfg_name)
+    debug_log(f"Success: {success}, Steps: {agent_state.steps_taken}/{max_steps}, Optimal: {metrics.optimal_steps}", cfg_name)
+    debug_log(f"Memory Injected: {metrics.memory_injected}, Consolidation: {metrics.consolidation_triggered}", cfg_name)
 
     # FILESYSTEM AUTO-WRITE: Use LLM to update notes with delivery learnings
     if config.mode == AgentMode.FILESYSTEM:
+        debug_log(f">>> FILESYSTEM AUTO-WRITE - Updating local notes (no Hindsight API)", cfg_name)
         try:
             existing_notes = MemoryToolHandler.get_notes(filesystem_notes_key)
             target_side_str = target_side.value if hasattr(target_side, 'value') else str(target_side)
@@ -636,6 +699,8 @@ You have access to read_notes() to check your memory at any time.
             if websocket:
                 await websocket.send_json(event(EventType.MEMORY_STORING))
 
+            debug_log(f"Calling LLM to update notes...", cfg_name)
+            t_notes = time.time()
             updated_notes = await update_filesystem_notes_with_llm(
                 existing_notes=existing_notes,
                 recipient=recipient_name,
@@ -646,6 +711,8 @@ You have access to read_notes() to check your memory at any time.
                 steps_taken=agent_state.steps_taken,
                 model=config.model,
             )
+            notes_time = time.time() - t_notes
+            debug_log(f"Notes updated in {notes_time:.2f}s ({len(updated_notes)} chars)", cfg_name)
 
             # Save updated notes
             MemoryToolHandler._notes_storage[filesystem_notes_key] = updated_notes
@@ -657,10 +724,12 @@ You have access to read_notes() to check your memory at any time.
                     "bankId": filesystem_notes_key,
                 }))
         except Exception as e:
+            debug_log(f"!!! FILESYSTEM NOTES ERROR: {e}", cfg_name)
             print(f"[BENCHMARK] Filesystem notes update error: {e}")
 
     # Store memory to Hindsight (unless no_memory or filesystem mode)
     if config.mode not in [AgentMode.NO_MEMORY, AgentMode.FILESYSTEM]:
+        debug_log(f">>> MEMORY STORAGE - Mode requires RETAIN API call", cfg_name)
         try:
             final_convo = format_messages_for_retain(
                 messages,
@@ -670,20 +739,24 @@ You have access to read_notes() to check your memory at any time.
             )
             if websocket:
                 await websocket.send_json(event(EventType.MEMORY_STORING))
+            debug_log(f">>> Calling RETAIN API (bank={config.bank_id}, content_len={len(final_convo)})", cfg_name)
             t_store = time.time()
             await retain_async(
                 final_convo,
                 context=f"delivery:{recipient_name}:{'success' if success else 'failed'}",
                 document_id=f"delivery-{delivery_id}",
-                bank_id=config.bank_id
+                bank_id=config.bank_id,
+                hindsight_url=config.hindsight_url
             )
             store_timing = time.time() - t_store
+            debug_log(f"<<< RETAIN completed in {store_timing:.2f}s", cfg_name)
             if websocket:
                 await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
 
             # For MM modes with wait_for_consolidation, wait for pending_consolidation to reach 0
             # This matches the eval framework behavior - wait after EVERY retain, not just after N deliveries
             if config.mode == AgentMode.HINDSIGHT_MM and config.wait_for_consolidation:
+                debug_log(f">>> WAIT FOR CONSOLIDATION - MM mode with wait=True", cfg_name)
                 if websocket:
                     await websocket.send_json(event(EventType.MODELS_REFRESHING, {"message": "Waiting for consolidation..."}))
                 try:
@@ -691,16 +764,23 @@ You have access to read_notes() to check your memory at any time.
                     success_consolidation = await wait_for_pending_consolidation_async(bank_id=config.bank_id, poll_interval=2.0, timeout=300.0)
                     consolidate_timing = time.time() - t_consolidate
                     metrics.consolidation_triggered = True
+                    debug_log(f"<<< CONSOLIDATION {'completed' if success_consolidation else 'FAILED/TIMEOUT'} in {consolidate_timing:.2f}s", cfg_name)
                     if websocket:
                         await websocket.send_json(event(EventType.MODELS_REFRESHED, {
                             "success": success_consolidation,
                             "timing": consolidate_timing
                         }))
                 except Exception as e:
+                    debug_log(f"!!! CONSOLIDATION ERROR: {e}", cfg_name)
                     print(f"[BENCHMARK] Consolidation wait error: {e}")
                     if websocket:
                         await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": False, "error": str(e)}))
+            elif config.mode == AgentMode.HINDSIGHT_MM_NOWAIT:
+                debug_log(f">>> NO WAIT - MM_NOWAIT mode, skipping consolidation wait", cfg_name)
+            elif config.mode in [AgentMode.RECALL, AgentMode.REFLECT]:
+                debug_log(f">>> NO CONSOLIDATION - {config.mode.value} mode doesn't use mental models", cfg_name)
         except Exception as e:
+            debug_log(f"!!! RETAIN ERROR: {e}", cfg_name)
             print(f"[BENCHMARK] Memory storage error: {e}")
 
     # Track delivery count for refresh interval (used for periodic explicit consolidation)
@@ -745,6 +825,20 @@ async def run_benchmark(
     Returns:
         BenchmarkResults with all metrics
     """
+    cfg_name = config.display_name or config.mode.value
+    debug_log(f"", cfg_name)
+    debug_log(f"{'='*60}", cfg_name)
+    debug_log(f"BENCHMARK CONFIG START: {cfg_name}", cfg_name)
+    debug_log(f"{'='*60}", cfg_name)
+    debug_log(f"Mode: {config.mode.value}", cfg_name)
+    debug_log(f"Bank ID: {config.bank_id}", cfg_name)
+    debug_log(f"Num Deliveries: {config.num_deliveries}", cfg_name)
+    debug_log(f"Memory Query Mode: {config.memory_query_mode}", cfg_name)
+    debug_log(f"Wait for Consolidation: {config.wait_for_consolidation}", cfg_name)
+    debug_log(f"MM Query Type: {config.mm_query_type}", cfg_name)
+    debug_log(f"Preseed Coverage: {config.preseed_coverage}", cfg_name)
+    debug_log(f"", cfg_name)
+
     results = BenchmarkResults(config=config)
 
     # Get building
@@ -789,7 +883,8 @@ async def run_benchmark(
                     preseed_facts,
                     context="building_knowledge:preseed",
                     document_id="preseed-building-knowledge",
-                    bank_id=config.bank_id
+                    bank_id=config.bank_id,
+                    hindsight_url=config.hindsight_url
                 )
                 if websocket:
                     await websocket.send_json(event(EventType.MEMORY_STORED, {

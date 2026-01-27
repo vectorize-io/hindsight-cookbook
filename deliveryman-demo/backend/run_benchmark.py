@@ -83,8 +83,15 @@ GLOBAL_CONFIG_KEYS = [
     "seed",
 ]
 
+# Modes that use mental models (and need the MM-enabled backend)
+MM_MODES = {AgentMode.HINDSIGHT_MM, AgentMode.HINDSIGHT_MM_NOWAIT}
 
-def load_config(config_path: str, overrides: dict = None) -> BenchmarkRunConfig:
+# Default Hindsight URLs
+DEFAULT_HINDSIGHT_URL_MM = "http://localhost:8888"  # MM-enabled backend
+DEFAULT_HINDSIGHT_URL_NO_MM = "http://localhost:8889"  # No-MM backend (recall/reflect only)
+
+
+def load_config(config_path: str, overrides: dict = None, hindsight_url_mm: str = None, hindsight_url_no_mm: str = None) -> BenchmarkRunConfig:
     """Load benchmark run config from JSON file.
 
     Supports two formats:
@@ -93,6 +100,12 @@ def load_config(config_path: str, overrides: dict = None) -> BenchmarkRunConfig:
 
     Global config keys (num_deliveries, model, etc.) can be set at top level
     and will apply to all configs unless overridden per-config.
+
+    Args:
+        config_path: Path to JSON config file
+        overrides: CLI overrides dict
+        hindsight_url_mm: Hindsight URL for MM modes (hindsight_mm, hindsight_mm_nowait)
+        hindsight_url_no_mm: Hindsight URL for non-MM modes (recall, reflect)
     """
     with open(config_path) as f:
         data = json.load(f)
@@ -114,6 +127,10 @@ def load_config(config_path: str, overrides: dict = None) -> BenchmarkRunConfig:
         # Extract global defaults
         global_defaults = {k: data[k] for k in GLOBAL_CONFIG_KEYS if k in data}
 
+    # Get Hindsight URLs from config or use provided/defaults
+    url_mm = hindsight_url_mm or data.get("hindsight_url_mm", DEFAULT_HINDSIGHT_URL_MM)
+    url_no_mm = hindsight_url_no_mm or data.get("hindsight_url_no_mm", DEFAULT_HINDSIGHT_URL_NO_MM)
+
     # Auto-generate seed if not specified (ensures all configs get same deliveries)
     import random
     import uuid
@@ -133,6 +150,18 @@ def load_config(config_path: str, overrides: dict = None) -> BenchmarkRunConfig:
             for key, value in overrides.items():
                 if value is not None:
                     merged_cfg[key] = value
+
+        # Auto-select Hindsight URL based on mode (unless explicitly specified per-config)
+        if "hindsight_url" not in merged_cfg or not merged_cfg["hindsight_url"]:
+            mode = merged_cfg.get("mode", AgentMode.RECALL)
+            if mode in MM_MODES:
+                merged_cfg["hindsight_url"] = url_mm
+            elif mode in {AgentMode.RECALL, AgentMode.REFLECT}:
+                merged_cfg["hindsight_url"] = url_no_mm
+            # Filesystem and no_memory modes don't use Hindsight, but set it anyway for consistency
+            else:
+                merged_cfg["hindsight_url"] = url_no_mm
+
         # Auto-generate unique bank_id for parallel execution (if not specified)
         if "bank_id" not in merged_cfg or not merged_cfg["bank_id"]:
             mode_name = merged_cfg.get("mode", AgentMode.RECALL)
@@ -539,7 +568,10 @@ Examples:
         """
     )
     parser.add_argument("config", help="Path to JSON config file")
-    parser.add_argument("--hindsight-url", default="http://localhost:8888", help="Hindsight API URL")
+    parser.add_argument("--hindsight-url-mm", default=DEFAULT_HINDSIGHT_URL_MM,
+                        help=f"Hindsight API URL for MM modes (default: {DEFAULT_HINDSIGHT_URL_MM})")
+    parser.add_argument("--hindsight-url-no-mm", default=DEFAULT_HINDSIGHT_URL_NO_MM,
+                        help=f"Hindsight API URL for non-MM modes (default: {DEFAULT_HINDSIGHT_URL_NO_MM})")
 
     # CI threshold options
     parser.add_argument("--min-success-rate", type=float, default=0.0,
@@ -571,21 +603,18 @@ Examples:
 
     # Load config
     try:
-        run_config = load_config(args.config, overrides if overrides else None)
+        run_config = load_config(
+            args.config,
+            overrides if overrides else None,
+            hindsight_url_mm=args.hindsight_url_mm,
+            hindsight_url_no_mm=args.hindsight_url_no_mm,
+        )
     except FileNotFoundError:
         print(f"Error: Config file not found: {args.config}", file=sys.stderr)
         return 1
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON in config file: {e}", file=sys.stderr)
         return 1
-
-    # Determine hindsight URL: CLI arg takes priority, then first config's hindsight_url, then default
-    hindsight_url = args.hindsight_url
-    if hindsight_url == "http://localhost:8888" and run_config.configs:
-        # CLI arg is default, check if config specifies a URL
-        first_config_url = run_config.configs[0].hindsight_url
-        if first_config_url:
-            hindsight_url = first_config_url
 
     # Get the seed (same for all configs)
     seed_used = run_config.configs[0].seed if run_config.configs else None
@@ -594,12 +623,13 @@ Examples:
         print(f"Loaded {len(run_config.configs)} config(s) from {args.config}")
         print(f"Run name: {run_config.run_name}")
         print(f"Seed: {seed_used}")
-        print(f"Hindsight URL: {hindsight_url}")
+        print(f"Hindsight URL (MM modes):    {args.hindsight_url_mm}")
+        print(f"Hindsight URL (non-MM modes): {args.hindsight_url_no_mm}")
         print(f"Charts: {'enabled' if run_config.generate_charts else 'disabled'}")
         print(f"Detailed logs: {'enabled' if run_config.save_detailed_logs else 'disabled'}")
 
-    # Initialize memory service with default URL (per-config URLs handled in benchmark_service)
-    initialize_memory(hindsight_url)
+    # Initialize memory service with MM URL as default (per-config URLs handled in benchmark_service)
+    initialize_memory(args.hindsight_url_mm)
 
     # Create output directory with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -172,30 +172,27 @@ function App() {
   const [bankCopied, setBankCopied] = useState(false);
   const [bankHistory, setBankHistory] = useState<string[]>([]);
 
-  // Mental models state
-  interface Observation {
-    title: string;
-    content: string;
-    trend?: 'STABLE' | 'STRENGTHENING' | 'WEAKENING' | 'NEW' | 'STALE';
-    evidence?: Array<{
-      memory_id: string;
-      quote: string;
-      timestamp?: string;
-      relevance?: string;
-    }>;
+  // Mental models state (reflections from Hindsight API)
+  interface BasedOnItem {
+    fact_type?: string;
+    content?: string;
+    quote?: string;
+    memory_id?: string;
+    timestamp?: string;
   }
   interface MentalModel {
     id: string;
     name: string;
+    source_query?: string;
+    content?: string;  // Main reflection content
     description?: string;
     summary?: string;
     subtype?: string;
     created_at?: string;
-    observations?: Observation[];
-    freshness?: {
-      is_up_to_date: boolean;
-      memories_since_refresh: number;
-      reasons?: string[];
+    last_refreshed_at?: string;
+    reflect_response?: {
+      answer?: string;
+      based_on?: BasedOnItem[];
     };
   }
   const [mentalModels, setMentalModels] = useState<MentalModel[]>([]);
@@ -677,8 +674,9 @@ function App() {
     }
 
     // Check if delivery completed and both storing and animations are done
-    const storingDone = loopWasStoringRef.current && !isStoringMemory;
-    const animatingDone = loopWasAnimatingRef.current && !isAnimating;
+    // If storing/animating was never triggered, consider it done (e.g., on failed deliveries)
+    const storingDone = !loopWasStoringRef.current || !isStoringMemory;
+    const animatingDone = !loopWasAnimatingRef.current || !isAnimating;
     const deliveryDone = loopDeliveryCompleteRef.current;
 
     if (deliveryDone && storingDone && animatingDone) {
@@ -1581,67 +1579,70 @@ function App() {
                             </span>
                             <span className="text-sm text-slate-300 font-medium truncate">{model.name}</span>
                           </div>
-                          {model.observations && (
+                          {model.reflect_response?.based_on && (
                             <span className="text-[10px] text-slate-500 shrink-0">
-                              {model.observations.length} obs
+                              {model.reflect_response.based_on.length} facts
                             </span>
                           )}
                         </div>
-                        {(model.description || model.summary) && (
-                          <p className="text-xs text-slate-500 mt-1 ml-5 line-clamp-1">{model.description || model.summary}</p>
+                        {model.source_query && (
+                          <p className="text-xs text-slate-500 mt-1 ml-5 line-clamp-1 italic">"{model.source_query}"</p>
                         )}
                       </button>
 
-                      {/* Expanded observations */}
+                      {/* Expanded content */}
                       {expandedModelId === model.id && (
                         <div className="border-t border-slate-600 p-2 space-y-2 bg-slate-800/50">
-                          {model.observations && model.observations.length > 0 ? (
-                            model.observations.map((obs, obsIdx) => (
-                              <div key={obsIdx} className="bg-slate-700/50 rounded p-2 border border-slate-600">
-                                <div className="flex items-start justify-between gap-2">
-                                  <span className="text-xs text-slate-300 font-medium">{obs.title}</span>
-                                  {obs.trend && (
-                                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                      obs.trend === 'STRENGTHENING' ? 'text-green-400 bg-green-900/30' :
-                                      obs.trend === 'WEAKENING' ? 'text-red-400 bg-red-900/30' :
-                                      obs.trend === 'NEW' ? 'text-blue-400 bg-blue-900/30' :
-                                      obs.trend === 'STALE' ? 'text-yellow-400 bg-yellow-900/30' :
-                                      'text-slate-400 bg-slate-700/30'
-                                    }`}>
-                                      {obs.trend}
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-xs text-slate-400 mt-1">{obs.content}</p>
-                                {obs.evidence && obs.evidence.length > 0 && (
-                                  <div className="mt-2 space-y-1">
-                                    <span className="text-[10px] text-slate-500 uppercase">Evidence:</span>
-                                    {obs.evidence.slice(0, 2).map((ev, evIdx) => (
-                                      <div key={evIdx} className="text-[10px] text-slate-500 italic pl-2 border-l border-slate-600">
-                                        "{ev.quote?.slice(0, 100)}{ev.quote && ev.quote.length > 100 ? '...' : ''}"
+                          {model.content ? (
+                            <div className="space-y-3">
+                              {/* Main content */}
+                              <div className="bg-slate-700/50 rounded p-3 border border-slate-600">
+                                <p className="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">{model.content}</p>
+                              </div>
+
+                              {/* Based on facts */}
+                              {model.reflect_response?.based_on && model.reflect_response.based_on.length > 0 && (
+                                <div className="space-y-1">
+                                  <span className="text-[10px] text-slate-500 uppercase">Based on {model.reflect_response.based_on.length} memories:</span>
+                                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                                    {model.reflect_response.based_on.slice(0, 5).map((item, idx) => (
+                                      <div key={idx} className="text-[10px] text-slate-500 pl-2 border-l border-slate-600 flex items-start gap-2">
+                                        <span className={`shrink-0 px-1 py-0.5 rounded ${
+                                          item.fact_type === 'world' ? 'bg-blue-900/30 text-blue-400' :
+                                          item.fact_type === 'experience' ? 'bg-green-900/30 text-green-400' :
+                                          'bg-purple-900/30 text-purple-400'
+                                        }`}>
+                                          {item.fact_type || 'fact'}
+                                        </span>
+                                        <span className="italic">"{(item.content || item.quote)?.slice(0, 80)}{(item.content || item.quote)?.length > 80 ? '...' : ''}"</span>
                                       </div>
                                     ))}
-                                    {obs.evidence.length > 2 && (
-                                      <span className="text-[10px] text-slate-600">+{obs.evidence.length - 2} more</span>
+                                    {model.reflect_response.based_on.length > 5 && (
+                                      <span className="text-[10px] text-slate-600 pl-2">+{model.reflect_response.based_on.length - 5} more</span>
                                     )}
                                   </div>
-                                )}
-                              </div>
-                            ))
+                                </div>
+                              )}
+
+                              {/* Timestamps */}
+                              {model.last_refreshed_at && (
+                                <div className="text-[10px] text-slate-600">
+                                  Refreshed: {new Date(model.last_refreshed_at).toLocaleString()}
+                                </div>
+                              )}
+                            </div>
                           ) : (
                             <div className="text-xs text-slate-500 text-center py-2">
-                              No observations yet. Click "Refresh" to generate.
+                              No content yet. Click "Refresh" to generate.
                             </div>
                           )}
-                          {/* Delete button for pinned models */}
-                          {model.subtype === 'pinned' && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); deleteMentalModel(model.id); }}
-                              className="w-full mt-2 px-2 py-1 text-xs bg-red-900/30 hover:bg-red-800/50 text-red-400 rounded transition-colors"
-                            >
-                              Delete
-                            </button>
-                          )}
+                          {/* Delete button */}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteMentalModel(model.id); }}
+                            className="w-full mt-2 px-2 py-1 text-xs bg-red-900/30 hover:bg-red-800/50 text-red-400 rounded transition-colors"
+                          >
+                            Delete
+                          </button>
                         </div>
                       )}
                     </div>

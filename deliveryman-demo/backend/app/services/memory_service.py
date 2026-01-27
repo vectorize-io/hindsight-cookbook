@@ -1,34 +1,63 @@
-"""Memory service wrapper around hindsight_litellm."""
+"""Memory service wrapper around hindsight_litellm and hindsight_client.
+
+This module provides memory operations for the deliveryman demo using:
+- hindsight_litellm: For retain, recall, reflect operations
+- hindsight_client: For typed bank operations (create, stats, reflections)
+"""
 
 import uuid
 import asyncio
 import concurrent.futures
-import httpx
 import hindsight_litellm
+from hindsight_litellm import (
+    aretain,
+    arecall,
+    areflect,
+    RecallResponse,
+    ReflectResult,
+    RetainResult,
+    HindsightError,
+)
+from hindsight_client import Hindsight
 from ..config import get_hindsight_url, set_hindsight_url, HINDSIGHT_API_URL
 
+# Debug logging for memory service
+DEBUG_MEMORY = True
 
-def initialize_memory(hindsight_url: str = None):
-    """Initialize the memory service with the specified Hindsight URL.
+def _debug_mem(msg: str):
+    """Print debug message for memory operations."""
+    if DEBUG_MEMORY:
+        print(f"[MEM_DEBUG] {msg}", flush=True)
+
+
+# Hindsight client instance (typed API for bank operations)
+_hindsight_client: Hindsight | None = None
+_hindsight_client_url: str | None = None
+
+# HTTP client for operations not in hindsight_client (consolidation, stats)
+import httpx
+_http_client: httpx.Client | None = None
+_http_client_url: str | None = None
+
+
+def _get_hindsight_client(hindsight_url: str = None) -> Hindsight:
+    """Get or create Hindsight client for typed API operations.
 
     Args:
-        hindsight_url: URL of the Hindsight API (None = use default from env)
+        hindsight_url: Optional override URL. If not provided, uses get_hindsight_url().
     """
-    if hindsight_url:
-        set_hindsight_url(hindsight_url)
+    global _hindsight_client, _hindsight_client_url
+    url = hindsight_url or get_hindsight_url()
 
-    # Re-initialize the HTTP client with the new URL
-    global _http_client
-    if _http_client is not None:
-        _http_client.close()
-        _http_client = None
+    # Recreate client if URL changed
+    if _hindsight_client is None or _hindsight_client_url != url:
+        _hindsight_client = Hindsight(base_url=url, timeout=60.0)
+        _hindsight_client_url = url
+    return _hindsight_client
 
-# HTTP client for direct API calls (mental models, mission)
-_http_client: httpx.Client | None = None
-_http_client_url: str | None = None  # Track the URL the client was created with
 
 def _get_http_client(hindsight_url: str = None) -> httpx.Client:
-    """Get or create HTTP client for direct Hindsight API calls.
+    """Get or create HTTP client for operations not in hindsight_client.
 
     Args:
         hindsight_url: Optional override URL. If not provided, uses get_hindsight_url().
@@ -44,7 +73,29 @@ def _get_http_client(hindsight_url: str = None) -> httpx.Client:
         _http_client_url = url
     return _http_client
 
-# Thread pool for running sync hindsight_litellm calls from async context
+
+def initialize_memory(hindsight_url: str = None):
+    """Initialize the memory service with the specified Hindsight URL.
+
+    Args:
+        hindsight_url: URL of the Hindsight API (None = use default from env)
+    """
+    global _hindsight_client, _hindsight_client_url, _http_client, _http_client_url
+
+    if hindsight_url:
+        set_hindsight_url(hindsight_url)
+
+    # Re-initialize the clients with the new URL
+    if _hindsight_client is not None:
+        _hindsight_client = None
+        _hindsight_client_url = None
+    if _http_client is not None:
+        _http_client.close()
+        _http_client = None
+        _http_client_url = None
+
+
+# Thread pool for running sync operations from async context
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 def _get_bank_key(app_type: str, difficulty: str = None) -> str:
@@ -76,6 +127,14 @@ BANK_BACKGROUND = "Delivery agent. Remember employee locations, building layout,
 
 # Bank mission for mental models - same as background for simplicity
 BANK_MISSION = "Delivery agent. Remember employee locations, building layout, and optimal paths."
+
+# Default mental models (reflections) to create for each bank
+# Each tuple is (name, source_query)
+DEFAULT_MENTAL_MODELS = [
+    ("Employee Locations", "Which floor and side of the building does each employee work at?"),
+    ("Building Layout", "How are the floors organized? What businesses are on each floor?"),
+    ("Optimal Delivery Paths", "What are the fastest routes to reach different employees?"),
+]
 
 
 def generate_bank_id(app_type: str = "demo", difficulty: str = None) -> str:
@@ -110,7 +169,14 @@ def get_bank_history(app_type: str = None, difficulty: str = None) -> list[str]:
     return history
 
 
-def configure_memory(bank_id: str = None, set_background: bool = True, app_type: str = None, difficulty: str = None, set_mission: bool = True) -> str:
+def configure_memory(
+    bank_id: str = None,
+    set_background: bool = True,
+    app_type: str = None,
+    difficulty: str = None,
+    set_mission: bool = True,
+    create_mental_models: bool = True,
+) -> str:
     """Configure hindsight_litellm for the demo.
 
     Args:
@@ -119,6 +185,7 @@ def configure_memory(bank_id: str = None, set_background: bool = True, app_type:
         app_type: App type (demo or bench) for prefix and tracking
         difficulty: Difficulty level (easy, medium, hard) for separate banks
         set_mission: Whether to set the bank mission (for mental models)
+        create_mental_models: Whether to create default mental models (reflections)
 
     Returns:
         The bank_id being used
@@ -150,7 +217,7 @@ def configure_memory(bank_id: str = None, set_background: bool = True, app_type:
         bank_id=new_bank_id,  # Set default bank_id
         store_conversations=False,  # We store manually after delivery
         inject_memories=False,  # We inject manually using recall/reflect
-        recall_budget="high",  # Use high budget for better memory retrieval
+        budget="high",  # Use high budget for better memory retrieval
         use_reflect=True,  # Use reflect for intelligent memory synthesis
         verbose=True,
     )
@@ -161,6 +228,11 @@ def configure_memory(bank_id: str = None, set_background: bool = True, app_type:
     _configured = True
     _add_to_history(new_bank_id, app, diff)
     print(f"Hindsight memory enabled for bank: {new_bank_id} (app: {app}, difficulty: {diff})")
+
+    # Create default mental models (reflections) for new banks
+    if create_mental_models:
+        create_default_mental_models(bank_id=new_bank_id)
+
     return new_bank_id
 
 
@@ -196,7 +268,7 @@ def set_bank_id(bank_id: str, set_background: bool = True, add_to_history: bool 
         bank_id=bank_id,
         store_conversations=False,
         inject_memories=False,
-        recall_budget="high",
+        budget="high",
         use_reflect=True,
         verbose=True,
     )
@@ -210,25 +282,19 @@ def set_bank_id(bank_id: str, set_background: bool = True, add_to_history: bool 
         print(f"Bank mission set for: {bank_id}")
 
 
-def set_bank_mission_sync(bank_id: str, mission: str = None):
-    """Set bank mission via HTTP API (synchronous).
+def set_bank_mission_sync(bank_id: str, mission: str = None, hindsight_url: str = None):
+    """Set bank mission using hindsight_client (synchronous).
 
     Args:
         bank_id: The bank ID to set mission for
         mission: The mission text (defaults to BANK_MISSION)
+        hindsight_url: Optional override URL
     """
     m = mission or BANK_MISSION
     try:
-        client = _get_http_client()
-        # Use PATCH on the bank endpoint to update mission
-        response = client.patch(
-            f"/v1/default/banks/{bank_id}",
-            json={"mission": m}
-        )
-        if response.status_code == 200:
-            print(f"[MEMORY] Bank mission set for: {bank_id}")
-        else:
-            print(f"[MEMORY] Failed to set bank mission: {response.status_code}")
+        client = _get_hindsight_client(hindsight_url)
+        client.set_mission(bank_id=bank_id, mission=m)
+        print(f"[MEMORY] Bank mission set for: {bank_id}")
     except Exception as e:
         print(f"[MEMORY] Failed to set bank mission: {e}")
 
@@ -296,38 +362,72 @@ def retain(content: str, sync: bool = True):
     return hindsight_litellm.retain(content, sync=sync)
 
 
-async def retain_async(content: str, context: str = None, document_id: str = None, bank_id: str = None):
+async def retain_async(
+    content: str,
+    context: str = None,
+    session_id: str = None,
+    bank_id: str = None,
+    hindsight_url: str = None,
+    tags: list[str] = None,
+) -> RetainResult:
     """Async store content to Hindsight memory.
 
     Args:
         content: The text content to store
         context: Context description for the memory
-        document_id: Optional document ID for grouping related memories
+        session_id: Optional session ID for grouping related memories (replaces document_id)
         bank_id: Override bank_id (for parallel execution with separate banks)
+        hindsight_url: Override Hindsight API URL (for using different backends)
+        tags: Optional tags for filtering during recall/reflect
+
+    Returns:
+        RetainResult with success status and items_count
     """
     bid = bank_id or get_bank_id()
-    print(f"[MEMORY] retain_async called - bank={bid}, context={context}, doc_id={document_id}, content_len={len(content)}", flush=True)
-    loop = asyncio.get_event_loop()
+    url = hindsight_url or get_hindsight_url()
+    _debug_mem(f"RETAIN_ASYNC called:")
+    _debug_mem(f"  bank_id={bid}")
+    _debug_mem(f"  context={context}")
+    _debug_mem(f"  session_id={session_id}")
+    _debug_mem(f"  content_len={len(content)}")
+    _debug_mem(f"  hindsight_url={url}")
+    _debug_mem(f"  tags={tags}")
 
-    def _do_retain():
-        print(f"[MEMORY] Starting hindsight_litellm.retain to bank {bid}...", flush=True)
-        try:
-            result = hindsight_litellm.retain(
-                content,
-                bank_id=bid,
-                context=context,
-                document_id=document_id,
-            )
-            print(f"[MEMORY] retain completed successfully to bank {bid}", flush=True)
-            return result
-        except Exception as e:
-            print(f"[MEMORY] retain FAILED: {e}", flush=True)
-            raise
+    import time
+    t0 = time.time()
+    try:
+        # Use native async aretain from hindsight_litellm
+        result = await aretain(
+            content,
+            bank_id=bid,
+            context=context,
+            document_id=session_id,  # API still uses document_id internally
+            tags=tags,
+            hindsight_api_url=url,
+        )
+        elapsed = time.time() - t0
+        _debug_mem(f"  <<< RETAIN success in {elapsed:.2f}s (bank={bid})")
+        return result
+    except HindsightError as e:
+        elapsed = time.time() - t0
+        _debug_mem(f"  !!! RETAIN FAILED in {elapsed:.2f}s: {e}")
+        raise
+    except Exception as e:
+        elapsed = time.time() - t0
+        _debug_mem(f"  !!! RETAIN FAILED in {elapsed:.2f}s: {e}")
+        raise
 
-    return await loop.run_in_executor(_executor, _do_retain)
 
-
-def recall_sync(query: str, budget: str = "high", max_tokens: int = 4096, bank_id: str = None):
+def recall_sync(
+    query: str,
+    budget: str = "high",
+    max_tokens: int = 4096,
+    bank_id: str = None,
+    hindsight_url: str = None,
+    fact_types: list[str] = None,
+    tags: list[str] = None,
+    tags_match: str = "any",
+) -> RecallResponse:
     """Synchronous recall - get raw memories directly.
 
     Args:
@@ -335,20 +435,54 @@ def recall_sync(query: str, budget: str = "high", max_tokens: int = 4096, bank_i
         budget: Search depth (low, mid, high)
         max_tokens: Maximum tokens to return
         bank_id: Override bank_id (for parallel execution with separate banks)
+        hindsight_url: Override Hindsight API URL (for using different backends)
+        fact_types: Filter by types (world, experience, opinion, observation)
+        tags: Filter memories by tags
+        tags_match: Tag matching mode (any, all, any_strict, all_strict)
 
     Returns:
         RecallResponse with list of RecallResult objects (each has text, fact_type, weight)
     """
     bid = bank_id or get_bank_id()
-    return hindsight_litellm.recall(
-        query=query,
-        bank_id=bid,
-        budget=budget,
-        max_tokens=max_tokens,
-    )
+    url = hindsight_url or get_hindsight_url()
+    _debug_mem(f"RECALL_SYNC called:")
+    _debug_mem(f"  bank_id={bid}")
+    _debug_mem(f"  hindsight_url={url}")
+    _debug_mem(f"  query={query[:80]}...")
+    _debug_mem(f"  budget={budget}, fact_types={fact_types}, tags={tags}")
+    import time
+    t0 = time.time()
+    try:
+        result = hindsight_litellm.recall(
+            query=query,
+            bank_id=bid,
+            budget=budget,
+            max_tokens=max_tokens,
+            fact_types=fact_types,
+            hindsight_api_url=url,
+        )
+        elapsed = time.time() - t0
+        num_results = len(result) if result else 0
+        _debug_mem(f"  <<< RECALL returned {num_results} facts in {elapsed:.2f}s")
+        if result and len(result) > 0:
+            _debug_mem(f"  First fact: {result[0].text[:100]}...")
+        return result
+    except HindsightError as e:
+        elapsed = time.time() - t0
+        _debug_mem(f"  !!! RECALL FAILED in {elapsed:.2f}s: {e}")
+        raise
 
 
-async def recall_async(query: str, budget: str = "high", max_tokens: int = 4096, bank_id: str = None):
+async def recall_async(
+    query: str,
+    budget: str = "high",
+    max_tokens: int = 4096,
+    bank_id: str = None,
+    hindsight_url: str = None,
+    fact_types: list[str] = None,
+    tags: list[str] = None,
+    tags_match: str = "any",
+) -> RecallResponse:
     """Async recall - get raw memories directly.
 
     Returns a list of memory facts without LLM synthesis.
@@ -359,15 +493,44 @@ async def recall_async(query: str, budget: str = "high", max_tokens: int = 4096,
         budget: Search depth (low, mid, high)
         max_tokens: Maximum tokens to return
         bank_id: Override bank_id (for parallel execution with separate banks)
+        hindsight_url: Override Hindsight API URL (for using different backends)
+        fact_types: Filter by types (world, experience, opinion, observation)
+        tags: Filter memories by tags
+        tags_match: Tag matching mode (any, all, any_strict, all_strict)
 
     Returns:
         RecallResponse with list of RecallResult objects
     """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        _executor,
-        lambda: recall_sync(query, budget, max_tokens, bank_id)
-    )
+    bid = bank_id or get_bank_id()
+    url = hindsight_url or get_hindsight_url()
+    _debug_mem(f"RECALL_ASYNC called:")
+    _debug_mem(f"  bank_id={bid}")
+    _debug_mem(f"  hindsight_url={url}")
+    _debug_mem(f"  query={query[:80]}...")
+    _debug_mem(f"  budget={budget}, fact_types={fact_types}, tags={tags}")
+
+    import time
+    t0 = time.time()
+    try:
+        # Use native async arecall from hindsight_litellm
+        result = await arecall(
+            query=query,
+            bank_id=bid,
+            budget=budget,
+            max_tokens=max_tokens,
+            fact_types=fact_types,
+            hindsight_api_url=url,
+        )
+        elapsed = time.time() - t0
+        num_results = len(result) if result else 0
+        _debug_mem(f"  <<< RECALL returned {num_results} facts in {elapsed:.2f}s")
+        if result and len(result) > 0:
+            _debug_mem(f"  First fact: {result[0].text[:100]}...")
+        return result
+    except HindsightError as e:
+        elapsed = time.time() - t0
+        _debug_mem(f"  !!! RECALL FAILED in {elapsed:.2f}s: {e}")
+        raise
 
 
 def format_recall_as_context(recall_response) -> str:
@@ -388,7 +551,14 @@ def format_recall_as_context(recall_response) -> str:
     return "\n".join(lines)
 
 
-def reflect_sync(query: str, budget: str = "high", context: str = None, bank_id: str = None):
+def reflect_sync(
+    query: str,
+    budget: str = "high",
+    context: str = None,
+    bank_id: str = None,
+    hindsight_url: str = None,
+    response_schema: dict = None,
+) -> ReflectResult:
     """Synchronous reflect - get synthesized memory-based answer.
 
     Args:
@@ -396,20 +566,51 @@ def reflect_sync(query: str, budget: str = "high", context: str = None, bank_id:
         budget: Search depth (low, mid, high)
         context: Additional context for reflection
         bank_id: Override bank_id (for parallel execution with separate banks)
+        hindsight_url: Override Hindsight API URL (for using different backends)
+        response_schema: Optional JSON schema for structured output
 
     Returns:
         ReflectResult with synthesized answer text
     """
     bid = bank_id or get_bank_id()
-    return hindsight_litellm.reflect(
-        query=query,
-        bank_id=bid,
-        budget=budget,
-        context=context,
-    )
+    url = hindsight_url or get_hindsight_url()
+    _debug_mem(f"REFLECT_SYNC called:")
+    _debug_mem(f"  bank_id={bid}")
+    _debug_mem(f"  hindsight_url={url}")
+    _debug_mem(f"  query={query[:80]}...")
+    _debug_mem(f"  budget={budget}")
+    _debug_mem(f"  context={context[:50] if context else 'None'}...")
+    import time
+    t0 = time.time()
+    try:
+        result = hindsight_litellm.reflect(
+            query=query,
+            bank_id=bid,
+            budget=budget,
+            context=context,
+            response_schema=response_schema,
+            hindsight_api_url=url,
+        )
+        elapsed = time.time() - t0
+        result_len = len(result.text) if result and hasattr(result, 'text') and result.text else 0
+        _debug_mem(f"  <<< REFLECT returned {result_len} chars in {elapsed:.2f}s")
+        if result and hasattr(result, 'text') and result.text:
+            _debug_mem(f"  Result: {result.text[:100]}...")
+        return result
+    except HindsightError as e:
+        elapsed = time.time() - t0
+        _debug_mem(f"  !!! REFLECT FAILED in {elapsed:.2f}s: {e}")
+        raise
 
 
-async def reflect_async(query: str, budget: str = "high", context: str = None, bank_id: str = None):
+async def reflect_async(
+    query: str,
+    budget: str = "high",
+    context: str = None,
+    bank_id: str = None,
+    hindsight_url: str = None,
+    response_schema: dict = None,
+) -> ReflectResult:
     """Async reflect - get synthesized memory-based answer.
 
     Uses an LLM to synthesize a coherent answer based on the bank's memories.
@@ -420,15 +621,43 @@ async def reflect_async(query: str, budget: str = "high", context: str = None, b
         budget: Search depth (low, mid, high) - controls how many memories are considered
         context: Additional context for reflection
         bank_id: Override bank_id (for parallel execution with separate banks)
+        hindsight_url: Override Hindsight API URL (for using different backends)
+        response_schema: Optional JSON schema for structured output
 
     Returns:
         ReflectResult with synthesized answer text
     """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        _executor,
-        lambda: reflect_sync(query, budget, context, bank_id)
-    )
+    bid = bank_id or get_bank_id()
+    url = hindsight_url or get_hindsight_url()
+    _debug_mem(f"REFLECT_ASYNC called:")
+    _debug_mem(f"  bank_id={bid}")
+    _debug_mem(f"  hindsight_url={url}")
+    _debug_mem(f"  query={query[:80]}...")
+    _debug_mem(f"  budget={budget}")
+    _debug_mem(f"  context={context[:50] if context else 'None'}...")
+
+    import time
+    t0 = time.time()
+    try:
+        # Use native async areflect from hindsight_litellm
+        result = await areflect(
+            query=query,
+            bank_id=bid,
+            budget=budget,
+            context=context,
+            response_schema=response_schema,
+            hindsight_api_url=url,
+        )
+        elapsed = time.time() - t0
+        result_len = len(result.text) if result and hasattr(result, 'text') and result.text else 0
+        _debug_mem(f"  <<< REFLECT returned {result_len} chars in {elapsed:.2f}s")
+        if result and hasattr(result, 'text') and result.text:
+            _debug_mem(f"  Result: {result.text[:100]}...")
+        return result
+    except HindsightError as e:
+        elapsed = time.time() - t0
+        _debug_mem(f"  !!! REFLECT FAILED in {elapsed:.2f}s: {e}")
+        raise
 
 
 def reset_bank(session_id: str = None, app_type: str = None, difficulty: str = None) -> str:
@@ -465,7 +694,7 @@ def set_active_app(app_type: str, difficulty: str = None):
             bank_id=bank_id,
             store_conversations=False,
             inject_memories=False,
-            recall_budget="high",
+            budget="high",
             use_reflect=True,
             verbose=True,
         )
@@ -498,7 +727,7 @@ def set_difficulty(difficulty: str, app_type: str = None) -> str:
             bank_id=bank_id,
             store_conversations=False,
             inject_memories=False,
-            recall_budget="high",
+            budget="high",
             use_reflect=True,
             verbose=True,
         )
@@ -510,10 +739,16 @@ def set_difficulty(difficulty: str, app_type: str = None) -> str:
 
 
 # =============================================================================
-# Bank Creation API (direct HTTP calls to Hindsight)
+# Bank Operations (using hindsight_client for typed API)
 # =============================================================================
 
-def create_bank(bank_id: str, name: str = None, background: str = None, mission: str = None) -> dict:
+def create_bank(
+    bank_id: str,
+    name: str = None,
+    background: str = None,
+    mission: str = None,
+    hindsight_url: str = None,
+) -> dict:
     """Create a memory bank in Hindsight.
 
     Args:
@@ -521,44 +756,38 @@ def create_bank(bank_id: str, name: str = None, background: str = None, mission:
         name: Optional display name (defaults to bank_id)
         background: Optional bank background/context
         mission: Optional mission for mental models
+        hindsight_url: Optional override URL
 
     Returns:
-        Response from the API
+        Bank profile response
     """
-    client = _get_http_client()
-
-    payload = {
-        "name": name or bank_id,
-    }
-    if background:
-        payload["background"] = background
-    if mission:
-        payload["mission"] = mission
-
     try:
-        # Use PUT /v1/default/banks/{bank_id} to create/update bank
-        response = client.put(f"/v1/default/banks/{bank_id}", json=payload)
-        if response.status_code == 200 or response.status_code == 201:
-            print(f"[MEMORY] Created/updated bank: {bank_id}")
-            return response.json()
-        else:
-            print(f"[MEMORY] Failed to create bank {bank_id}: {response.status_code} - {response.text}")
-            return {}
+        client = _get_hindsight_client(hindsight_url)
+        response = client.create_bank(
+            bank_id=bank_id,
+            name=name or bank_id,
+            mission=mission,
+        )
+        # Set background separately if provided (create_bank may not support it)
+        # Background is set via add_bank_background or included in mission
+        print(f"[MEMORY] Created/updated bank: {bank_id}")
+        return {"bank_id": bank_id, "name": name or bank_id, "mission": mission}
     except Exception as e:
         print(f"[MEMORY] Error creating bank {bank_id}: {e}")
         return {}
 
 
 # =============================================================================
-# Mental Models API (direct HTTP calls to Hindsight)
+# Mental Models / Reflections API (using hindsight_client)
 # =============================================================================
 
-def set_bank_mission(bank_id: str = None, mission: str = None) -> dict:
-    """Set the mission for a memory bank (used by mental models).
+def set_bank_mission(bank_id: str = None, mission: str = None, hindsight_url: str = None) -> dict:
+    """Set the mission for a memory bank (used by mental models and reflect).
 
     Args:
         bank_id: Bank ID (uses current if not provided)
         mission: Mission text (uses BANK_MISSION if not provided)
+        hindsight_url: Optional override URL
 
     Returns:
         Response from the API
@@ -569,145 +798,177 @@ def set_bank_mission(bank_id: str = None, mission: str = None) -> dict:
         return {}
 
     mission_text = mission or BANK_MISSION
-    client = _get_http_client()
 
     try:
-        # Use PATCH on the bank endpoint to update mission
-        response = client.patch(
-            f"/v1/default/banks/{bid}",
-            json={"mission": mission_text}
-        )
-        response.raise_for_status()
-        result = response.json()
+        client = _get_hindsight_client(hindsight_url)
+        result = client.set_mission(bank_id=bid, mission=mission_text)
         print(f"[MEMORY] Set bank mission for {bid}")
-        return result
+        return {"bank_id": bid, "mission": mission_text}
     except Exception as e:
         print(f"[MEMORY] Failed to set bank mission: {e}")
         return {}
 
 
-async def set_bank_mission_async(bank_id: str = None, mission: str = None) -> dict:
+async def set_bank_mission_async(bank_id: str = None, mission: str = None, hindsight_url: str = None) -> dict:
     """Async version of set_bank_mission."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: set_bank_mission(bank_id, mission)
+        lambda: set_bank_mission(bank_id, mission, hindsight_url)
     )
 
 
-def refresh_mental_models(bank_id: str = None, subtype: str = None, sync: bool = True, poll_interval: float = 0.5, timeout: float = 60.0) -> dict:
-    """Trigger consolidation to create/update mental models for a bank.
-
-    This triggers the Hindsight backend to analyze memories and create/update
-    mental models based on the bank's mission and stored experiences.
-
-    Uses the new /consolidate endpoint from benchmark-mm branch.
+def refresh_reflection(
+    bank_id: str = None,
+    reflection_id: str = None,
+    sync: bool = True,
+    poll_interval: float = 0.5,
+    timeout: float = 60.0,
+    hindsight_url: str = None,
+) -> dict:
+    """Refresh a single reflection by re-running its source query.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
-        subtype: Optional subtype filter (currently unused in consolidate API)
-        sync: If True, wait for consolidation to complete before returning (default: True)
-        poll_interval: Seconds between status polls when sync=True (default: 0.5)
-        timeout: Maximum seconds to wait when sync=True (default: 60.0)
+        reflection_id: The reflection ID to refresh
+        sync: If True, wait for refresh to complete (default: True)
+        poll_interval: Seconds between status polls when sync=True
+        timeout: Maximum seconds to wait when sync=True
+        hindsight_url: Optional override URL
 
     Returns:
-        Response with consolidation results:
-        - status: 'completed' or 'queued'
-        - created: number of mental models created
-        - updated: number of mental models updated
-        - message: human-readable status message
+        Dict with operation_id or completion status
     """
     import time
 
     bid = bank_id or get_bank_id()
-    if not bid:
-        print("[MEMORY] Cannot trigger consolidation: no bank_id")
+    if not bid or not reflection_id:
+        print("[MEMORY] Cannot refresh reflection: missing bank_id or reflection_id")
         return {}
 
-    client = _get_http_client()
+    client = _get_http_client(hindsight_url)
 
     try:
-        # Trigger consolidation using the new endpoint
-        response = client.post(f"/v1/default/banks/{bid}/consolidate")
+        response = client.post(f"/v1/default/banks/{bid}/reflections/{reflection_id}/refresh")
         response.raise_for_status()
         result = response.json()
-
-        status = result.get("status", "unknown")
-        created = result.get("created", 0)
-        updated = result.get("updated", 0)
-        message = result.get("message", "")
         operation_id = result.get("operation_id")
+        print(f"[MEMORY] Refresh triggered for reflection {reflection_id} (operation_id: {operation_id})")
 
-        print(f"[MEMORY] Consolidation triggered for {bid}: status={status}, created={created}, updated={updated}")
+        if not sync or not operation_id:
+            return {"success": True, "status": "queued", "operation_id": operation_id}
 
-        # If status is 'completed', we're done immediately
-        if status == "completed":
-            return {
-                "success": True,
-                "status": "completed",
-                "created": created,
-                "updated": updated,
-                "message": message,
-            }
+        # Poll for completion
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            time.sleep(poll_interval)
+            try:
+                status_response = client.get(f"/v1/default/banks/{bid}/operations/{operation_id}")
+                status_response.raise_for_status()
+                op_status = status_response.json()
+                current_status = op_status.get("status")
 
-        # If status is 'queued' and we want sync, poll for completion
-        if sync and operation_id:
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                time.sleep(poll_interval)
-                try:
-                    status_response = client.get(
-                        f"/v1/default/banks/{bid}/operations/{operation_id}"
-                    )
-                    status_response.raise_for_status()
-                    op_status = status_response.json()
-                    current_status = op_status.get("status")
-                    print(f"[MEMORY] Consolidation operation {operation_id} status: {current_status}")
+                if current_status == "completed":
+                    print(f"[MEMORY] Reflection {reflection_id} refresh completed")
+                    return {"success": True, "status": "completed", "operation_id": operation_id}
+                elif current_status == "failed":
+                    error_msg = op_status.get("error_message", "Unknown error")
+                    print(f"[MEMORY] Reflection {reflection_id} refresh failed: {error_msg}")
+                    return {"success": False, "status": "failed", "error": error_msg}
+                elif current_status == "not_found":
+                    return {"success": True, "status": "completed", "operation_id": operation_id}
+            except Exception as poll_error:
+                print(f"[MEMORY] Error polling operation status: {poll_error}")
 
-                    if current_status == "completed":
-                        print(f"[MEMORY] Consolidation completed for {bid}")
-                        return {
-                            "success": True,
-                            "status": "completed",
-                            "operation_id": operation_id,
-                            "created": op_status.get("created", created),
-                            "updated": op_status.get("updated", updated),
-                        }
-                    elif current_status == "failed":
-                        error_msg = op_status.get("error_message", "Unknown error")
-                        print(f"[MEMORY] Consolidation failed for {bid}: {error_msg}")
-                        return {"success": False, "status": "failed", "error": error_msg}
-                    elif current_status == "not_found":
-                        # Operation completed and was removed from storage
-                        print(f"[MEMORY] Consolidation completed for {bid} (operation cleaned up)")
-                        return {"success": True, "status": "completed", "operation_id": operation_id}
-                except Exception as poll_error:
-                    print(f"[MEMORY] Error polling operation status: {poll_error}")
-
-            print(f"[MEMORY] Consolidation timed out after {timeout}s for {bid}")
-            return {"success": False, "status": "timeout", "operation_id": operation_id}
-
-        # Return queued status without waiting
-        return {
-            "success": True,
-            "status": status,
-            "operation_id": operation_id,
-            "created": created,
-            "updated": updated,
-            "message": message,
-        }
+        return {"success": False, "status": "timeout", "operation_id": operation_id}
 
     except Exception as e:
-        print(f"[MEMORY] Failed to trigger consolidation: {e}")
+        print(f"[MEMORY] Failed to refresh reflection: {e}")
         return {"success": False, "error": str(e)}
 
 
-async def refresh_mental_models_async(bank_id: str = None, subtype: str = None) -> dict:
+def refresh_mental_models(
+    bank_id: str = None,
+    subtype: str = None,
+    sync: bool = True,
+    poll_interval: float = 0.5,
+    timeout: float = 60.0,
+    hindsight_url: str = None,
+) -> dict:
+    """Refresh all mental models (reflections) for a bank.
+
+    This triggers a refresh of all reflections, which re-runs their source queries
+    through the reflect API to update their content with new memories.
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+        subtype: Optional subtype filter (unused, kept for backwards compatibility)
+        sync: If True, wait for all refreshes to complete (default: True)
+        poll_interval: Seconds between status polls when sync=True
+        timeout: Maximum seconds to wait per reflection when sync=True
+        hindsight_url: Optional override URL
+
+    Returns:
+        Dict with:
+        - success: True if all refreshes succeeded
+        - refreshed: Number of reflections refreshed
+        - operation_ids: List of operation IDs for tracking
+    """
+    bid = bank_id or get_bank_id()
+    if not bid:
+        print("[MEMORY] Cannot refresh mental models: no bank_id")
+        return {"success": False, "error": "No bank_id"}
+
+    # Get all reflections for the bank
+    reflections = get_reflections(bank_id=bid, hindsight_url=hindsight_url)
+    if not reflections:
+        print(f"[MEMORY] No mental models to refresh for {bid}")
+        return {"success": True, "refreshed": 0, "operation_ids": []}
+
+    print(f"[MEMORY] Refreshing {len(reflections)} mental models for {bid}")
+
+    operation_ids = []
+    success_count = 0
+
+    for reflection in reflections:
+        reflection_id = reflection.get("id")
+        if not reflection_id:
+            continue
+
+        result = refresh_reflection(
+            bank_id=bid,
+            reflection_id=reflection_id,
+            sync=sync,
+            poll_interval=poll_interval,
+            timeout=timeout,
+            hindsight_url=hindsight_url,
+        )
+
+        if result.get("success"):
+            success_count += 1
+            if result.get("operation_id"):
+                operation_ids.append(result["operation_id"])
+
+    print(f"[MEMORY] Refreshed {success_count}/{len(reflections)} mental models for {bid}")
+
+    return {
+        "success": success_count == len(reflections),
+        "refreshed": success_count,
+        "total": len(reflections),
+        "operation_ids": operation_ids,
+    }
+
+
+async def refresh_mental_models_async(
+    bank_id: str = None,
+    subtype: str = None,
+    hindsight_url: str = None,
+) -> dict:
     """Async version of refresh_mental_models."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: refresh_mental_models(bank_id, subtype)
+        lambda: refresh_mental_models(bank_id, subtype, hindsight_url=hindsight_url)
     )
 
 
@@ -792,189 +1053,312 @@ def reset_delivery_count(app_type: str = None, difficulty: str = None):
     print(f"[MEMORY] Delivery count reset for {key}")
 
 
-def get_mental_models(bank_id: str = None, subtype: str = None) -> list:
-    """Get all mental models (reflections) for a bank.
+def get_reflections(bank_id: str = None, subtype: str = None, hindsight_url: str = None) -> list:
+    """Get all reflections (pinned topics) for a bank.
 
-    Note: The hindsight API renamed mental-models to reflections.
+    NOTE: Reflections are user-created pinned topics, NOT auto-generated mental models.
+    For mental model counts, use get_bank_stats() which returns total_mental_models.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
         subtype: Optional filter ('structural', 'emergent', or 'pinned')
+        hindsight_url: Optional override URL
 
     Returns:
-        List of mental models/reflections
+        List of reflections
     """
     bid = bank_id or get_bank_id()
     if not bid:
-        print("[MEMORY] Cannot get mental models: no bank_id")
+        print("[MEMORY] Cannot get reflections: no bank_id")
         return []
 
-    client = _get_http_client()
+    client = _get_http_client(hindsight_url)
     params = {}
     if subtype:
         params["subtype"] = subtype
 
     try:
-        # Use /reflections endpoint (mental-models was renamed)
         response = client.get(
             f"/v1/default/banks/{bid}/reflections",
             params=params if params else None
         )
         response.raise_for_status()
         result = response.json()
-        # API returns "items" but we normalize to "models"
-        models = result.get("items", result.get("models", []))
-        print(f"[MEMORY] Got {len(models)} mental models for {bid}")
-        return models
+        reflections = result.get("items", [])
+        print(f"[MEMORY] Got {len(reflections)} reflections for {bid}")
+        return reflections
     except Exception as e:
-        print(f"[MEMORY] Failed to get mental models: {e}")
+        print(f"[MEMORY] Failed to get reflections: {e}")
         return []
 
 
-async def get_mental_models_async(bank_id: str = None, subtype: str = None) -> list:
-    """Async version of get_mental_models."""
+# Alias for backwards compatibility
+def get_mental_models(bank_id: str = None, subtype: str = None, hindsight_url: str = None) -> list:
+    """Alias for get_reflections (for backwards compatibility)."""
+    return get_reflections(bank_id, subtype, hindsight_url)
+
+
+async def get_reflections_async(bank_id: str = None, subtype: str = None, hindsight_url: str = None) -> list:
+    """Async version of get_reflections."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: get_mental_models(bank_id, subtype)
+        lambda: get_reflections(bank_id, subtype, hindsight_url)
     )
 
 
-def get_mental_model(bank_id: str = None, model_id: str = None) -> dict:
-    """Get a single mental model (reflection) with full details including observations.
+# Alias for backwards compatibility
+async def get_mental_models_async(bank_id: str = None, subtype: str = None, hindsight_url: str = None) -> list:
+    """Alias for get_reflections_async (for backwards compatibility)."""
+    return await get_reflections_async(bank_id, subtype, hindsight_url)
 
-    Note: The hindsight API renamed mental-models to reflections.
+
+def get_reflection(bank_id: str = None, reflection_id: str = None, hindsight_url: str = None) -> dict:
+    """Get a single reflection with full details including observations.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
-        model_id: The reflection ID
+        reflection_id: The reflection ID
+        hindsight_url: Optional override URL
 
     Returns:
         Reflection with observations and freshness metadata
     """
     bid = bank_id or get_bank_id()
-    if not bid or not model_id:
-        print("[MEMORY] Cannot get mental model: missing bank_id or model_id")
+    if not bid or not reflection_id:
+        print("[MEMORY] Cannot get reflection: missing bank_id or reflection_id")
         return {}
 
-    client = _get_http_client()
+    client = _get_http_client(hindsight_url)
 
     try:
-        # Use /reflections endpoint (mental-models was renamed)
-        response = client.get(f"/v1/default/banks/{bid}/reflections/{model_id}")
+        response = client.get(f"/v1/default/banks/{bid}/reflections/{reflection_id}")
         response.raise_for_status()
         result = response.json()
-        print(f"[MEMORY] Got mental model {model_id} for {bid}")
+        print(f"[MEMORY] Got reflection {reflection_id} for {bid}")
         return result
     except Exception as e:
-        print(f"[MEMORY] Failed to get mental model: {e}")
+        print(f"[MEMORY] Failed to get reflection: {e}")
         return {}
 
 
-async def get_mental_model_async(bank_id: str = None, model_id: str = None) -> dict:
-    """Async version of get_mental_model."""
+# Alias for backwards compatibility
+def get_mental_model(bank_id: str = None, model_id: str = None, hindsight_url: str = None) -> dict:
+    """Alias for get_reflection (for backwards compatibility)."""
+    return get_reflection(bank_id, model_id, hindsight_url)
+
+
+async def get_reflection_async(bank_id: str = None, reflection_id: str = None, hindsight_url: str = None) -> dict:
+    """Async version of get_reflection."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: get_mental_model(bank_id, model_id)
+        lambda: get_reflection(bank_id, reflection_id, hindsight_url)
     )
 
 
-def create_pinned_model(bank_id: str = None, name: str = None, description: str = None) -> dict:
-    """Create a pinned reflection (user-defined topic to track).
+# Alias for backwards compatibility
+async def get_mental_model_async(bank_id: str = None, model_id: str = None, hindsight_url: str = None) -> dict:
+    """Alias for get_reflection_async (for backwards compatibility)."""
+    return await get_reflection_async(bank_id, model_id, hindsight_url)
 
-    Note: The hindsight API renamed mental-models to reflections.
+
+def create_reflection(
+    bank_id: str = None,
+    name: str = None,
+    source_query: str = None,
+    tags: list[str] = None,
+    max_tokens: int = 2048,
+    hindsight_url: str = None,
+) -> dict:
+    """Create a reflection (called "mental model" in UI).
+
+    Reflections are living documents that auto-update when relevant memories are stored.
+    The source_query is run through the reflect API to generate initial content.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
         name: Name of the reflection (e.g., "Employee Locations")
-        description: Description of what to track
+        source_query: Query to run to generate content
+        tags: Optional tags for filtering
+        max_tokens: Max tokens for generated content (default 2048)
+        hindsight_url: Optional override URL
 
     Returns:
-        Created reflection
+        Dict with operation_id to track async creation
     """
     bid = bank_id or get_bank_id()
-    if not bid or not name:
-        print("[MEMORY] Cannot create pinned model: missing bank_id or name")
+    if not bid or not name or not source_query:
+        print("[MEMORY] Cannot create reflection: missing bank_id, name, or source_query")
         return {}
 
-    client = _get_http_client()
+    client = _get_http_client(hindsight_url)
 
     try:
-        # Use /reflections endpoint (mental-models was renamed)
         response = client.post(
             f"/v1/default/banks/{bid}/reflections",
             json={
                 "name": name,
-                "description": description or name,
-                "subtype": "pinned"
+                "source_query": source_query,
+                "tags": tags or [],
+                "max_tokens": max_tokens,
             }
         )
         response.raise_for_status()
         result = response.json()
-        print(f"[MEMORY] Created pinned model '{name}' for {bid}")
+        print(f"[MEMORY] Created reflection '{name}' for {bid} (operation_id: {result.get('operation_id')})")
         return result
     except Exception as e:
-        print(f"[MEMORY] Failed to create pinned model: {e}")
+        print(f"[MEMORY] Failed to create reflection: {e}")
         return {}
 
 
-async def create_pinned_model_async(bank_id: str = None, name: str = None, description: str = None) -> dict:
-    """Async version of create_pinned_model."""
+# Alias for backwards compatibility (UI calls these "mental models")
+def create_mental_model(
+    bank_id: str = None,
+    name: str = None,
+    source_query: str = None,
+    tags: list[str] = None,
+    max_tokens: int = 2048,
+    hindsight_url: str = None,
+) -> dict:
+    """Alias for create_reflection (UI calls these 'mental models')."""
+    return create_reflection(bank_id, name, source_query, tags, max_tokens, hindsight_url)
+
+
+async def create_reflection_async(
+    bank_id: str = None,
+    name: str = None,
+    source_query: str = None,
+    tags: list[str] = None,
+    max_tokens: int = 2048,
+    hindsight_url: str = None,
+) -> dict:
+    """Async version of create_reflection."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: create_pinned_model(bank_id, name, description)
+        lambda: create_reflection(bank_id, name, source_query, tags, max_tokens, hindsight_url)
     )
 
 
-def delete_mental_model(bank_id: str = None, model_id: str = None) -> bool:
-    """Delete a reflection (mental model).
+# Alias for backwards compatibility (UI calls these "mental models")
+async def create_mental_model_async(
+    bank_id: str = None,
+    name: str = None,
+    source_query: str = None,
+    tags: list[str] = None,
+    max_tokens: int = 2048,
+    hindsight_url: str = None,
+) -> dict:
+    """Alias for create_reflection_async (UI calls these 'mental models')."""
+    return await create_reflection_async(bank_id, name, source_query, tags, max_tokens, hindsight_url)
 
-    Note: The hindsight API renamed mental-models to reflections.
+
+def create_default_mental_models(bank_id: str = None, hindsight_url: str = None) -> list[dict]:
+    """Create the default mental models (reflections) for a bank.
+
+    Creates reflections for:
+    - Employee Locations
+    - Building Layout
+    - Optimal Delivery Paths
 
     Args:
         bank_id: Bank ID (uses current if not provided)
-        model_id: The reflection ID to delete
+        hindsight_url: Optional override URL
+
+    Returns:
+        List of created reflection operation results
+    """
+    bid = bank_id or get_bank_id()
+    if not bid:
+        print("[MEMORY] Cannot create default mental models: no bank_id")
+        return []
+
+    results = []
+    for name, source_query in DEFAULT_MENTAL_MODELS:
+        result = create_reflection(
+            bank_id=bid,
+            name=name,
+            source_query=source_query,
+            hindsight_url=hindsight_url,
+        )
+        if result:
+            results.append(result)
+
+    print(f"[MEMORY] Created {len(results)} default mental models for {bid}")
+    return results
+
+
+async def create_default_mental_models_async(bank_id: str = None, hindsight_url: str = None) -> list[dict]:
+    """Async version of create_default_mental_models."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: create_default_mental_models(bank_id, hindsight_url)
+    )
+
+
+def delete_reflection(bank_id: str = None, reflection_id: str = None, hindsight_url: str = None) -> bool:
+    """Delete a reflection.
+
+    Args:
+        bank_id: Bank ID (uses current if not provided)
+        reflection_id: The reflection ID to delete
+        hindsight_url: Optional override URL
 
     Returns:
         True if successful
     """
     bid = bank_id or get_bank_id()
-    if not bid or not model_id:
-        print("[MEMORY] Cannot delete mental model: missing bank_id or model_id")
+    if not bid or not reflection_id:
+        print("[MEMORY] Cannot delete reflection: missing bank_id or reflection_id")
         return False
 
-    client = _get_http_client()
+    client = _get_http_client(hindsight_url)
 
     try:
-        # Use /reflections endpoint (mental-models was renamed)
-        response = client.delete(f"/v1/default/banks/{bid}/reflections/{model_id}")
+        response = client.delete(f"/v1/default/banks/{bid}/reflections/{reflection_id}")
         response.raise_for_status()
-        print(f"[MEMORY] Deleted mental model {model_id} from {bid}")
+        print(f"[MEMORY] Deleted reflection {reflection_id} from {bid}")
         return True
     except Exception as e:
-        print(f"[MEMORY] Failed to delete mental model: {e}")
+        print(f"[MEMORY] Failed to delete reflection: {e}")
         return False
 
 
-async def delete_mental_model_async(bank_id: str = None, model_id: str = None) -> bool:
-    """Async version of delete_mental_model."""
+# Alias for backwards compatibility
+def delete_mental_model(bank_id: str = None, model_id: str = None, hindsight_url: str = None) -> bool:
+    """Alias for delete_reflection (for backwards compatibility)."""
+    return delete_reflection(bank_id, model_id, hindsight_url)
+
+
+async def delete_reflection_async(bank_id: str = None, reflection_id: str = None, hindsight_url: str = None) -> bool:
+    """Async version of delete_reflection."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: delete_mental_model(bank_id, model_id)
+        lambda: delete_reflection(bank_id, reflection_id, hindsight_url)
     )
 
 
-def clear_mental_models(bank_id: str = None) -> dict:
-    """Clear all mental models for a bank.
+# Alias for backwards compatibility
+async def delete_mental_model_async(bank_id: str = None, model_id: str = None, hindsight_url: str = None) -> bool:
+    """Alias for delete_reflection_async (for backwards compatibility)."""
+    return await delete_reflection_async(bank_id, model_id, hindsight_url)
 
-    This is useful for resetting the consolidated knowledge before starting
-    a new benchmark run.
+
+def clear_mental_models(bank_id: str = None, hindsight_url: str = None) -> dict:
+    """Clear all mental model facts for a bank.
+
+    This deletes the auto-generated mental_model fact types created by consolidation.
+    Use this to reset consolidated knowledge before a new benchmark run.
+
+    NOTE: This is different from reflections - it clears the fact types, not pinned topics.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
+        hindsight_url: Optional override URL
 
     Returns:
         Response with deletion status
@@ -984,9 +1368,10 @@ def clear_mental_models(bank_id: str = None) -> dict:
         print("[MEMORY] Cannot clear mental models: no bank_id")
         return {"success": False, "error": "No bank_id"}
 
-    client = _get_http_client()
+    client = _get_http_client(hindsight_url)
 
     try:
+        # DELETE /mental-models clears the mental_model fact types
         response = client.delete(f"/v1/default/banks/{bid}/mental-models")
         response.raise_for_status()
         result = response.json()
@@ -998,20 +1383,21 @@ def clear_mental_models(bank_id: str = None) -> dict:
         return {"success": False, "error": str(e)}
 
 
-async def clear_mental_models_async(bank_id: str = None) -> dict:
+async def clear_mental_models_async(bank_id: str = None, hindsight_url: str = None) -> dict:
     """Async version of clear_mental_models."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: clear_mental_models(bank_id)
+        lambda: clear_mental_models(bank_id, hindsight_url)
     )
 
 
-def get_bank_stats(bank_id: str = None) -> dict:
+def get_bank_stats(bank_id: str = None, hindsight_url: str = None) -> dict:
     """Get statistics for a memory bank including consolidation status.
 
     Args:
         bank_id: Bank ID (uses current if not provided)
+        hindsight_url: Optional override URL
 
     Returns:
         Bank statistics including:
@@ -1027,7 +1413,7 @@ def get_bank_stats(bank_id: str = None) -> dict:
         print("[MEMORY] Cannot get bank stats: no bank_id")
         return {}
 
-    client = _get_http_client()
+    client = _get_http_client(hindsight_url)
 
     try:
         response = client.get(f"/v1/default/banks/{bid}/stats")
@@ -1040,29 +1426,33 @@ def get_bank_stats(bank_id: str = None) -> dict:
         return {}
 
 
-async def get_bank_stats_async(bank_id: str = None) -> dict:
+async def get_bank_stats_async(bank_id: str = None, hindsight_url: str = None) -> dict:
     """Async version of get_bank_stats."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: get_bank_stats(bank_id)
+        lambda: get_bank_stats(bank_id, hindsight_url)
     )
 
 
 def wait_for_pending_consolidation(
     bank_id: str = None,
     poll_interval: float = 2.0,
-    timeout: float = 300.0
+    timeout: float = 300.0,
+    hindsight_url: str = None,
 ) -> bool:
     """Wait for pending_consolidation to reach 0 (all memories processed into mental models).
 
     This matches the eval framework behavior where we wait for the background
     consolidation worker to process memories after each retain.
 
+    NOTE: Requires HINDSIGHT_API_ENABLE_MENTAL_MODELS=true on the Hindsight server.
+
     Args:
         bank_id: Bank ID (uses current if not provided)
         poll_interval: Seconds between status polls (default: 2.0)
         timeout: Maximum seconds to wait (default: 300.0)
+        hindsight_url: Optional override URL
 
     Returns:
         True if consolidation completed, False if timed out
@@ -1074,20 +1464,31 @@ def wait_for_pending_consolidation(
         print("[MEMORY] Cannot wait for consolidation: no bank_id")
         return False
 
+    _debug_mem(f"WAIT_FOR_CONSOLIDATION called:")
+    _debug_mem(f"  bank_id={bid}")
+    _debug_mem(f"  poll_interval={poll_interval}s, timeout={timeout}s")
+
     start_time = time.time()
+    poll_count = 0
     while True:
         elapsed = time.time() - start_time
         if elapsed > timeout:
+            _debug_mem(f"  !!! CONSOLIDATION TIMEOUT after {timeout}s for {bid}")
             print(f"[MEMORY] Consolidation did not complete within {timeout}s for {bid}")
             return False
 
-        stats = get_bank_stats(bid)
+        stats = get_bank_stats(bid, hindsight_url)
         pending = stats.get("pending_consolidation", 0)
+        total_mm = stats.get("total_mental_models", 0)
 
+        poll_count += 1
         if pending == 0:
+            _debug_mem(f"  <<< CONSOLIDATION COMPLETE for {bid} after {poll_count} polls, {elapsed:.1f}s")
+            _debug_mem(f"  Mental models in bank: {total_mm}")
             print(f"[MEMORY] Consolidation complete for {bid} (no pending memories)")
             return True
 
+        _debug_mem(f"  Polling #{poll_count}: {pending} pending, {total_mm} mental models, {elapsed:.1f}s elapsed")
         print(f"[MEMORY] Waiting for consolidation: {pending} pending, {elapsed:.1f}s elapsed for {bid}")
         time.sleep(poll_interval)
 
@@ -1095,11 +1496,12 @@ def wait_for_pending_consolidation(
 async def wait_for_pending_consolidation_async(
     bank_id: str = None,
     poll_interval: float = 2.0,
-    timeout: float = 300.0
+    timeout: float = 300.0,
+    hindsight_url: str = None,
 ) -> bool:
     """Async version of wait_for_pending_consolidation."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: wait_for_pending_consolidation(bank_id, poll_interval, timeout)
+        lambda: wait_for_pending_consolidation(bank_id, poll_interval, timeout, hindsight_url)
     )
