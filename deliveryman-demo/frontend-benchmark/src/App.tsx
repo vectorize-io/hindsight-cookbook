@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useToast } from './hooks/useToast';
+import { ToastContainer } from './components/ToastContainer';
 import { useGameStore } from './stores/gameStore';
 import { PhaserGame } from './game/PhaserGame';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, BarChart, Bar, Legend } from 'recharts';
@@ -157,6 +159,7 @@ function ActionLogEntry({ action, expanded, onToggle }: {
 }
 
 function App() {
+  const { toasts, showError, dismiss: dismissToast } = useToast();
   const { connected, isConnecting, startDelivery, cancelDelivery, resetMemory } = useWebSocket();
   const {
     agentFloor,
@@ -550,13 +553,18 @@ rather than searching the entire building each time.`;
       }
     } catch (err) {
       console.error('Failed to switch bank:', err);
+      showError('Failed to switch bank');
     }
-  }, [difficulty, refreshBankHistory]);
+  }, [difficulty, refreshBankHistory, showError]);
 
   // Generate a new bank
   const generateNewBank = useCallback(async () => {
     try {
       const res = await fetch(`/api/memory/bank/new?app=bench&difficulty=${difficulty}`, { method: 'POST' });
+      if (!res.ok) {
+        showError(`Failed to generate new bank (${res.status})`);
+        return;
+      }
       const data = await res.json();
       if (data.bankId) {
         setCurrentBankId(data.bankId);
@@ -564,8 +572,9 @@ rather than searching the entire building each time.`;
       }
     } catch (err) {
       console.error('Failed to generate new bank:', err);
+      showError('Failed to generate new bank');
     }
-  }, [difficulty, refreshBankHistory]);
+  }, [difficulty, refreshBankHistory, showError]);
 
   // Set an existing bank by ID
   const setExistingBank = useCallback(async () => {
@@ -607,6 +616,7 @@ rather than searching the entire building each time.`;
       }
     } catch (err) {
       console.error('Failed to refresh mental models:', err);
+      showError('Failed to refresh mental models');
       setMentalModelsLoading(false);
     }
   }, [difficulty, fetchMentalModels]);
@@ -685,8 +695,9 @@ rather than searching the entire building each time.`;
       }
     } catch (err) {
       console.error('Failed to change difficulty:', err);
+      showError('Failed to change difficulty');
     }
-  }, [difficulty, refreshBuildingData, refreshBankHistory, fetchMentalModels, fetchRefreshIntervalStatus]);
+  }, [difficulty, refreshBuildingData, refreshBankHistory, fetchMentalModels, fetchRefreshIntervalStatus, showError]);
 
   // Auto-expand latest action when it changes
   useEffect(() => {
@@ -928,6 +939,7 @@ rather than searching the entire building each time.`;
         }));
       } catch (err) {
         console.error('Benchmark error:', err);
+        showError(`Benchmark delivery failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
 
       completed++;
@@ -1072,6 +1084,7 @@ rather than searching the entire building each time.`;
         }
       } catch (err) {
         console.error('Failed to save benchmark:', err);
+        showError('Failed to save benchmark results');
       }
     }
   }, [includeBusiness, maxSteps, saveAllSteps, saveBenchmark, chartSettings.enabled, difficulty, fetchRefreshIntervalStatus, hindsightUrlMM, hindsightUrlNoMM]);
@@ -3111,6 +3124,7 @@ rather than searching the entire building each time.`;
         )}
 
       </main>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

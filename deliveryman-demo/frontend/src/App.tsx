@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useToast } from './hooks/useToast';
+import { ToastContainer } from './components/ToastContainer';
 import { useGameStore } from './stores/gameStore';
 import { PhaserGame } from './game/PhaserGame';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
@@ -119,6 +121,7 @@ function ActionLogEntry({ action, expanded, onToggle }: {
 }
 
 function App() {
+  const { toasts, showError, dismiss: dismissToast } = useToast();
   const { connected, isConnecting, startDelivery, cancelDelivery, resetMemory } = useWebSocket();
   const {
     agentFloor,
@@ -363,15 +366,17 @@ function App() {
         fetchMentalModels();
         fetchRefreshIntervalStatus();  // Update delivery count (reset by refresh)
       } else {
+        showError(`Failed to refresh mental models (${res.status})`);
         setMentalModelsLoading(false);
       }
       setIsRefreshingModels(false);
     } catch (err) {
       console.error('Failed to refresh mental models:', err);
+      showError('Failed to refresh mental models');
       setMentalModelsLoading(false);
       setIsRefreshingModels(false);
     }
-  }, [difficulty, fetchMentalModels, fetchRefreshIntervalStatus]);
+  }, [difficulty, fetchMentalModels, fetchRefreshIntervalStatus, showError]);
 
   // Fetch single mental model with full details
   const fetchMentalModelDetails = useCallback(async (modelId: string) => {
@@ -415,8 +420,9 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to create pinned model:', err);
+      showError('Failed to create pinned model');
     }
-  }, [difficulty, fetchMentalModels]);
+  }, [difficulty, fetchMentalModels, showError]);
 
   // Delete a mental model
   const deleteMentalModel = useCallback(async (modelId: string) => {
@@ -432,8 +438,9 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to delete mental model:', err);
+      showError('Failed to delete mental model');
     }
-  }, [difficulty, expandedModelId]);
+  }, [difficulty, expandedModelId, showError]);
 
   // Sync currentBankId when gameStore's bankId changes (e.g., after reset_memory)
   useEffect(() => {
@@ -499,8 +506,9 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to change difficulty:', err);
+      showError('Failed to change difficulty');
     }
-  }, [difficulty, refreshBuildingData, refreshBankHistory, fetchRefreshIntervalStatus, setStoreBankId, setStoreDifficulty]);
+  }, [difficulty, refreshBuildingData, refreshBankHistory, fetchRefreshIntervalStatus, setStoreBankId, setStoreDifficulty, showError]);
 
   // Bank management functions
   const copyBankId = useCallback(() => {
@@ -512,6 +520,10 @@ function App() {
   const generateNewBank = useCallback(async () => {
     try {
       const res = await fetch(`/api/memory/bank/new?app=demo&difficulty=${difficulty}`, { method: 'POST' });
+      if (!res.ok) {
+        showError(`Failed to generate new bank (${res.status})`);
+        return;
+      }
       const data = await res.json();
       setCurrentBankId(data.bankId);
       setStoreBankId(data.bankId);
@@ -524,8 +536,9 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to generate new bank:', err);
+      showError('Failed to generate new bank');
     }
-  }, [difficulty, demoConfig, refreshBankHistory, fetchMentalModels, setStoreBankId]);
+  }, [difficulty, demoConfig, refreshBankHistory, fetchMentalModels, setStoreBankId, showError]);
 
   const switchToBank = useCallback(async (bankId: string) => {
     try {
@@ -546,8 +559,9 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to switch bank:', err);
+      showError('Failed to switch bank');
     }
-  }, [difficulty, demoConfig, refreshBankHistory, fetchMentalModels, setStoreBankId]);
+  }, [difficulty, demoConfig, refreshBankHistory, fetchMentalModels, setStoreBankId, showError]);
 
   const setExistingBank = useCallback(async () => {
     if (!bankInput.trim()) return;
@@ -781,6 +795,7 @@ function App() {
           setIsRefreshingModels(false);
         } catch (err) {
           console.error('Failed to refresh bank ID after reset:', err);
+          showError('Failed to reset memory');
         }
       }, 1000);  // Longer delay to ensure backend processes reset + bank creation
     }
@@ -2111,6 +2126,7 @@ function App() {
           </div>
         )}
       </main>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
