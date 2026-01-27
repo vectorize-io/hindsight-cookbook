@@ -524,21 +524,22 @@ rather than searching the entire building each time.`;
   }, []);
 
   // Fetch bank history and current bank
-  const refreshBankHistory = useCallback(async () => {
+  const refreshBankHistory = useCallback(async (overrideDifficulty?: string) => {
     try {
-      const res = await fetch('/api/memory/bank/history?app=bench');
+      const diff = overrideDifficulty || difficulty;
+      const res = await fetch(`/api/memory/bank/history?app=bench&difficulty=${diff}`);
       const data = await res.json();
       setBankHistory(data.history || []);
       setCurrentBankId(data.currentBankId || null);
     } catch (err) {
       console.error('Failed to fetch bank history:', err);
     }
-  }, []);
+  }, [difficulty]);
 
   // Switch to an existing bank
   const switchToBank = useCallback(async (bankId: string) => {
     try {
-      const res = await fetch('/api/memory/bank?app=bench', {
+      const res = await fetch(`/api/memory/bank?app=bench&difficulty=${difficulty}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bankId }),
@@ -550,12 +551,12 @@ rather than searching the entire building each time.`;
     } catch (err) {
       console.error('Failed to switch bank:', err);
     }
-  }, [refreshBankHistory]);
+  }, [difficulty, refreshBankHistory]);
 
   // Generate a new bank
   const generateNewBank = useCallback(async () => {
     try {
-      const res = await fetch('/api/memory/bank/new?app=bench', { method: 'POST' });
+      const res = await fetch(`/api/memory/bank/new?app=bench&difficulty=${difficulty}`, { method: 'POST' });
       const data = await res.json();
       if (data.bankId) {
         setCurrentBankId(data.bankId);
@@ -564,7 +565,7 @@ rather than searching the entire building each time.`;
     } catch (err) {
       console.error('Failed to generate new bank:', err);
     }
-  }, [refreshBankHistory]);
+  }, [difficulty, refreshBankHistory]);
 
   // Set an existing bank by ID
   const setExistingBank = useCallback(async () => {
@@ -676,13 +677,16 @@ rather than searching the entire building each time.`;
         window.dispatchEvent(new CustomEvent('game-event', {
           detail: { type: 'set_difficulty', payload: { difficulty: newDifficulty } }
         }));
-        // Refresh building data for new difficulty
+        // Refresh building data, bank history, and mental models for new difficulty
         refreshBuildingData();
+        refreshBankHistory(newDifficulty);
+        fetchMentalModels();
+        fetchRefreshIntervalStatus();
       }
     } catch (err) {
       console.error('Failed to change difficulty:', err);
     }
-  }, [difficulty, refreshBuildingData]);
+  }, [difficulty, refreshBuildingData, refreshBankHistory, fetchMentalModels, fetchRefreshIntervalStatus]);
 
   // Auto-expand latest action when it changes
   useEffect(() => {

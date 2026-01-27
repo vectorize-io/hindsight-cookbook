@@ -277,7 +277,7 @@ async def reset_memory_bank(app: str = "demo", difficulty: str = "easy"):
 @app.post("/api/memory/bank/new")
 async def generate_new_bank(app: str = "demo", difficulty: str = "easy"):
     """Generate a new memory bank for app+difficulty."""
-    new_bank_id = memory_service.configure_memory(app_type=app, difficulty=difficulty, use_default=False)
+    new_bank_id = memory_service.configure_memory(app_type=app, difficulty=difficulty)
     memory_service.ensure_bank_exists(app, difficulty)
     return {"bankId": new_bank_id}
 
