@@ -37,7 +37,7 @@ async def get_bank_stats(api_url: str, bank_id: str) -> dict:
 async def get_mental_models(api_url: str, bank_id: str) -> list:
     """Get mental models (reflections) from a bank."""
     async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
-        resp = await client.get(f"/v1/default/banks/{bank_id}/reflections")
+        resp = await client.get(f"/v1/default/banks/{bank_id}/mental-models")
         if resp.status_code == 200:
             return resp.json()
         return []

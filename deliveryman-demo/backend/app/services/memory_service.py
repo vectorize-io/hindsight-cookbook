@@ -283,7 +283,7 @@ def set_bank_id(bank_id: str, set_background: bool = True, add_to_history: bool 
 
 
 def set_bank_mission_sync(bank_id: str, mission: str = None, hindsight_url: str = None):
-    """Set bank mission using hindsight_client (synchronous).
+    """Set bank mission using httpx (synchronous, event-loop safe).
 
     Args:
         bank_id: The bank ID to set mission for
@@ -292,8 +292,12 @@ def set_bank_mission_sync(bank_id: str, mission: str = None, hindsight_url: str 
     """
     m = mission or BANK_MISSION
     try:
-        client = _get_hindsight_client(hindsight_url)
-        client.set_mission(bank_id=bank_id, mission=m)
+        client = _get_http_client(hindsight_url)
+        response = client.put(
+            f"/v1/default/banks/{bank_id}",
+            json={"mission": m},
+        )
+        response.raise_for_status()
         print(f"[MEMORY] Bank mission set for: {bank_id}")
     except Exception as e:
         print(f"[MEMORY] Failed to set bank mission: {e}")
@@ -751,6 +755,9 @@ def create_bank(
 ) -> dict:
     """Create a memory bank in Hindsight.
 
+    Uses httpx directly instead of hindsight_client to avoid event loop conflicts
+    when called from within an async context (e.g., WebSocket handlers).
+
     Args:
         bank_id: Unique bank ID
         name: Optional display name (defaults to bank_id)
@@ -762,14 +769,15 @@ def create_bank(
         Bank profile response
     """
     try:
-        client = _get_hindsight_client(hindsight_url)
-        response = client.create_bank(
-            bank_id=bank_id,
-            name=name or bank_id,
-            mission=mission,
+        client = _get_http_client(hindsight_url)
+        body = {"name": name or bank_id}
+        if mission:
+            body["mission"] = mission
+        response = client.put(
+            f"/v1/default/banks/{bank_id}",
+            json=body,
         )
-        # Set background separately if provided (create_bank may not support it)
-        # Background is set via add_bank_background or included in mission
+        response.raise_for_status()
         print(f"[MEMORY] Created/updated bank: {bank_id}")
         return {"bank_id": bank_id, "name": name or bank_id, "mission": mission}
     except Exception as e:
@@ -800,8 +808,12 @@ def set_bank_mission(bank_id: str = None, mission: str = None, hindsight_url: st
     mission_text = mission or BANK_MISSION
 
     try:
-        client = _get_hindsight_client(hindsight_url)
-        result = client.set_mission(bank_id=bid, mission=mission_text)
+        client = _get_http_client(hindsight_url)
+        response = client.put(
+            f"/v1/default/banks/{bid}",
+            json={"mission": mission_text},
+        )
+        response.raise_for_status()
         print(f"[MEMORY] Set bank mission for {bid}")
         return {"bank_id": bid, "mission": mission_text}
     except Exception as e:
@@ -849,7 +861,7 @@ def refresh_reflection(
     client = _get_http_client(hindsight_url)
 
     try:
-        response = client.post(f"/v1/default/banks/{bid}/reflections/{reflection_id}/refresh")
+        response = client.post(f"/v1/default/banks/{bid}/mental-models/{reflection_id}/refresh")
         response.raise_for_status()
         result = response.json()
         operation_id = result.get("operation_id")
@@ -1079,7 +1091,7 @@ def get_reflections(bank_id: str = None, subtype: str = None, hindsight_url: str
 
     try:
         response = client.get(
-            f"/v1/default/banks/{bid}/reflections",
+            f"/v1/default/banks/{bid}/mental-models",
             params=params if params else None
         )
         response.raise_for_status()
@@ -1132,7 +1144,7 @@ def get_reflection(bank_id: str = None, reflection_id: str = None, hindsight_url
     client = _get_http_client(hindsight_url)
 
     try:
-        response = client.get(f"/v1/default/banks/{bid}/reflections/{reflection_id}")
+        response = client.get(f"/v1/default/banks/{bid}/mental-models/{reflection_id}")
         response.raise_for_status()
         result = response.json()
         print(f"[MEMORY] Got reflection {reflection_id} for {bid}")
@@ -1196,7 +1208,7 @@ def create_reflection(
 
     try:
         response = client.post(
-            f"/v1/default/banks/{bid}/reflections",
+            f"/v1/default/banks/{bid}/mental-models",
             json={
                 "name": name,
                 "source_query": source_query,
@@ -1318,7 +1330,7 @@ def delete_reflection(bank_id: str = None, reflection_id: str = None, hindsight_
     client = _get_http_client(hindsight_url)
 
     try:
-        response = client.delete(f"/v1/default/banks/{bid}/reflections/{reflection_id}")
+        response = client.delete(f"/v1/default/banks/{bid}/mental-models/{reflection_id}")
         response.raise_for_status()
         print(f"[MEMORY] Deleted reflection {reflection_id} from {bid}")
         return True
@@ -1371,8 +1383,8 @@ def clear_mental_models(bank_id: str = None, hindsight_url: str = None) -> dict:
     client = _get_http_client(hindsight_url)
 
     try:
-        # DELETE /mental-models clears the mental_model fact types
-        response = client.delete(f"/v1/default/banks/{bid}/mental-models")
+        # DELETE /observations clears the observation fact types (formerly mental_model facts)
+        response = client.delete(f"/v1/default/banks/{bid}/observations")
         response.raise_for_status()
         result = response.json()
         deleted_count = result.get("deleted", 0)
@@ -1446,7 +1458,7 @@ def wait_for_pending_consolidation(
     This matches the eval framework behavior where we wait for the background
     consolidation worker to process memories after each retain.
 
-    NOTE: Requires HINDSIGHT_API_ENABLE_MENTAL_MODELS=true on the Hindsight server.
+    NOTE: Requires HINDSIGHT_API_ENABLE_OBSERVATIONS=true on the Hindsight server.
 
     Args:
         bank_id: Bank ID (uses current if not provided)

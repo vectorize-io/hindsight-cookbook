@@ -265,12 +265,13 @@ function App() {
           .then(res => res.json())
           .then(modelsData => setMentalModels(modelsData.models || []))
           .catch(console.error);
-      })
-      .catch(console.error);
 
-    fetch('/api/memory/bank/history?app=demo')
-      .then(res => res.json())
-      .then(data => setBankHistory(data.history || []))
+        // Fetch bank history for the correct difficulty
+        fetch(`/api/memory/bank/history?app=demo&difficulty=${diff}`)
+          .then(res => res.json())
+          .then(data => setBankHistory(data.history || []))
+          .catch(console.error);
+      })
       .catch(console.error);
   }, []);
 
@@ -296,16 +297,17 @@ function App() {
     }
   }, []);
 
-  // Refresh bank history
-  const refreshBankHistory = useCallback(async () => {
+  // Refresh bank history (accepts optional override to avoid stale closure after difficulty change)
+  const refreshBankHistory = useCallback(async (overrideDifficulty?: string) => {
     try {
-      const res = await fetch('/api/memory/bank/history?app=demo');
+      const diff = overrideDifficulty || difficulty;
+      const res = await fetch(`/api/memory/bank/history?app=demo&difficulty=${diff}`);
       const data = await res.json();
       setBankHistory(data.history || []);
     } catch (err) {
       console.error('Failed to fetch bank history:', err);
     }
-  }, []);
+  }, [difficulty]);
 
   // Update refresh interval
   const updateRefreshInterval = useCallback(async (newInterval: number) => {
@@ -481,10 +483,20 @@ function App() {
       setStoreDifficulty(newDifficulty);
       // Refresh building data for new difficulty
       await refreshBuildingData();
-      // Refresh bank history for new difficulty
-      await refreshBankHistory();
+      // Refresh bank history for new difficulty (pass explicitly to avoid stale closure)
+      await refreshBankHistory(newDifficulty);
       // Fetch refresh interval for new difficulty
       fetchRefreshIntervalStatus();
+      // Fetch mental models for the new difficulty's bank
+      // Note: fetchMentalModels uses `difficulty` from closure which is stale here,
+      // so fetch directly with the new difficulty
+      try {
+        const mmRes = await fetch(`/api/memory/mental-models?app=demo&difficulty=${newDifficulty}`);
+        const mmData = await mmRes.json();
+        setMentalModels(mmData.models || []);
+      } catch (mmErr) {
+        console.error('Failed to fetch mental models for new difficulty:', mmErr);
+      }
     } catch (err) {
       console.error('Failed to change difficulty:', err);
     }
@@ -499,11 +511,13 @@ function App() {
 
   const generateNewBank = useCallback(async () => {
     try {
-      const res = await fetch('/api/memory/bank/new?app=demo', { method: 'POST' });
+      const res = await fetch(`/api/memory/bank/new?app=demo&difficulty=${difficulty}`, { method: 'POST' });
       const data = await res.json();
       setCurrentBankId(data.bankId);
+      setStoreBankId(data.bankId);
       setShowBankMenu(false);
       refreshBankHistory();
+      fetchMentalModels();
       // Also update demo config
       if (demoConfig) {
         setDemoConfig({ ...demoConfig, hindsight: { ...demoConfig.hindsight, bankId: data.bankId } });
@@ -511,19 +525,21 @@ function App() {
     } catch (err) {
       console.error('Failed to generate new bank:', err);
     }
-  }, [demoConfig, refreshBankHistory]);
+  }, [difficulty, demoConfig, refreshBankHistory, fetchMentalModels, setStoreBankId]);
 
   const switchToBank = useCallback(async (bankId: string) => {
     try {
-      const res = await fetch('/api/memory/bank?app=demo', {
+      const res = await fetch(`/api/memory/bank?app=demo&difficulty=${difficulty}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bankId }),
       });
       const data = await res.json();
       setCurrentBankId(data.bankId);
+      setStoreBankId(data.bankId);
       setShowBankMenu(false);
       refreshBankHistory();
+      fetchMentalModels();
       // Also update demo config
       if (demoConfig) {
         setDemoConfig({ ...demoConfig, hindsight: { ...demoConfig.hindsight, bankId: data.bankId } });
@@ -531,7 +547,7 @@ function App() {
     } catch (err) {
       console.error('Failed to switch bank:', err);
     }
-  }, [demoConfig, refreshBankHistory]);
+  }, [difficulty, demoConfig, refreshBankHistory, fetchMentalModels, setStoreBankId]);
 
   const setExistingBank = useCallback(async () => {
     if (!bankInput.trim()) return;
@@ -750,7 +766,7 @@ function App() {
       // Fetch from REST API as fallback after longer delay to ensure backend processed the reset
       setTimeout(async () => {
         try {
-          const res = await fetch('/api/memory/bank?app=demo');
+          const res = await fetch(`/api/memory/bank?app=demo&difficulty=${difficulty}`);
           const data = await res.json();
           if (data.bankId && data.bankId !== currentBankId) {
             console.log('Reset: updating bank ID from REST API:', data.bankId);
@@ -759,12 +775,14 @@ function App() {
           }
           refreshBankHistory();
 
-          // Refresh and fetch mental models for the new bank
-          triggerMentalModelsRefresh();
+          // Clear mental models since this is a fresh empty bank (no memories to build models from)
+          setMentalModels([]);
+          setMentalModelsLoading(false);
+          setIsRefreshingModels(false);
         } catch (err) {
           console.error('Failed to refresh bank ID after reset:', err);
         }
-      }, 500);  // Increased delay to ensure backend processes reset
+      }, 1000);  // Longer delay to ensure backend processes reset + bank creation
     }
   };
 

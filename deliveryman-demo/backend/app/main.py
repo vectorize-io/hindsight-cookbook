@@ -57,16 +57,27 @@ async def startup_event():
             for difficulty in difficulties:
                 bank_id = memory_service.configure_memory(app_type=app_type, difficulty=difficulty)
                 print(f"Initialized bank for {app_type}:{difficulty} = {bank_id}")
-                # Refresh mental models on startup to initialize with mission (no memories yet)
-                try:
-                    memory_service.refresh_mental_models(bank_id=bank_id)
-                    print(f"Mental models refreshed for {app_type}:{difficulty}")
-                except Exception as e:
-                    print(f"Warning: Failed to refresh mental models for {app_type}:{difficulty}: {e}")
 
     with concurrent.futures.ThreadPoolExecutor() as pool:
         await loop.run_in_executor(pool, init_all_banks)
     print(f"Memory service initialized for all app+difficulty combinations")
+
+    # Refresh mental models in background (don't block startup - each refresh is slow due to agentic reflect)
+    def refresh_all_models():
+        difficulties = ["easy", "medium", "hard"]
+        for app_type in ["demo", "bench"]:
+            for difficulty in difficulties:
+                bank_id = memory_service.get_bank_id(app_type, difficulty)
+                if bank_id:
+                    try:
+                        memory_service.refresh_mental_models(bank_id=bank_id)
+                        print(f"Mental models refreshed for {app_type}:{difficulty}")
+                    except Exception as e:
+                        print(f"Warning: Failed to refresh mental models for {app_type}:{difficulty}: {e}")
+
+    import threading
+    threading.Thread(target=refresh_all_models, daemon=True).start()
+    print("Mental model refresh started in background")
 
 
 # Include routers
