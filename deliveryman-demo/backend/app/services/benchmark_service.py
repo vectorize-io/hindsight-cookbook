@@ -303,6 +303,12 @@ async def run_benchmark_delivery(
         is_repeat=is_repeat,
     )
 
+    # Timing accumulators
+    t_delivery_start = time.time()
+    llm_time_accum = 0.0
+    memory_time_accum = 0.0
+    consolidation_time_accum = 0.0
+
     # Debug: Log delivery start with mode info
     cfg_name = config.display_name or config.mode.value
     debug_log(f"=== DELIVERY {delivery_id} START ===", cfg_name)
@@ -400,6 +406,7 @@ You have access to read_notes() to check your memory at any time.
                 t_reflect = time.time()
                 result = await reflect_async(query=memory_query, budget="high", bank_id=config.bank_id, hindsight_url=config.hindsight_url)
                 reflect_time = time.time() - t_reflect
+                memory_time_accum += reflect_time
                 debug_log(f"<<< REFLECT returned in {reflect_time:.2f}s", cfg_name)
                 if result and hasattr(result, 'text') and result.text:
                     memory_context = result.text
@@ -413,6 +420,7 @@ You have access to read_notes() to check your memory at any time.
                 t_recall = time.time()
                 result = await recall_async(query=memory_query, budget="high", bank_id=config.bank_id, hindsight_url=config.hindsight_url)
                 recall_time = time.time() - t_recall
+                memory_time_accum += recall_time
                 debug_log(f"<<< RECALL returned in {recall_time:.2f}s", cfg_name)
                 if result and len(result) > 0:
                     memory_context = format_recall_as_context(result)
@@ -538,6 +546,7 @@ You have access to read_notes() to check your memory at any time.
                 timeout=60,
             )
             timing = time.time() - t0
+            llm_time_accum += timing
 
             message = response.choices[0].message
 
@@ -683,6 +692,10 @@ You have access to read_notes() to check your memory at any time.
     metrics.error_rate = errors / max(agent_state.steps_taken, 1)
     metrics.path = path_log
     metrics.actions = actions_log
+    metrics.total_time_s = time.time() - t_delivery_start
+    metrics.llm_time_s = llm_time_accum
+    metrics.memory_time_s = memory_time_accum
+    metrics.consolidation_time_s = consolidation_time_accum
 
     # Debug: Log delivery completion summary
     debug_log(f"=== DELIVERY {delivery_id} COMPLETE ===", cfg_name)
@@ -712,6 +725,7 @@ You have access to read_notes() to check your memory at any time.
                 model=config.model,
             )
             notes_time = time.time() - t_notes
+            memory_time_accum += notes_time
             debug_log(f"Notes updated in {notes_time:.2f}s ({len(updated_notes)} chars)", cfg_name)
 
             # Save updated notes
@@ -744,11 +758,12 @@ You have access to read_notes() to check your memory at any time.
             await retain_async(
                 final_convo,
                 context=f"delivery:{recipient_name}:{'success' if success else 'failed'}",
-                document_id=f"delivery-{delivery_id}",
+                session_id=f"delivery-{delivery_id}",
                 bank_id=config.bank_id,
                 hindsight_url=config.hindsight_url
             )
             store_timing = time.time() - t_store
+            memory_time_accum += store_timing
             debug_log(f"<<< RETAIN completed in {store_timing:.2f}s", cfg_name)
             if websocket:
                 await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
@@ -763,6 +778,7 @@ You have access to read_notes() to check your memory at any time.
                     t_consolidate = time.time()
                     success_consolidation = await wait_for_pending_consolidation_async(bank_id=config.bank_id, poll_interval=2.0, timeout=300.0)
                     consolidate_timing = time.time() - t_consolidate
+                    consolidation_time_accum += consolidate_timing
                     metrics.consolidation_triggered = True
                     debug_log(f"<<< CONSOLIDATION {'completed' if success_consolidation else 'FAILED/TIMEOUT'} in {consolidate_timing:.2f}s", cfg_name)
                     if websocket:
@@ -882,7 +898,7 @@ async def run_benchmark(
                 await retain_async(
                     preseed_facts,
                     context="building_knowledge:preseed",
-                    document_id="preseed-building-knowledge",
+                    session_id="preseed-building-knowledge",
                     bank_id=config.bank_id,
                     hindsight_url=config.hindsight_url
                 )

@@ -108,6 +108,12 @@ def generate_dashboard_chart(
     ax6 = axes[1, 2]
     ax6.axis('off')
 
+    avg_time = summary.get('avgDeliveryTimeS', 0)
+    total_time = summary.get('totalTimeS', 0)
+    llm_time = summary.get('totalLlmTimeS', 0)
+    mem_time = summary.get('totalMemoryTimeS', 0)
+    consol_time = summary.get('totalConsolidationTimeS', 0)
+
     stats_text = f"""
     Summary Statistics
     ──────────────────
@@ -122,6 +128,13 @@ def generate_dashboard_chart(
     Total Steps: {summary['totalSteps']}
     Optimal Steps: {summary['totalOptimalSteps']}
     Total Errors: {summary['totalErrors']}
+
+    Timing
+    ──────────────────
+    Avg Delivery: {avg_time:.1f}s
+    Total: {total_time:.1f}s
+    LLM: {llm_time:.1f}s | Memory: {mem_time:.1f}s
+    Consolidation: {consol_time:.1f}s
 
     Learning Metrics
     ──────────────────
@@ -220,15 +233,15 @@ def generate_comparison_chart(
         ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
                 f'{rate:.1f}%', ha='center', va='bottom', fontsize=9)
 
-    # 5. Total Errors
+    # 5. Average Delivery Time
     ax5 = axes[1, 1]
-    total_errors = [r["summary"]["totalErrors"] for r in results_list]
-    bars = ax5.bar(modes, total_errors, color=['#ef4444'] * len(modes), alpha=0.7)
-    ax5.set_ylabel('Total Errors')
-    ax5.set_title('Total Errors')
-    for bar, errs in zip(bars, total_errors):
+    avg_times = [r["summary"].get("avgDeliveryTimeS", 0) for r in results_list]
+    bars = ax5.bar(modes, avg_times, color=colors)
+    ax5.set_ylabel('Time (s)')
+    ax5.set_title('Avg Delivery Time')
+    for bar, t in zip(bars, avg_times):
         ax5.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
-                f'{errs}', ha='center', va='bottom', fontsize=9)
+                f'{t:.1f}s', ha='center', va='bottom', fontsize=9)
 
     # 6. Learning Improvement
     ax6 = axes[1, 2]

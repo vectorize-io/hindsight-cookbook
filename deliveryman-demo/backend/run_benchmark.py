@@ -379,8 +379,8 @@ def save_summary_of_findings(all_results: list[dict], run_dir: Path, quiet: bool
     lines.extend([
         "## Overview",
         "",
-        "| Config | Success Rate | Path Efficiency | Error Rate | Total Steps | Optimal Steps |",
-        "|--------|--------------|-----------------|------------|-------------|---------------|",
+        "| Config | Success Rate | Path Efficiency | Error Rate | Avg Time (s) | Total Time (s) | Total Steps | Optimal Steps |",
+        "|--------|--------------|-----------------|------------|--------------|----------------|-------------|---------------|",
     ])
 
     for result in all_results:
@@ -396,8 +396,11 @@ def save_summary_of_findings(all_results: list[dict], run_dir: Path, quiet: bool
         total_steps = summary.get("totalSteps", 0)
         optimal_steps = summary.get("totalOptimalSteps", 0)
 
+        avg_time = summary.get("avgDeliveryTimeS", 0)
+        total_time = summary.get("totalTimeS", 0)
+
         lines.append(
-            f"| {name} | {success_rate:.1%} | {efficiency:.1%} | {error_rate:.1%} | {total_steps} | {optimal_steps} |"
+            f"| {name} | {success_rate:.1%} | {efficiency:.1%} | {error_rate:.1%} | {avg_time:.1f} | {total_time:.1f} | {total_steps} | {optimal_steps} |"
         )
 
     lines.append("")
@@ -428,6 +431,8 @@ def save_summary_of_findings(all_results: list[dict], run_dir: Path, quiet: bool
             f"- **Path Efficiency:** {summary.get('avgPathEfficiency', 0):.1%}",
             f"- **Error Rate:** {summary.get('avgErrorRate', 0):.1%} ({summary.get('totalErrors', 0)} total errors)",
             f"- **Total Steps:** {summary.get('totalSteps', 0)} (optimal: {summary.get('totalOptimalSteps', 0)})",
+            f"- **Avg Delivery Time:** {summary.get('avgDeliveryTimeS', 0):.1f}s",
+            f"- **Total Time:** {summary.get('totalTimeS', 0):.1f}s (LLM: {summary.get('totalLlmTimeS', 0):.1f}s, Memory: {summary.get('totalMemoryTimeS', 0):.1f}s, Consolidation: {summary.get('totalConsolidationTimeS', 0):.1f}s)",
             "",
             "#### Learning Metrics",
             "",
@@ -444,15 +449,15 @@ def save_summary_of_findings(all_results: list[dict], run_dir: Path, quiet: bool
             lines.extend([
                 "#### Delivery Breakdown",
                 "",
-                "| # | Recipient | Success | Steps | Optimal | Efficiency | Errors |",
-                "|---|-----------|---------|-------|---------|------------|--------|",
+                "| # | Recipient | Success | Steps | Optimal | Efficiency | Errors | Time (s) |",
+                "|---|-----------|---------|-------|---------|------------|--------|----------|",
             ])
             for d in deliveries:
                 lines.append(
                     f"| {d.get('deliveryId', '?')} | {d.get('recipient', '?')} | "
                     f"{'Yes' if d.get('success') else 'No'} | {d.get('stepsTaken', 0)} | "
                     f"{d.get('optimalSteps', 0)} | {d.get('pathEfficiency', 0):.1%} | "
-                    f"{d.get('errors', 0)} |"
+                    f"{d.get('errors', 0)} | {d.get('totalTimeS', 0):.1f} |"
                 )
             lines.append("")
 
@@ -497,6 +502,23 @@ def save_summary_of_findings(all_results: list[dict], run_dir: Path, quiet: bool
             f"**Lowest Error Rate:** {le_name} ({lowest_errors.get('summary', {}).get('avgErrorRate', 0):.1%})",
             "",
             f"**Highest Error Rate:** {he_name} ({highest_errors.get('summary', {}).get('avgErrorRate', 0):.1%})",
+            "",
+        ])
+
+        # Find fastest/slowest by avg delivery time
+        sorted_by_time = sorted(
+            all_results,
+            key=lambda r: r.get("summary", {}).get("avgDeliveryTimeS", 0)
+        )
+        fastest = sorted_by_time[0]
+        slowest = sorted_by_time[-1]
+        fast_name = fastest.get("config", {}).get("name") or fastest.get("config", {}).get("mode", "unknown")
+        slow_name = slowest.get("config", {}).get("name") or slowest.get("config", {}).get("mode", "unknown")
+
+        lines.extend([
+            f"**Fastest Avg Delivery:** {fast_name} ({fastest.get('summary', {}).get('avgDeliveryTimeS', 0):.1f}s)",
+            "",
+            f"**Slowest Avg Delivery:** {slow_name} ({slowest.get('summary', {}).get('avgDeliveryTimeS', 0):.1f}s)",
             "",
         ])
 

@@ -84,6 +84,12 @@ class DeliveryMetrics:
     memory_query_count: int = 0
     consolidation_triggered: bool = False
 
+    # Timing (seconds)
+    total_time_s: float = 0.0  # Total wall-clock time for this delivery
+    llm_time_s: float = 0.0  # Time spent in LLM calls
+    memory_time_s: float = 0.0  # Time spent in memory operations (recall/reflect/retain)
+    consolidation_time_s: float = 0.0  # Time waiting for consolidation
+
     # Is this a repeat visit?
     is_repeat: bool = False
 
@@ -111,6 +117,10 @@ class DeliveryMetrics:
             "memoryInjected": self.memory_injected,
             "memoryQueryCount": self.memory_query_count,
             "consolidationTriggered": self.consolidation_triggered,
+            "totalTimeS": round(self.total_time_s, 2),
+            "llmTimeS": round(self.llm_time_s, 2),
+            "memoryTimeS": round(self.memory_time_s, 2),
+            "consolidationTimeS": round(self.consolidation_time_s, 2),
             "isRepeat": self.is_repeat,
         }
         # Only include path/actions if they have data (to keep results.json smaller)
@@ -141,6 +151,13 @@ class BenchmarkResults:
     total_errors: int = 0
     avg_error_rate: float = 0.0
 
+    # Timing aggregates (seconds)
+    total_time_s: float = 0.0
+    avg_delivery_time_s: float = 0.0
+    total_llm_time_s: float = 0.0
+    total_memory_time_s: float = 0.0
+    total_consolidation_time_s: float = 0.0
+
     # Learning metrics
     convergence_episode: int = 0  # First episode with efficiency >= 90%
     first_half_efficiency: float = 0.0
@@ -165,6 +182,11 @@ class BenchmarkResults:
         self.total_optimal_steps += metrics.optimal_steps
         self.total_errors += metrics.errors
 
+        self.total_time_s += metrics.total_time_s
+        self.total_llm_time_s += metrics.llm_time_s
+        self.total_memory_time_s += metrics.memory_time_s
+        self.total_consolidation_time_s += metrics.consolidation_time_s
+
         self.efficiency_by_episode.append(metrics.path_efficiency)
 
     def compute_final_metrics(self):
@@ -179,6 +201,9 @@ class BenchmarkResults:
         # Average error rate
         if self.total_steps > 0:
             self.avg_error_rate = self.total_errors / self.total_steps
+
+        # Average delivery time
+        self.avg_delivery_time_s = self.total_time_s / self.total_deliveries
 
         # Convergence episode (first with efficiency >= 90%)
         for i, eff in enumerate(self.efficiency_by_episode):
@@ -221,6 +246,11 @@ class BenchmarkResults:
                 "avgPathEfficiency": self.avg_path_efficiency,
                 "totalErrors": self.total_errors,
                 "avgErrorRate": self.avg_error_rate,
+                "totalTimeS": round(self.total_time_s, 2),
+                "avgDeliveryTimeS": round(self.avg_delivery_time_s, 2),
+                "totalLlmTimeS": round(self.total_llm_time_s, 2),
+                "totalMemoryTimeS": round(self.total_memory_time_s, 2),
+                "totalConsolidationTimeS": round(self.total_consolidation_time_s, 2),
             },
             "learning": {
                 "convergenceEpisode": self.convergence_episode,
