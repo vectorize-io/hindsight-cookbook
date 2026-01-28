@@ -99,6 +99,9 @@ export class BuildingScene extends Phaser.Scene {
   }
 
   private handleGameEvent(event: CustomEvent) {
+    // Guard against events arriving after scene is destroyed
+    if (!this.scene || !this.add) return;
+
     const { type, payload } = event.detail;
 
     switch (type) {

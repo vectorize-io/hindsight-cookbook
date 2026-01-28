@@ -753,7 +753,6 @@ function App() {
           // Clear mental models since this is a fresh empty bank (no memories to build models from)
           setMentalModels([]);
           setMentalModelsLoading(false);
-          setIsRefreshingModels(false);
         } catch (err) {
           console.error('Failed to refresh bank ID after reset:', err);
           showError('Failed to reset memory');
