@@ -129,7 +129,6 @@ function App() {
     isThinking,
     isAnimating,
     isStoringMemory,
-    isRefreshingModels: isRefreshingModelsFromWs,
     thinkingText,
     deliveryStatus,
     deliverySteps,
@@ -200,12 +199,12 @@ function App() {
   }
   const [mentalModels, setMentalModels] = useState<MentalModel[]>([]);
   const [mentalModelsLoading, setMentalModelsLoading] = useState(false);
-  const [isRefreshingModels, setIsRefreshingModels] = useState(false);
+  const [mentalModelsWaitingForRefresh, setMentalModelsWaitingForRefresh] = useState(false);
   const [mentalModelsExpanded, setMentalModelsExpanded] = useState(false);
   const [expandedModelId, setExpandedModelId] = useState<string | null>(null);
   const [newPinnedModelName, setNewPinnedModelName] = useState('');
-  const [refreshInterval, setRefreshInterval] = useState(5);
-  const [deliveriesSinceRefresh, setDeliveriesSinceRefresh] = useState(0);
+  const [fetchInterval, setFetchInterval] = useState(5);  // Auto-fetch every N deliveries (0 = off)
+  const [deliveriesSinceFetch, setDeliveriesSinceFetch] = useState(0);
 
   // View mode state (UI vs Training)
   const [viewMode, setViewMode] = useState<'ui' | 'training'>('ui');
@@ -253,20 +252,10 @@ function App() {
         setStoreDifficulty(diff);
         setStoreBankId(data.bankId || '');
 
-        // Reset delivery counter on page load/reload using the correct difficulty
-        fetch(`/api/memory/refresh-interval/reset-counter?app=demo&difficulty=${diff}`, { method: 'POST' })
-          .then(() => fetch(`/api/memory/refresh-interval?app=demo&difficulty=${diff}`))
-          .then(res => res.json())
-          .then(intervalData => {
-            setRefreshInterval(intervalData.interval);
-            setDeliveriesSinceRefresh(intervalData.deliveriesSinceRefresh);
-          })
-          .catch(console.error);
-
         // Fetch mental models on startup using the correct difficulty
         fetch(`/api/memory/mental-models?app=demo&difficulty=${diff}`)
           .then(res => res.json())
-          .then(modelsData => setMentalModels(modelsData.models || []))
+          .then(modelsData => setMentalModels(sortModels(modelsData.models || [])))
           .catch(console.error);
 
         // Fetch bank history for the correct difficulty
@@ -312,71 +301,51 @@ function App() {
     }
   }, [difficulty]);
 
-  // Update refresh interval
-  const updateRefreshInterval = useCallback(async (newInterval: number) => {
-    try {
-      const res = await fetch(`/api/memory/refresh-interval?app=demo&difficulty=${difficulty}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ interval: newInterval }),
-      });
-      const data = await res.json();
-      setRefreshInterval(data.interval);
-    } catch (err) {
-      console.error('Failed to update refresh interval:', err);
-    }
-  }, [difficulty]);
+  // Sort mental models alphabetically by name
+  const sortModels = (models: MentalModel[]) =>
+    [...models].sort((a, b) => a.name.localeCompare(b.name));
 
-  // Fetch refresh interval status
-  const fetchRefreshIntervalStatus = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/memory/refresh-interval?app=demo&difficulty=${difficulty}`);
-      const data = await res.json();
-      setRefreshInterval(data.interval);
-      setDeliveriesSinceRefresh(data.deliveriesSinceRefresh);
-    } catch (err) {
-      console.error('Failed to fetch refresh interval:', err);
-    }
-  }, [difficulty]);
-
-  // Fetch mental models for the current bank
+  // Fetch mental models for the current bank, waiting for any pending refreshes first
   const fetchMentalModels = useCallback(async () => {
     try {
       setMentalModelsLoading(true);
+
+      // Check if consolidation/refresh is in progress
+      const statsRes = await fetch(`/api/memory/stats?app=demo&difficulty=${difficulty}`);
+      const statsData = await statsRes.json();
+      const pending = statsData.stats?.pending_consolidation ?? 0;
+
+      if (pending > 0) {
+        // Wait for consolidation + mental model refresh to finish
+        setMentalModelsWaitingForRefresh(true);
+        let stillPending = true;
+        const startTime = Date.now();
+        const timeout = 120_000; // 2 min max wait
+
+        while (stillPending && Date.now() - startTime < timeout) {
+          await new Promise(r => setTimeout(r, 2000));
+          const pollRes = await fetch(`/api/memory/stats?app=demo&difficulty=${difficulty}`);
+          const pollData = await pollRes.json();
+          if ((pollData.stats?.pending_consolidation ?? 0) === 0) {
+            stillPending = false;
+          }
+        }
+
+        // Extra delay for mental model refresh to complete after consolidation
+        await new Promise(r => setTimeout(r, 5000));
+        setMentalModelsWaitingForRefresh(false);
+      }
+
       const res = await fetch(`/api/memory/mental-models?app=demo&difficulty=${difficulty}`);
       const data = await res.json();
-      setMentalModels(data.models || []);
+      setMentalModels(sortModels(data.models || []));
     } catch (err) {
       console.error('Failed to fetch mental models:', err);
     } finally {
       setMentalModelsLoading(false);
+      setMentalModelsWaitingForRefresh(false);
     }
   }, [difficulty]);
-
-  // Trigger mental models refresh
-  const triggerMentalModelsRefresh = useCallback(async () => {
-    try {
-      setMentalModelsLoading(true);
-      setIsRefreshingModels(true);
-      const res = await fetch(`/api/memory/mental-models/refresh?app=demo&difficulty=${difficulty}`, {
-        method: 'POST',
-      });
-      if (res.ok) {
-        // Refresh is synchronous now, fetch immediately
-        fetchMentalModels();
-        fetchRefreshIntervalStatus();  // Update delivery count (reset by refresh)
-      } else {
-        showError(`Failed to refresh mental models (${res.status})`);
-        setMentalModelsLoading(false);
-      }
-      setIsRefreshingModels(false);
-    } catch (err) {
-      console.error('Failed to refresh mental models:', err);
-      showError('Failed to refresh mental models');
-      setMentalModelsLoading(false);
-      setIsRefreshingModels(false);
-    }
-  }, [difficulty, fetchMentalModels, fetchRefreshIntervalStatus, showError]);
 
   // Fetch single mental model with full details
   const fetchMentalModelDetails = useCallback(async (modelId: string) => {
@@ -451,26 +420,20 @@ function App() {
     }
   }, [storeBankId, currentBankId, refreshBankHistory]);
 
-  // Update refresh interval status when a delivery completes
+  // Auto-fetch mental models every N deliveries (client-side counter)
   useEffect(() => {
     if (deliveryStatus === 'success' || deliveryStatus === 'failed') {
-      // Fetch updated delivery count after a short delay to let backend process
-      setTimeout(() => {
-        fetchRefreshIntervalStatus();
-      }, 500);
+      setDeliveriesSinceFetch(prev => {
+        const next = prev + 1;
+        if (fetchInterval > 0 && next >= fetchInterval) {
+          // Fetch after a short delay to let Hindsight consolidation process
+          setTimeout(() => fetchMentalModels(), 3000);
+          return 0;
+        }
+        return next;
+      });
     }
-  }, [deliveryStatus, fetchRefreshIntervalStatus]);
-
-  // Fetch mental models when WebSocket auto-refresh completes
-  const prevIsRefreshingFromWs = useRef(isRefreshingModelsFromWs);
-  useEffect(() => {
-    // When transitioning from refreshing to not refreshing (refresh completed)
-    if (prevIsRefreshingFromWs.current && !isRefreshingModelsFromWs) {
-      fetchMentalModels();
-      fetchRefreshIntervalStatus();
-    }
-    prevIsRefreshingFromWs.current = isRefreshingModelsFromWs;
-  }, [isRefreshingModelsFromWs, fetchMentalModels, fetchRefreshIntervalStatus]);
+  }, [deliveryStatus, fetchInterval, fetchMentalModels]);
 
   // Change difficulty
   const changeDifficulty = useCallback(async (newDifficulty: 'easy' | 'medium' | 'hard') => {
@@ -492,15 +455,13 @@ function App() {
       await refreshBuildingData();
       // Refresh bank history for new difficulty (pass explicitly to avoid stale closure)
       await refreshBankHistory(newDifficulty);
-      // Fetch refresh interval for new difficulty
-      fetchRefreshIntervalStatus();
       // Fetch mental models for the new difficulty's bank
       // Note: fetchMentalModels uses `difficulty` from closure which is stale here,
       // so fetch directly with the new difficulty
       try {
         const mmRes = await fetch(`/api/memory/mental-models?app=demo&difficulty=${newDifficulty}`);
         const mmData = await mmRes.json();
-        setMentalModels(mmData.models || []);
+        setMentalModels(sortModels(mmData.models || []));
       } catch (mmErr) {
         console.error('Failed to fetch mental models for new difficulty:', mmErr);
       }
@@ -508,7 +469,7 @@ function App() {
       console.error('Failed to change difficulty:', err);
       showError('Failed to change difficulty');
     }
-  }, [difficulty, refreshBuildingData, refreshBankHistory, fetchRefreshIntervalStatus, setStoreBankId, setStoreDifficulty, showError]);
+  }, [difficulty, refreshBuildingData, refreshBankHistory, setStoreBankId, setStoreDifficulty, showError]);
 
   // Bank management functions
   const copyBankId = useCallback(() => {
@@ -1513,17 +1474,6 @@ function App() {
 
             {/* Mental Models */}
             <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 relative">
-              {(isRefreshingModels || isRefreshingModelsFromWs) && (
-                <div className="absolute inset-0 bg-slate-900/70 rounded-xl flex items-center justify-center z-10">
-                  <div className="flex items-center gap-2 text-purple-400">
-                    <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    <span className="text-sm font-medium">Refreshing models...</span>
-                  </div>
-                </div>
-              )}
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-lg font-semibold text-slate-300">Mental Models</h2>
                 <span className="text-xs text-purple-400">
@@ -1536,22 +1486,18 @@ function App() {
                 <button
                   onClick={fetchMentalModels}
                   disabled={mentalModelsLoading}
-                  className="px-3 py-1.5 text-xs bg-slate-700 hover:bg-slate-600 rounded text-slate-300 disabled:opacity-50 transition-colors"
-                >
-                  {mentalModelsLoading ? 'Loading...' : 'Fetch'}
-                </button>
-                <button
-                  onClick={triggerMentalModelsRefresh}
-                  disabled={mentalModelsLoading}
                   className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded text-white disabled:opacity-50 transition-colors"
                 >
-                  {mentalModelsLoading ? 'Refreshing...' : 'Refresh'}
+                  {mentalModelsWaitingForRefresh ? 'Refreshing...' : mentalModelsLoading ? 'Loading...' : 'Fetch'}
                 </button>
                 <div className="flex items-center gap-1 ml-auto text-xs">
-                  <span className="text-slate-500">Auto:</span>
+                  <span className="text-slate-500">Auto-fetch:</span>
                   <select
-                    value={refreshInterval}
-                    onChange={(e) => updateRefreshInterval(parseInt(e.target.value))}
+                    value={fetchInterval}
+                    onChange={(e) => {
+                      setFetchInterval(parseInt(e.target.value));
+                      setDeliveriesSinceFetch(0);
+                    }}
                     className="px-1.5 py-1 bg-slate-700 border border-slate-600 rounded text-slate-300 text-xs"
                   >
                     <option value={0}>Off</option>
@@ -1560,9 +1506,9 @@ function App() {
                     <option value={5}>5</option>
                     <option value={10}>10</option>
                   </select>
-                  {refreshInterval > 0 && (
+                  {fetchInterval > 0 && (
                     <span className="text-slate-500">
-                      ({deliveriesSinceRefresh}/{refreshInterval})
+                      ({deliveriesSinceFetch}/{fetchInterval})
                     </span>
                   )}
                 </div>
@@ -1943,12 +1889,15 @@ function App() {
                 </div>
                 <div>
                   <label className="block text-xs text-slate-500 uppercase tracking-wider mb-2">
-                    Auto-Refresh Models
+                    Auto-Fetch Models
                   </label>
                   <div className="flex items-center gap-2">
                     <select
-                      value={refreshInterval}
-                      onChange={(e) => updateRefreshInterval(parseInt(e.target.value))}
+                      value={fetchInterval}
+                      onChange={(e) => {
+                        setFetchInterval(parseInt(e.target.value));
+                        setDeliveriesSinceFetch(0);
+                      }}
                       className="flex-1 bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
                       disabled={trainingRunning}
                     >
@@ -1958,9 +1907,9 @@ function App() {
                       <option value={5}>Every 5</option>
                       <option value={10}>Every 10</option>
                     </select>
-                    {refreshInterval > 0 && (
+                    {fetchInterval > 0 && (
                       <span className="text-sm text-slate-400 whitespace-nowrap">
-                        ({deliveriesSinceRefresh}/{refreshInterval})
+                        ({deliveriesSinceFetch}/{fetchInterval})
                       </span>
                     )}
                   </div>

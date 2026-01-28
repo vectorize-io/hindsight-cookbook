@@ -22,9 +22,6 @@ from .memory_service import (
     set_bank_id,
     get_bank_id,
     set_bank_mission_async,
-    refresh_mental_models_async,
-    record_delivery,
-    reset_delivery_count,
     get_mental_models_async,
     get_bank_stats_async,
     wait_for_pending_consolidation_async,
@@ -443,23 +440,8 @@ async def run_delivery(
                         print(f"[MEMORY] Stored successfully in {store_timing:.2f}s to bank: {get_bank_id()}")
                         await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
 
-                    # Record delivery and check if mental model refresh is needed
-                    should_refresh = record_delivery()
-                    if should_refresh:
-                        # Send event that models are refreshing
-                        await websocket.send_json(event(EventType.MODELS_REFRESHING, {}))
-
-                        async def refresh_with_notification():
-                            try:
-                                await refresh_mental_models_async()
-                                await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": True}))
-                            except Exception as e:
-                                print(f"[MEMORY] Mental models refresh failed: {e}")
-                                await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": False, "error": str(e)}))
-
-                        asyncio.create_task(refresh_with_notification())
-                        reset_delivery_count()
-                        print(f"[MEMORY] Mental models refresh triggered (interval reached)")
+                    # Mental model refresh happens automatically via Hindsight consolidation
+                    # (refresh_after_consolidation=true on each mental model)
 
                     # Send success
                     await websocket.send_json(event(EventType.DELIVERY_SUCCESS, {
@@ -507,23 +489,7 @@ async def run_delivery(
             store_timing = time.time() - t_store
             await websocket.send_json(event(EventType.MEMORY_STORED, {"timing": store_timing}))
 
-        # Record delivery (even failures count) and check if mental model refresh is needed
-        should_refresh = record_delivery()
-        if should_refresh:
-            # Send event that models are refreshing
-            await websocket.send_json(event(EventType.MODELS_REFRESHING, {}))
-
-            async def refresh_with_notification():
-                try:
-                    await refresh_mental_models_async()
-                    await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": True}))
-                except Exception as e:
-                    print(f"[MEMORY] Mental models refresh failed: {e}")
-                    await websocket.send_json(event(EventType.MODELS_REFRESHED, {"success": False, "error": str(e)}))
-
-            asyncio.create_task(refresh_with_notification())
-            reset_delivery_count()
-            print(f"[MEMORY] Mental models refresh triggered (interval reached)")
+        # Mental model refresh happens automatically via Hindsight consolidation
 
         await websocket.send_json(event(EventType.STEP_LIMIT_REACHED, {
             "message": f"Exceeded {max_steps} step limit",
@@ -899,14 +865,7 @@ Strategy:
                             print(f"[MEMORY] Waiting for consolidation after retain...")
                             await wait_for_pending_consolidation_async(timeout=120.0)
                             print(f"[MEMORY] Consolidation complete")
-                    # Record delivery and check if mental model refresh is needed
-                    should_refresh = record_delivery()
-                    if should_refresh:
-                        if wait_for_consolidation:
-                            await refresh_mental_models_async()  # Wait for completion
-                        else:
-                            asyncio.create_task(refresh_mental_models_async())  # Fire-and-forget
-                        reset_delivery_count()
+                    # Mental model refresh happens automatically via Hindsight consolidation
                     break
 
             else:
@@ -933,14 +892,7 @@ Strategy:
                     print(f"[MEMORY] Waiting for consolidation after retain (failed delivery)...")
                     await wait_for_pending_consolidation_async(timeout=120.0)
                     print(f"[MEMORY] Consolidation complete")
-            # Record delivery (even failures count) and check if mental model refresh is needed
-            should_refresh = record_delivery()
-            if should_refresh:
-                if wait_for_consolidation:
-                    await refresh_mental_models_async()  # Wait for completion
-                else:
-                    asyncio.create_task(refresh_mental_models_async())  # Fire-and-forget
-                reset_delivery_count()
+            # Mental model refresh happens automatically via Hindsight consolidation
 
         # Compute path efficiency
         path_efficiency = compute_path_efficiency(agent_state.steps_taken, optimal_steps)

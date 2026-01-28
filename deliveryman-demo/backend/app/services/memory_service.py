@@ -131,9 +131,9 @@ BANK_MISSION = "Delivery agent. Remember employee locations, building layout, an
 # Default mental models (reflections) to create for each bank
 # Each tuple is (name, source_query)
 DEFAULT_MENTAL_MODELS = [
-    ("Employee Locations", "Which floor and side of the building does each employee work at?"),
-    ("Building Layout", "How are the floors organized? What businesses are on each floor?"),
-    ("Optimal Delivery Paths", "What are the fastest routes to reach different employees?"),
+    ("Employee Locations", "Where is each employee located? What floor, side, and business does each person work at?"),
+    ("Building Layout", "What businesses and areas are on each floor? How are the buildings connected?"),
+    ("Optimal Delivery Paths", "What steps were taken to deliver to each employee? When was it faster to use a bridge, stairs, or ground passage?"),
 ]
 
 
@@ -1214,6 +1214,7 @@ def create_reflection(
                 "source_query": source_query,
                 "tags": tags or [],
                 "max_tokens": max_tokens,
+                "trigger": {"refresh_after_consolidation": True},
             }
         )
         response.raise_for_status()
