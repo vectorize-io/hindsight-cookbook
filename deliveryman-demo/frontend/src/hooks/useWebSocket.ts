@@ -10,7 +10,7 @@ export function useWebSocket() {
   const [isConnecting, setIsConnecting] = useState(false);
   const { connected, setConnected, handleEvent, difficulty } = useGameStore();
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     // Don't reconnect if already connected or connecting
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     if (wsRef.current?.readyState === WebSocket.CONNECTING) return;
@@ -23,6 +23,18 @@ export function useWebSocket() {
       wsRef.current = null;
     }
 
+    // Fetch the actual difficulty from the backend before connecting
+    let actualDifficulty = difficulty;
+    try {
+      const res = await fetch('/api/difficulty?app=demo');
+      const data = await res.json();
+      if (data.difficulty) {
+        actualDifficulty = data.difficulty;
+      }
+    } catch (e) {
+      console.warn('Failed to fetch difficulty, using store default:', difficulty);
+    }
+
     // Connect directly to backend WebSocket (bypass Vite proxy)
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     // In dev, connect directly to backend; in prod, use same host
@@ -30,8 +42,8 @@ export function useWebSocket() {
     const isDev = port === '5173' || port === '5174' || port.startsWith('517');
     const wsHost = isDev ? `${window.location.hostname}:8000` : window.location.host;
     // Pass app=demo and difficulty to identify this as the demo frontend
-    const wsUrl = `${protocol}//${wsHost}/ws/${CLIENT_ID}?app=demo&difficulty=${difficulty}`;
-    console.log('Connecting to WebSocket:', wsUrl, 'difficulty:', difficulty);
+    const wsUrl = `${protocol}//${wsHost}/ws/${CLIENT_ID}?app=demo&difficulty=${actualDifficulty}`;
+    console.log('Connecting to WebSocket:', wsUrl, 'difficulty:', actualDifficulty);
 
     const ws = new WebSocket(wsUrl);
 

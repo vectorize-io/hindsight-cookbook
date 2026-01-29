@@ -143,10 +143,6 @@ def format_messages_for_retain(messages: list, success: bool = True, steps: int 
     """
     items = []
 
-    # Add delivery context at the start
-    if recipient:
-        items.append(f"DELIVERY TO: {recipient}")
-
     for msg in messages:
         role = msg.get("role", "").upper()
         content = msg.get("content", "")
@@ -433,7 +429,6 @@ async def run_delivery(
                         t_store = time.time()
                         await retain_async(
                             final_convo,
-                            context=f"delivery:{package.recipient_name}:success",
                             session_id=f"delivery-{delivery_id}"
                         )
                         store_timing = time.time() - t_store
@@ -483,7 +478,6 @@ async def run_delivery(
             t_store = time.time()
             await retain_async(
                 final_convo,
-                context=f"delivery:{package.recipient_name}:failed",
                 session_id=f"delivery-{delivery_id}"
             )
             store_timing = time.time() - t_store
@@ -856,7 +850,6 @@ Strategy:
                         )
                         await retain_async(
                             final_convo,
-                            context=f"delivery:{package.recipient_name}:success",
                             session_id=f"delivery-{delivery_id}"
                         )
                         # For MM modes with wait_for_consolidation, wait for pending_consolidation to reach 0
@@ -884,7 +877,6 @@ Strategy:
                 )
                 await retain_async(
                     final_convo,
-                    context=f"delivery:{package.recipient_name}:failed",
                     session_id=f"delivery-{delivery_id}"
                 )
                 # For MM modes with wait_for_consolidation, wait for pending_consolidation to reach 0

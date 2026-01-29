@@ -305,34 +305,33 @@ function App() {
   const sortModels = (models: MentalModel[]) =>
     [...models].sort((a, b) => a.name.localeCompare(b.name));
 
-  // Fetch mental models for the current bank, waiting for any pending refreshes first
+  // Fetch mental models for the current bank, waiting for any pending operations first
   const fetchMentalModels = useCallback(async () => {
     try {
       setMentalModelsLoading(true);
 
-      // Check if consolidation/refresh is in progress
-      const statsRes = await fetch(`/api/memory/stats?app=demo&difficulty=${difficulty}`);
-      const statsData = await statsRes.json();
-      const pending = statsData.stats?.pending_consolidation ?? 0;
+      const checkStats = async () => {
+        const res = await fetch(`/api/memory/stats?app=demo&difficulty=${difficulty}`);
+        const data = await res.json();
+        return {
+          ops: data.stats?.pending_operations ?? 0,
+          cons: data.stats?.pending_consolidation ?? 0,
+        };
+      };
 
-      if (pending > 0) {
-        // Wait for consolidation + mental model refresh to finish
+      let { ops, cons } = await checkStats();
+
+      if (ops > 0 || cons > 0) {
         setMentalModelsWaitingForRefresh(true);
-        let stillPending = true;
         const startTime = Date.now();
         const timeout = 120_000; // 2 min max wait
 
-        while (stillPending && Date.now() - startTime < timeout) {
+        while (Date.now() - startTime < timeout) {
           await new Promise(r => setTimeout(r, 2000));
-          const pollRes = await fetch(`/api/memory/stats?app=demo&difficulty=${difficulty}`);
-          const pollData = await pollRes.json();
-          if ((pollData.stats?.pending_consolidation ?? 0) === 0) {
-            stillPending = false;
-          }
+          ({ ops, cons } = await checkStats());
+          if (ops === 0 && cons === 0) break;
         }
 
-        // Extra delay for mental model refresh to complete after consolidation
-        await new Promise(r => setTimeout(r, 5000));
         setMentalModelsWaitingForRefresh(false);
       }
 
@@ -420,20 +419,24 @@ function App() {
     }
   }, [storeBankId, currentBankId, refreshBankHistory]);
 
-  // Auto-fetch mental models every N deliveries (client-side counter)
+  // Auto-fetch mental models every N deliveries, triggered when retain completes (memory_stored)
+  const wasStoringForFetchRef = useRef(false);
   useEffect(() => {
-    if (deliveryStatus === 'success' || deliveryStatus === 'failed') {
+    if (isStoringMemory) {
+      wasStoringForFetchRef.current = true;
+    } else if (wasStoringForFetchRef.current) {
+      wasStoringForFetchRef.current = false;
+      // Retain just finished — count this delivery
       setDeliveriesSinceFetch(prev => {
         const next = prev + 1;
         if (fetchInterval > 0 && next >= fetchInterval) {
-          // Fetch after a short delay to let Hindsight consolidation process
-          setTimeout(() => fetchMentalModels(), 3000);
+          fetchMentalModels();
           return 0;
         }
         return next;
       });
     }
-  }, [deliveryStatus, fetchInterval, fetchMentalModels]);
+  }, [isStoringMemory, fetchInterval, fetchMentalModels]);
 
   // Change difficulty
   const changeDifficulty = useCallback(async (newDifficulty: 'easy' | 'medium' | 'hard') => {
@@ -749,10 +752,7 @@ function App() {
             setStoreBankId(data.bankId);
           }
           refreshBankHistory();
-
-          // Clear mental models since this is a fresh empty bank (no memories to build models from)
-          setMentalModels([]);
-          setMentalModelsLoading(false);
+          fetchMentalModels();
         } catch (err) {
           console.error('Failed to refresh bank ID after reset:', err);
           showError('Failed to reset memory');
@@ -1472,7 +1472,14 @@ function App() {
             </div>
 
             {/* Mental Models */}
-            <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 relative">
+            <div className={`bg-slate-800/50 rounded-xl p-4 border border-slate-700 relative transition-opacity duration-300 ${mentalModelsWaitingForRefresh || mentalModelsLoading ? 'opacity-50' : ''}`}>
+              {(mentalModelsWaitingForRefresh || mentalModelsLoading) && (
+                <div className="absolute inset-0 flex items-center justify-center z-10 bg-slate-900/30 rounded-xl">
+                  <span className="text-sm text-purple-400 animate-pulse font-medium">
+                    {mentalModelsWaitingForRefresh ? 'Refreshing...' : 'Loading...'}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-lg font-semibold text-slate-300">Mental Models</h2>
                 <span className="text-xs text-purple-400">
@@ -1484,7 +1491,7 @@ function App() {
               <div className="flex gap-2 flex-wrap mb-3">
                 <button
                   onClick={fetchMentalModels}
-                  disabled={mentalModelsLoading}
+                  disabled={mentalModelsLoading || isStoringMemory}
                   className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded text-white disabled:opacity-50 transition-colors"
                 >
                   {mentalModelsWaitingForRefresh ? 'Refreshing...' : mentalModelsLoading ? 'Loading...' : 'Fetch'}
