@@ -62,7 +62,7 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
 
       if (gridCmd.type === 'move_grid') {
         window.dispatchEvent(new CustomEvent('game-event', {
-          detail: { type: 'move_agent_grid', payload: { row: gridCmd.row, col: gridCmd.col } }
+          detail: { type: 'move_agent_grid', payload: { row: gridCmd.row, col: gridCmd.col, queueDepth: gridQueueRef.current.length } }
         }));
       } else if (gridCmd.type === 'enter_building') {
         window.dispatchEvent(new CustomEvent('game-event', {
@@ -83,7 +83,7 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
       const nextMove = moveQueueRef.current.shift()!;
 
       window.dispatchEvent(new CustomEvent('game-event', {
-        detail: { type: 'move_agent', payload: { floor: nextMove.floor, side: nextMove.side } }
+        detail: { type: 'move_agent', payload: { floor: nextMove.floor, side: nextMove.side, queueDepth: moveQueueRef.current.length } }
       }));
       return;
     }
@@ -135,7 +135,10 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   useEffect(() => {
     const handleAnimationComplete = (event: Event) => {
       const customEvent = event as CustomEvent;
-      const delay = customEvent.detail?.delay ?? 200; // Default 0.2s pause between animations
+      const explicitDelay = customEvent.detail?.delay;
+      // Dynamic delay based on queue depth (only when no explicit delay provided)
+      const totalQueued = moveQueueRef.current.length + gridQueueRef.current.length;
+      const delay = explicitDelay ?? (totalQueued >= 4 ? 0 : totalQueued >= 2 ? 50 : 200);
       setTimeout(() => {
         processNextMove();
       }, delay);
@@ -211,10 +214,6 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   // Handle delivery success - clear other effects and play immediately after moves
   useEffect(() => {
     if (deliverySuccess && !lastSuccessRef.current) {
-      // Immediately mark as animating to prevent thinking animation from showing
-      isAnimatingRef.current = true;
-      setAnimating(true);
-
       // Clear any pending non-essential animations (like show_reading)
       effectQueueRef.current = effectQueueRef.current.filter(
         e => e === 'delivery_success' || e === 'delivery_failed'
@@ -222,8 +221,15 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
       // Queue the success animation
       effectQueueRef.current.push('delivery_success');
 
-      // Start processing
-      processNextMove();
+      // Only start processing if not already animating - otherwise the
+      // animation-complete chain will pick up the queued effect naturally.
+      // Calling processNextMove while animating would prematurely shift
+      // moves from the queue that BuildingScene ignores (isMoving=true).
+      if (!isAnimatingRef.current) {
+        isAnimatingRef.current = true;
+        setAnimating(true);
+        processNextMove();
+      }
     }
     lastSuccessRef.current = deliverySuccess;
   }, [deliverySuccess, processNextMove, setAnimating]);
@@ -231,10 +237,6 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   // Handle delivery failure - clear other effects and play immediately after moves
   useEffect(() => {
     if (deliveryFailed && !lastFailedRef.current) {
-      // Immediately mark as animating to prevent thinking animation from showing
-      isAnimatingRef.current = true;
-      setAnimating(true);
-
       // Clear any pending non-essential animations (like show_reading)
       effectQueueRef.current = effectQueueRef.current.filter(
         e => e === 'delivery_success' || e === 'delivery_failed'
@@ -242,8 +244,11 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
       // Queue the failure animation
       effectQueueRef.current.push('delivery_failed');
 
-      // Start processing
-      processNextMove();
+      if (!isAnimatingRef.current) {
+        isAnimatingRef.current = true;
+        setAnimating(true);
+        processNextMove();
+      }
     }
     lastFailedRef.current = deliveryFailed;
   }, [deliveryFailed, processNextMove, setAnimating]);
@@ -252,6 +257,7 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
   useEffect(() => {
     if (deliveryCancelled && !lastCancelledRef.current) {
       // Clear ALL animation queues immediately
+      const wasAnimating = isAnimatingRef.current;
       moveQueueRef.current = [];
       gridQueueRef.current = [];
       effectQueueRef.current = [];
@@ -268,8 +274,13 @@ export function PhaserGame({ floor, side, isThinking, packageText, deliverySucce
         gridQueueRef.current.push({ type: 'move_grid', row: 0, col: 0 });
       }
 
-      // Start reset animation immediately
-      processNextMove();
+      // Only start processing if nothing was animating. If a BuildingScene
+      // tween is in flight, calling processNextMove would dispatch a move
+      // that gets silently dropped (isMoving guard). The in-flight tween's
+      // animation-complete will pick up the queued reset moves naturally.
+      if (!wasAnimating) {
+        processNextMove();
+      }
     }
     lastCancelledRef.current = deliveryCancelled;
   }, [deliveryCancelled, processNextMove, difficulty]);

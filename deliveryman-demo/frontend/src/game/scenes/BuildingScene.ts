@@ -106,7 +106,7 @@ export class BuildingScene extends Phaser.Scene {
 
     switch (type) {
       case 'move_agent':
-        this.moveAgent(payload.floor, payload.side);
+        this.moveAgent(payload.floor, payload.side, payload.queueDepth);
         break;
       case 'set_thinking':
         this.setThinking(payload.thinking);
@@ -128,7 +128,7 @@ export class BuildingScene extends Phaser.Scene {
         break;
       // Hard mode city grid events
       case 'move_agent_grid':
-        this.moveAgentOnGrid(payload.row, payload.col);
+        this.moveAgentOnGrid(payload.row, payload.col, payload.queueDepth);
         break;
       case 'enter_building':
         this.enterBuilding(payload.buildingName);
@@ -254,11 +254,12 @@ export class BuildingScene extends Phaser.Scene {
     this.agentSprite.y = 0;
   }
 
-  public moveAgent(floor: number, side: string) {
+  public moveAgent(floor: number, side: string, queueDepth: number = 0) {
     // With the animation queue in PhaserGame, this should not be called while moving
     // But as a safety fallback, we just return if already moving
     if (this.isMoving) return;
 
+    const speed = queueDepth >= 4 ? 0.25 : queueDepth >= 2 ? 0.5 : 1.0;
     const targetX = this.config.sideX[side] || this.agent.x;
     const targetY = this.config.floorY[floor] || this.config.floorY[1];
 
@@ -296,21 +297,21 @@ export class BuildingScene extends Phaser.Scene {
           this.currentSide = side;
           this.updateUI();
           finishMove();
-        });
+        }, speed);
       } else if (sameSide) {
         // Same building, different floor - elevator (fade in place)
         this.tweens.add({
           targets: this.agent,
           alpha: 0,
-          duration: 200,
+          duration: 200 * speed,
           onComplete: () => {
             this.agent.y = targetY;
             this.currentFloor = floor;
             this.tweens.add({
               targets: this.agent,
               alpha: 1,
-              duration: 200,
-              delay: 300,
+              duration: 200 * speed,
+              delay: 300 * speed,
               onComplete: () => {
                 this.updateUI();
                 finishMove();
@@ -320,12 +321,11 @@ export class BuildingScene extends Phaser.Scene {
         });
       } else {
         // Different building AND different floor
-        // Animate: elevator to current position, walk to target building, elevator to target floor
         // Simplified: just fade and reposition
         this.tweens.add({
           targets: this.agent,
           alpha: 0,
-          duration: 200,
+          duration: 200 * speed,
           onComplete: () => {
             this.agent.x = targetX;
             this.agent.y = targetY;
@@ -334,8 +334,8 @@ export class BuildingScene extends Phaser.Scene {
             this.tweens.add({
               targets: this.agent,
               alpha: 1,
-              duration: 200,
-              delay: 400,
+              duration: 200 * speed,
+              delay: 400 * speed,
               onComplete: () => {
                 this.updateUI();
                 finishMove();
@@ -354,7 +354,7 @@ export class BuildingScene extends Phaser.Scene {
         this.currentSide = side;
         this.updateUI();
         finishMove();
-      });
+      }, speed);
     } else {
       // Walk to elevator (middle), then move vertically, then walk to target
       this.walkTo(this.config.sideX.middle, () => {
@@ -362,7 +362,7 @@ export class BuildingScene extends Phaser.Scene {
         this.tweens.add({
           targets: this.agent,
           alpha: 0,
-          duration: 200,
+          duration: 200 * speed,
           onComplete: () => {
             // Move to new floor
             this.agent.y = targetY;
@@ -372,8 +372,8 @@ export class BuildingScene extends Phaser.Scene {
             this.tweens.add({
               targets: this.agent,
               alpha: 1,
-              duration: 200,
-              delay: 300, // Simulate elevator travel time
+              duration: 200 * speed,
+              delay: 300 * speed,
               onComplete: () => {
                 this.updateUI();
 
@@ -389,7 +389,7 @@ export class BuildingScene extends Phaser.Scene {
                     this.currentSide = side;
                     this.updateUI();
                     finishMove();
-                  });
+                  }, speed);
                 } else {
                   this.currentSide = 'middle';
                   this.updateUI();
@@ -399,13 +399,13 @@ export class BuildingScene extends Phaser.Scene {
             });
           },
         });
-      });
+      }, speed);
     }
   }
 
-  private walkTo(targetX: number, onComplete: () => void) {
+  private walkTo(targetX: number, onComplete: () => void, speed: number = 1.0) {
     const distance = Math.abs(targetX - this.agent.x);
-    const duration = distance * 3; // Slightly slower for smoother look
+    const duration = distance * 3 * speed;
 
     // Walking bob animation
     this.tweens.add({
@@ -431,10 +431,11 @@ export class BuildingScene extends Phaser.Scene {
 
   // === HARD MODE CITY GRID METHODS ===
 
-  public moveAgentOnGrid(row: number, col: number) {
+  public moveAgentOnGrid(row: number, col: number, queueDepth: number = 0) {
     if (this.isMoving) return;
     if (!this.config.isCityGrid || !this.isInCityView) return;
 
+    const speed = queueDepth >= 4 ? 0.25 : queueDepth >= 2 ? 0.5 : 1.0;
     const gridKey = `${row}_${col}`;
     const targetPos = this.config.cityGridPositions?.[gridKey];
     if (!targetPos) {
@@ -455,7 +456,7 @@ export class BuildingScene extends Phaser.Scene {
       targets: this.agent,
       x: targetPos.x,
       y: targetPos.y,
-      duration: 400,
+      duration: 400 * speed,
       ease: 'Quad.easeInOut',
       onComplete: () => {
         this.gridRow = row;
