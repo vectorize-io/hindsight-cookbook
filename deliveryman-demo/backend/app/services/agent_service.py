@@ -263,14 +263,20 @@ async def run_delivery(
             t_memory = time.time()
 
             if use_reflect:
-                # REFLECT MODE: Use LLM to synthesize memories into coherent answer
-                result = await reflect_async(query=memory_query, budget="high")
-                memory_timing = time.time() - t_memory
-                print(f"[MEMORY] Reflect took {memory_timing:.2f}s")
+                # REFLECT MODE: Do a fast recall first to check if the bank has
+                # any relevant data. If empty, skip the expensive LLM reflect call.
+                recall_check = await recall_async(query=memory_query, budget="low")
+                if recall_check and len(recall_check) > 0:
+                    result = await reflect_async(query=memory_query, budget="high")
+                    memory_timing = time.time() - t_memory
+                    print(f"[MEMORY] Reflect took {memory_timing:.2f}s")
 
-                if result and hasattr(result, 'text') and result.text:
-                    memory_context = result.text
-                    print(f"[MEMORY] Got reflected context: {memory_context[:200]}...")
+                    if result and hasattr(result, 'text') and result.text:
+                        memory_context = result.text
+                        print(f"[MEMORY] Got reflected context: {memory_context[:200]}...")
+                else:
+                    memory_timing = time.time() - t_memory
+                    print(f"[MEMORY] Recall check returned empty, skipping reflect ({memory_timing:.2f}s)")
             else:
                 # RECALL MODE: Get raw facts without LLM synthesis
                 result = await recall_async(query=memory_query, budget="high")

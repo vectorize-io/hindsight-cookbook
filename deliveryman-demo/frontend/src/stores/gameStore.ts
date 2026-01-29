@@ -133,7 +133,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   isRefreshingModels: false,
   mode: 'ui',
   includeBusiness: false,
-  maxSteps: 150,
+  maxSteps: 50,
 
   // Actions
   setConnected: (connected, clientId, bankId) => set({
