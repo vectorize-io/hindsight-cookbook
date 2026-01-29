@@ -1886,8 +1886,8 @@ function App() {
                   </label>
                   <input
                     type="number"
-                    value={maxSteps ?? 50}
-                    onChange={(e) => setMaxSteps(parseInt(e.target.value) || 50)}
+                    value={maxSteps ?? 100}
+                    onChange={(e) => setMaxSteps(parseInt(e.target.value) || 100)}
                     min={1}
                     className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:border-yellow-500 focus:outline-none"
                     disabled={trainingRunning}
