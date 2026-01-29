@@ -219,6 +219,7 @@ async def run_delivery(
     custom_bank_id = hindsight.get("bankId") if hindsight else None
     custom_query = hindsight.get("query") if hindsight else None
     custom_background = hindsight.get("background") if hindsight else None
+    memory_mode = hindsight.get("memoryMode", "reflect") if hindsight else "reflect"
 
     # Update hindsight defaults if custom bank_id provided
     if custom_bank_id:
@@ -250,10 +251,15 @@ async def run_delivery(
     memory_method = "reflect" if use_reflect else "recall"
     raw_memories = []  # For recall mode - list of individual facts
 
-    # MEMORY INJECTION: Call recall or reflect ONCE at start to get relevant memories
+    # MEMORY INJECTION: Call recall, reflect, or fetch mental models ONCE at start
     if inject_memories:
         try:
             await websocket.send_json(event(EventType.AGENT_THINKING))  # Show we're recalling
+
+            # Override memory_method if using mental_models mode
+            if memory_mode == 'mental_models':
+                memory_method = 'mental_models'
+
             print(f"[MEMORY] Using {memory_method} for recipient: {package.recipient_name}")
 
             # Generate the memory query
@@ -262,7 +268,23 @@ async def run_delivery(
 
             t_memory = time.time()
 
-            if use_reflect:
+            if memory_mode == 'mental_models':
+                # MENTAL MODELS MODE: Fetch models from DB (no LLM call)
+                models = await get_mental_models_async()
+                memory_timing = time.time() - t_memory
+                print(f"[MEMORY] Mental models fetch took {memory_timing:.2f}s, got {len(models) if models else 0} models")
+
+                if models:
+                    parts = []
+                    for m in models:
+                        content = m.get('content') or m.get('summary') or m.get('description') or ''
+                        if content:
+                            parts.append(f"## {m['name']}\n{content}")
+                    if parts:
+                        memory_context = "\n\n".join(parts)
+                        print(f"[MEMORY] Got mental models context: {memory_context[:200]}...")
+
+            elif use_reflect:
                 # REFLECT MODE: Check if bank has any memories before doing
                 # the expensive LLM reflect call. Use stats endpoint (lightweight)
                 # instead of recall (runs full search pipeline).

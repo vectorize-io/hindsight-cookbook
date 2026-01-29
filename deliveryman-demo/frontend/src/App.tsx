@@ -206,6 +206,9 @@ function App() {
   const [fetchInterval, setFetchInterval] = useState(5);  // Auto-fetch every N deliveries (0 = off)
   const [deliveriesSinceFetch, setDeliveriesSinceFetch] = useState(0);
 
+  // Memory mode state (reflect vs mental_models)
+  const [memoryMode, setMemoryMode] = useState<'reflect' | 'mental_models'>('mental_models');
+
   // View mode state (UI vs Training)
   const [viewMode, setViewMode] = useState<'ui' | 'training'>('ui');
 
@@ -560,10 +563,11 @@ function App() {
         reflect: true,
         store: true,
         query: `Where does ${randomEmployee.name} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries.`,
+        memoryMode,
       };
       startDelivery(randomEmployee.name, includeBusiness, maxSteps, undefined, hindsightSettings);
     }
-  }, [employees, connected, startDelivery, includeBusiness, maxSteps, getEligibleEmployees]);
+  }, [employees, connected, startDelivery, includeBusiness, maxSteps, getEligibleEmployees, memoryMode]);
 
   // Training mode: auto-start next delivery when previous completes
   useEffect(() => {
@@ -643,10 +647,11 @@ function App() {
         reflect: true,
         store: true,
         query: `Where does ${randomEmployee.name} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries.`,
+        memoryMode,
       };
       startDelivery(randomEmployee.name, includeBusiness, maxSteps, undefined, hindsightSettings);
     }
-  }, [employees, connected, startDelivery, includeBusiness, maxSteps, getEligibleEmployees]);
+  }, [employees, connected, startDelivery, includeBusiness, maxSteps, getEligibleEmployees, memoryMode]);
 
   // UI mode loop: auto-start next delivery when BOTH storing and animations complete
   const loopWasStoringRef = useRef(false);
@@ -732,6 +737,7 @@ function App() {
     reflect: true,
     store: true,
     query: `Where does ${recipientName} work? What locations have I already checked? Only include building layout and optimal paths if known from past deliveries.`,
+    memoryMode,
   });
 
   const handleStartDelivery = () => {
@@ -982,6 +988,38 @@ function App() {
                 <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700">
                   <code className="text-blue-400 text-sm font-mono">{demoConfig.llmModel}</code>
                 </div>
+              </div>
+
+              {/* Memory Mode Toggle */}
+              <div>
+                <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-2">Memory Mode</h3>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setMemoryMode('reflect')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                      memoryMode === 'reflect'
+                        ? 'bg-purple-600 text-white'
+                        : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                    }`}
+                  >
+                    Reflect
+                  </button>
+                  <button
+                    onClick={() => setMemoryMode('mental_models')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                      memoryMode === 'mental_models'
+                        ? 'bg-purple-600 text-white'
+                        : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                    }`}
+                  >
+                    Mental Models
+                  </button>
+                </div>
+                <p className="text-slate-500 text-xs mt-1">
+                  {memoryMode === 'reflect'
+                    ? 'LLM-synthesized memory via reflect API (~44s)'
+                    : 'Direct mental model injection from DB (instant)'}
+                </p>
               </div>
 
               {/* System Prompt */}
