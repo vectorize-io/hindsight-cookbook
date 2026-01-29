@@ -263,10 +263,11 @@ async def run_delivery(
             t_memory = time.time()
 
             if use_reflect:
-                # REFLECT MODE: Do a fast recall first to check if the bank has
-                # any relevant data. If empty, skip the expensive LLM reflect call.
-                recall_check = await recall_async(query=memory_query, budget="low")
-                if recall_check and len(recall_check) > 0:
+                # REFLECT MODE: Check if bank has any memories before doing
+                # the expensive LLM reflect call. Use stats endpoint (lightweight)
+                # instead of recall (runs full search pipeline).
+                stats = await get_bank_stats_async()
+                if stats.get("total_nodes", 0) > 0:
                     result = await reflect_async(query=memory_query, budget="high")
                     memory_timing = time.time() - t_memory
                     print(f"[MEMORY] Reflect took {memory_timing:.2f}s")
@@ -276,7 +277,7 @@ async def run_delivery(
                         print(f"[MEMORY] Got reflected context: {memory_context[:200]}...")
                 else:
                     memory_timing = time.time() - t_memory
-                    print(f"[MEMORY] Recall check returned empty, skipping reflect ({memory_timing:.2f}s)")
+                    print(f"[MEMORY] Bank empty (0 nodes), skipping reflect ({memory_timing:.2f}s)")
             else:
                 # RECALL MODE: Get raw facts without LLM synthesis
                 result = await recall_async(query=memory_query, budget="high")

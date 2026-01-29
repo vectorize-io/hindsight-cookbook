@@ -551,9 +551,12 @@ async def fast_delivery(request: FastDeliveryRequest):
     if request.recipientName:
         recipient_name = request.recipientName
     else:
-        # building.floors is dict[int, dict[Side, Business]]
-        all_employees = list(building.all_employees.keys())
-        recipient_name = random.choice(all_employees)
+        # Exclude employees at the starting location
+        eligible = [
+            name for name, (biz, _) in building.all_employees.items()
+            if not building._is_starting_location(biz)
+        ]
+        recipient_name = random.choice(eligible if eligible else list(building.all_employees.keys()))
 
     # Find employee's business
     emp_info = building.find_employee(recipient_name)
@@ -642,11 +645,16 @@ async def fast_delivery_loop(request: FastLoopRequest):
     building = get_building()
     results = []
 
-    # Get all employees for random selection
-    all_employees = list(building.all_employees.keys())
+    # Get employees for random selection, excluding starting location
+    eligible = [
+        name for name, (biz, _) in building.all_employees.items()
+        if not building._is_starting_location(biz)
+    ]
+    if not eligible:
+        eligible = list(building.all_employees.keys())
 
     for i in range(request.count):
-        recipient_name = random.choice(all_employees)
+        recipient_name = random.choice(eligible)
 
         # Find employee's business
         emp_info = building.find_employee(recipient_name)

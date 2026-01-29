@@ -540,10 +540,21 @@ function App() {
     }
   }, [actions.length]);
 
+  // Filter out employees at the agent's starting location (trivial 0-step deliveries)
+  const getEligibleEmployees = useCallback(() => {
+    const eligible = employees.filter(e => {
+      if (difficulty === 'easy') return !(e.floor === 1 && e.side === 'front');
+      if (difficulty === 'medium') return !(e.floor === 1 && e.side === 'building_a');
+      return true; // hard mode: agent starts on street, all are eligible
+    });
+    return eligible.length > 0 ? eligible : employees;
+  }, [employees, difficulty]);
+
   // Start a random delivery for training mode (with reflect hindsight)
   const startRandomTrainingDelivery = useCallback(() => {
     if (employees.length > 0 && connected) {
-      const randomEmployee = employees[Math.floor(Math.random() * employees.length)];
+      const eligible = getEligibleEmployees();
+      const randomEmployee = eligible[Math.floor(Math.random() * eligible.length)];
       const hindsightSettings = {
         inject: true,
         reflect: true,
@@ -552,7 +563,7 @@ function App() {
       };
       startDelivery(randomEmployee.name, includeBusiness, maxSteps, undefined, hindsightSettings);
     }
-  }, [employees, connected, startDelivery, includeBusiness, maxSteps]);
+  }, [employees, connected, startDelivery, includeBusiness, maxSteps, getEligibleEmployees]);
 
   // Training mode: auto-start next delivery when previous completes
   useEffect(() => {
@@ -624,7 +635,8 @@ function App() {
   // UI mode loop: start random delivery
   const startLoopDelivery = useCallback(() => {
     if (employees.length > 0 && connected && !loopAbortRef.current) {
-      const randomEmployee = employees[Math.floor(Math.random() * employees.length)];
+      const eligible = getEligibleEmployees();
+      const randomEmployee = eligible[Math.floor(Math.random() * eligible.length)];
       setSelectedRecipient(randomEmployee.name);
       const hindsightSettings = {
         inject: true,
@@ -634,7 +646,7 @@ function App() {
       };
       startDelivery(randomEmployee.name, includeBusiness, maxSteps, undefined, hindsightSettings);
     }
-  }, [employees, connected, startDelivery, includeBusiness, maxSteps]);
+  }, [employees, connected, startDelivery, includeBusiness, maxSteps, getEligibleEmployees]);
 
   // UI mode loop: auto-start next delivery when BOTH storing and animations complete
   const loopWasStoringRef = useRef(false);
@@ -730,7 +742,8 @@ function App() {
 
   const handleRandomDelivery = () => {
     if (employees.length > 0) {
-      const randomEmployee = employees[Math.floor(Math.random() * employees.length)];
+      const eligible = getEligibleEmployees();
+      const randomEmployee = eligible[Math.floor(Math.random() * eligible.length)];
       setSelectedRecipient(randomEmployee.name);
       startDelivery(randomEmployee.name, includeBusiness, maxSteps, undefined, getHindsightSettings(randomEmployee.name));
     }
@@ -1472,14 +1485,7 @@ function App() {
             </div>
 
             {/* Mental Models */}
-            <div className={`bg-slate-800/50 rounded-xl p-4 border border-slate-700 relative transition-opacity duration-300 ${mentalModelsWaitingForRefresh || mentalModelsLoading ? 'opacity-50' : ''}`}>
-              {(mentalModelsWaitingForRefresh || mentalModelsLoading) && (
-                <div className="absolute inset-0 flex items-center justify-center z-10 bg-slate-900/30 rounded-xl">
-                  <span className="text-sm text-purple-400 animate-pulse font-medium">
-                    {mentalModelsWaitingForRefresh ? 'Refreshing...' : 'Loading...'}
-                  </span>
-                </div>
-              )}
+            <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700 relative">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-lg font-semibold text-slate-300">Mental Models</h2>
                 <span className="text-xs text-purple-400">
@@ -1494,7 +1500,7 @@ function App() {
                   disabled={mentalModelsLoading || isStoringMemory}
                   className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded text-white disabled:opacity-50 transition-colors"
                 >
-                  {mentalModelsWaitingForRefresh ? 'Refreshing...' : mentalModelsLoading ? 'Loading...' : 'Fetch'}
+                  {mentalModelsWaitingForRefresh || mentalModelsLoading ? 'Refreshing...' : 'Refresh'}
                 </button>
                 <div className="flex items-center gap-1 ml-auto text-xs">
                   <span className="text-slate-500">Auto-fetch:</span>

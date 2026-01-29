@@ -298,6 +298,14 @@ class Building:
             businesses.extend(floor_businesses.values())
         return businesses
 
+    def _is_starting_location(self, business: 'Business') -> bool:
+        """Check if a business is at the agent's starting location."""
+        if self.difficulty == "easy":
+            return business.floor == 1 and business.side == Side.FRONT
+        elif self.difficulty == "medium":
+            return business.floor == 1 and business.side == Side.BUILDING_A
+        return False
+
     def find_employee(self, name: str) -> Optional[tuple[Business, Employee]]:
         """Find an employee by name."""
         return self.all_employees.get(name)
@@ -316,8 +324,12 @@ class Building:
         if self.is_city_grid:
             return self.city_grid.generate_package(include_business)
 
-        # Pick a random employee
-        emp_name = random.choice(list(self.all_employees.keys()))
+        # Pick a random employee, excluding those at the starting location
+        eligible = [
+            name for name, (biz, _) in self.all_employees.items()
+            if not self._is_starting_location(biz)
+        ]
+        emp_name = random.choice(eligible if eligible else list(self.all_employees.keys()))
         business, employee = self.all_employees[emp_name]
 
         # Decide whether to include business name

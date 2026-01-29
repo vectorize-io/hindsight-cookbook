@@ -76,6 +76,7 @@ async def get_employees():
     # For hard mode (city grid), include building name
     if building.is_city_grid and building.city_grid:
         for emp_name, (building_name, business, employee) in building.city_grid.all_employees.items():
+            # Hard mode: agent starts on street, no starting location to exclude
             employees.append({
                 "name": employee.name,
                 "role": employee.role,
