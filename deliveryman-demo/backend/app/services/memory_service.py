@@ -19,7 +19,7 @@ from hindsight_litellm import (
     HindsightError,
 )
 from hindsight_client import Hindsight
-from ..config import get_hindsight_url, set_hindsight_url, HINDSIGHT_API_URL
+from ..config import get_hindsight_url, set_hindsight_url, HINDSIGHT_API_URL, HINDSIGHT_API_KEY
 
 # Debug logging for memory service
 DEBUG_MEMORY = True
@@ -51,7 +51,7 @@ def _get_hindsight_client(hindsight_url: str = None) -> Hindsight:
 
     # Recreate client if URL changed
     if _hindsight_client is None or _hindsight_client_url != url:
-        _hindsight_client = Hindsight(base_url=url, timeout=60.0)
+        _hindsight_client = Hindsight(base_url=url, api_key=HINDSIGHT_API_KEY, timeout=60.0)
         _hindsight_client_url = url
     return _hindsight_client
 
@@ -69,7 +69,10 @@ def _get_http_client(hindsight_url: str = None) -> httpx.Client:
     if _http_client is None or _http_client_url != url:
         if _http_client is not None:
             _http_client.close()
-        _http_client = httpx.Client(base_url=url, timeout=60.0)
+        headers = {}
+        if HINDSIGHT_API_KEY:
+            headers["Authorization"] = f"Bearer {HINDSIGHT_API_KEY}"
+        _http_client = httpx.Client(base_url=url, timeout=60.0, headers=headers)
         _http_client_url = url
     return _http_client
 
@@ -214,6 +217,7 @@ def configure_memory(
     # Note: bank_id is tracked locally and passed to each call
     hindsight_litellm.configure(
         hindsight_api_url=get_hindsight_url(),
+        api_key=HINDSIGHT_API_KEY,
         bank_id=new_bank_id,  # Set default bank_id
         store_conversations=False,  # We store manually after delivery
         inject_memories=False,  # We inject manually using recall/reflect
@@ -265,6 +269,7 @@ def set_bank_id(bank_id: str, set_background: bool = True, add_to_history: bool 
     # Reconfigure hindsight with the new bank_id
     hindsight_litellm.configure(
         hindsight_api_url=get_hindsight_url(),
+        api_key=HINDSIGHT_API_KEY,
         bank_id=bank_id,
         store_conversations=False,
         inject_memories=False,

@@ -24,6 +24,7 @@ AVAILABLE_MODELS = [
 
 # Hindsight Settings - can be overridden via API or per-request
 HINDSIGHT_API_URL = os.environ.get("HINDSIGHT_API_URL", f"http://localhost:{HINDSIGHT_PORT}")
+HINDSIGHT_API_KEY = os.environ.get("HINDSIGHT_API_KEY")
 
 # Runtime-configurable hindsight URL (can be changed via /api/config endpoint)
 _runtime_hindsight_url: str | None = None
