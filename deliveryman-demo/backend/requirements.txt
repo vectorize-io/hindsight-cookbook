@@ -8,5 +8,5 @@ nest-asyncio>=1.6.0
 httpx>=0.27.0
 matplotlib>=3.8.0
 wsproto>=1.2.0
-hindsight-client @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-clients/python
-hindsight-litellm @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-integrations/litellm
+hindsight-client
+hindsight-litellm

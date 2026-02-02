@@ -76,8 +76,8 @@ if python3 -c "import hindsight_client" 2>/dev/null; then
     echo "   hindsight-client installed"
 else
     echo "   hindsight-client not installed"
-    echo "   Installing from GitHub..."
-    pip install "hindsight-client @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-clients/python"
+    echo "   Installing from PyPI..."
+    pip install hindsight-client
 fi
 
 # Hindsight LiteLLM (required)
@@ -85,8 +85,8 @@ if python3 -c "import hindsight_litellm" 2>/dev/null; then
     echo "   hindsight-litellm installed"
 else
     echo "   hindsight-litellm not installed"
-    echo "   Installing from GitHub..."
-    pip install "hindsight-litellm @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-integrations/litellm"
+    echo "   Installing from PyPI..."
+    pip install hindsight-litellm
 fi
 
 # Check if Hindsight is running
