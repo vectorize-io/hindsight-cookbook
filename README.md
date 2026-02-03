@@ -2,9 +2,16 @@
 
 A collection of example applications demonstrating how to integrate and use [Hindsight](https://github.com/vectorize-io/hindsight).
 
-## Examples
+## Repository Structure
 
-### [OpenAI Fitness Coach](./openai-fitness-coach)
+This cookbook is organized into two main directories:
+
+- **[applications/](./applications)** - Full-featured example applications demonstrating Hindsight integration patterns
+- **[notebooks/](./notebooks)** - Interactive tutorials and quick demos
+
+## Applications
+
+### [OpenAI Fitness Coach](./applications/openai-fitness-coach)
 
 A fitness coach example demonstrating how to use **OpenAI Agents** with **Hindsight as a memory backend**. Shows:
 - OpenAI Assistants handling conversation logic
@@ -13,12 +20,12 @@ A fitness coach example demonstrating how to use **OpenAI Agents** with **Hindsi
 - Real-world integration pattern for adding memory to AI agents
 
 ```bash
-cd openai-fitness-coach
+cd applications/openai-fitness-coach
 export OPENAI_API_KEY=your_key
 python demo_conversational.py
 ```
 
-### [LiteLLM Memory Demo](./hindsight-litellm-demo)
+### [LiteLLM Memory Demo](./applications/hindsight-litellm-demo)
 
 An interactive side-by-side comparison of three memory approaches:
 - No Memory (baseline)
@@ -26,11 +33,11 @@ An interactive side-by-side comparison of three memory approaches:
 - Hindsight Memory (semantic recall)
 
 ```bash
-cd hindsight-litellm-demo
+cd applications/hindsight-litellm-demo
 ./run.sh
 ```
 
-### [Tool Learning Demo](./hindsight-tool-learning-demo)
+### [Tool Learning Demo](./applications/hindsight-tool-learning-demo)
 
 An interactive Streamlit demo showing how Hindsight helps LLMs learn which tool to use when tool names are ambiguous. Demonstrates:
 - Side-by-side comparison: routing with and without memory
@@ -38,11 +45,11 @@ An interactive Streamlit demo showing how Hindsight helps LLMs learn which tool 
 - Customer service routing scenario with vague tool names
 
 ```bash
-cd hindsight-tool-learning-demo
+cd applications/hindsight-tool-learning-demo
 ./run.sh
 ```
 
-### [Stance Tracker](./stancetracker)
+### [Stance Tracker](./applications/stancetracker)
 
 A web application for tracking political stances and positions using AI-powered memory. Features:
 - Track and recall political positions from conversations
@@ -51,12 +58,12 @@ A web application for tracking political stances and positions using AI-powered 
 - Integration with Hindsight for semantic memory
 
 ```bash
-cd stancetracker
+cd applications/stancetracker
 ./scripts/setup.sh
 npm run dev
 ```
 
-### [Conversational AI with Per-User Memory](./chat-memory)
+### [Conversational AI with Per-User Memory](./applications/chat-memory)
 Simple chatbot that remembers past conversations on a per user basis:
 - Track and recall memories from past conversations
 - Creates a memory bank per user
@@ -75,16 +82,16 @@ docker run --rm -it --pull always -p 8888:8888 -p 9999:9999 \
 ```
 
 
-Then: 
+Then:
 ```bash
-cd chat-memory
+cd applications/chat-memory
 npm i
 npm run dev
 ```
 
 ## Quick Start Demos
 
-The [demos](./demos) directory contains ready-to-run example applications showcasing Hindsight's memory capabilities:
+The [demos](./notebooks/demos) directory contains ready-to-run example applications showcasing Hindsight's memory capabilities:
 
 | Demo | Description |
 |------|-------------|
@@ -95,7 +102,7 @@ The [demos](./demos) directory contains ready-to-run example applications showca
 | Healthcare Assistant | Health chatbot demo |
 | Personalized Search | Context-aware search agent |
 
-Each demo includes both a Python script and Jupyter notebook. See the [demos README](./demos/README.md) for setup instructions.
+Each demo includes both a Python script and Jupyter notebook. See the [demos README](./notebooks/demos/README.md) for setup instructions.
 
 ## Notebooks
 

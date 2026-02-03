@@ -8,6 +8,7 @@ dist/
 build/
 .next/
 out/
+.vite/
 
 # Python
 __pycache__/
@@ -22,6 +23,8 @@ ENV/
 .eggs/
 *.egg-info/
 *.egg
+.ipynb_checkpoints/
+*.ipynb_checkpoints
 
 # Environment files
 .env
@@ -54,8 +57,17 @@ coverage/
 htmlcov/
 .pytest_cache/
 .nyc_output/
+*.cover
+.hypothesis/
+.tox/
 
 # Misc
 *.bak
 *.tmp
 .cache/
+
+# Package manager locks (optional - uncomment if you don't want to track these)
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+# uv.lock
