@@ -89,8 +89,7 @@ The script will check and install dependencies automatically.
 pip install streamlit litellm
 
 # Install Hindsight packages
-pip install "hindsight-client @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-clients/python"
-pip install "hindsight-litellm @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-integrations/litellm"
+pip install hindsight-client hindsight-litellm
 
 # Run the app
 streamlit run app.py
@@ -176,7 +175,7 @@ docker run -d -p 8888:8888 -p 9999:9999 \
 ### hindsight-litellm not installed
 
 ```bash
-pip install "hindsight-litellm @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-integrations/litellm"
+pip install hindsight-litellm
 ```
 
 ### API key errors

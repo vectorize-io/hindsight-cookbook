@@ -1,0 +1,28 @@
+{
+  "runName": "learning_curve",
+  "generateCharts": true,
+  "saveDetailedLogs": true,
+  "num_deliveries": 30,
+  "model": "openai/gpt-4o",
+  "difficulty": "medium",
+  "paired_mode": true,
+  "repeat_ratio": 0.6,
+  "step_multiplier": 5.0,
+  "min_steps": 15,
+  "include_business": "random",
+  "refresh_interval": 5,
+  "configs": [
+    {
+      "name": "Filesystem Baseline",
+      "mode": "filesystem",
+      "memory_query_mode": "inject_once"
+    },
+    {
+      "name": "Hindsight MM (Best Config)",
+      "mode": "hindsight_mm",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "reflect",
+      "wait_for_consolidation": true
+    }
+  ]
+}

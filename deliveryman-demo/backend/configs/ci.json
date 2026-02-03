@@ -1,0 +1,32 @@
+{
+  "runName": "ci_quick_test",
+  "generateCharts": false,
+  "saveDetailedLogs": false,
+  "num_deliveries": 5,
+  "model": "openai/gpt-4o-mini",
+  "difficulty": "easy",
+  "paired_mode": true,
+  "repeat_ratio": 0.4,
+  "step_multiplier": 5.0,
+  "min_steps": 15,
+  "include_business": "random",
+  "configs": [
+    {
+      "name": "Filesystem",
+      "mode": "filesystem",
+      "memory_query_mode": "inject_once"
+    },
+    {
+      "name": "Recall",
+      "mode": "recall",
+      "memory_query_mode": "inject_once"
+    },
+    {
+      "name": "MM + Reflect",
+      "mode": "hindsight_mm",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "reflect",
+      "wait_for_consolidation": true
+    }
+  ]
+}

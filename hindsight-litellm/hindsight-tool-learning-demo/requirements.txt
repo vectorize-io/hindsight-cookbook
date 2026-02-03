@@ -7,6 +7,6 @@ streamlit>=1.28.0
 litellm>=1.40.0
 openai>=1.0.0
 
-# Hindsight packages - install from GitHub
-hindsight-client @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-clients/python
-hindsight-litellm @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-integrations/litellm
+# Hindsight packages
+hindsight-client
+hindsight-litellm

@@ -63,14 +63,14 @@ echo -e "${GREEN}✓ litellm installed${NC}"
 # Check hindsight_client
 if ! python3 -c "import hindsight_client" 2>/dev/null; then
     echo "Installing hindsight-client..."
-    pip install "hindsight-client @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-clients/python"
+    pip install hindsight-client
 fi
 echo -e "${GREEN}✓ hindsight-client installed${NC}"
 
 # Check hindsight_litellm
 if ! python3 -c "import hindsight_litellm" 2>/dev/null; then
     echo "Installing hindsight-litellm..."
-    pip install "hindsight-litellm @ git+https://github.com/vectorize-io/hindsight.git@main#subdirectory=hindsight-integrations/litellm"
+    pip install hindsight-litellm
 fi
 echo -e "${GREEN}✓ hindsight-litellm installed${NC}"
 

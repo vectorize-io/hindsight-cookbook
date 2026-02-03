@@ -1,0 +1,44 @@
+{
+  "runName": "mental_models_comparison",
+  "generateCharts": true,
+  "saveDetailedLogs": true,
+  "num_deliveries": 20,
+  "model": "openai/gpt-4o",
+  "difficulty": "easy",
+  "paired_mode": true,
+  "repeat_ratio": 0.5,
+  "step_multiplier": 5.0,
+  "min_steps": 15,
+  "include_business": "random",
+  "refresh_interval": 5,
+  "configs": [
+    {
+      "name": "MM + Recall Query (Wait)",
+      "mode": "hindsight_mm",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "recall",
+      "wait_for_consolidation": true
+    },
+    {
+      "name": "MM + Reflect Query (Wait)",
+      "mode": "hindsight_mm",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "reflect",
+      "wait_for_consolidation": true
+    },
+    {
+      "name": "MM + Recall Query (NoWait)",
+      "mode": "hindsight_mm_nowait",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "recall",
+      "wait_for_consolidation": false
+    },
+    {
+      "name": "MM + Reflect Query (NoWait)",
+      "mode": "hindsight_mm_nowait",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "reflect",
+      "wait_for_consolidation": false
+    }
+  ]
+}

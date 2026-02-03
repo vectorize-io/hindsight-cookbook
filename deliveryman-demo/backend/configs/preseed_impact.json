@@ -1,0 +1,47 @@
+{
+  "runName": "preseed_impact",
+  "generateCharts": true,
+  "saveDetailedLogs": true,
+  "num_deliveries": 15,
+  "model": "openai/gpt-4o",
+  "difficulty": "easy",
+  "paired_mode": false,
+  "repeat_ratio": 0.4,
+  "step_multiplier": 5.0,
+  "min_steps": 15,
+  "include_business": "random",
+  "configs": [
+    {
+      "name": "MM No Preseed",
+      "mode": "hindsight_mm",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "reflect",
+      "wait_for_consolidation": true,
+      "preseed_coverage": 0.0
+    },
+    {
+      "name": "MM 25% Preseed",
+      "mode": "hindsight_mm",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "reflect",
+      "wait_for_consolidation": true,
+      "preseed_coverage": 0.25
+    },
+    {
+      "name": "MM 50% Preseed",
+      "mode": "hindsight_mm",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "reflect",
+      "wait_for_consolidation": true,
+      "preseed_coverage": 0.5
+    },
+    {
+      "name": "MM Full Preseed",
+      "mode": "hindsight_mm",
+      "memory_query_mode": "inject_once",
+      "mm_query_type": "reflect",
+      "wait_for_consolidation": true,
+      "preseed_coverage": 1.0
+    }
+  ]
+}

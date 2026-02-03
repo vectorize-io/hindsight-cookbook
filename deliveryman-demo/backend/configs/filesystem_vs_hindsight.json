@@ -1,0 +1,30 @@
+{
+  "runName": "filesystem_vs_hindsight",
+  "generateCharts": true,
+  "saveDetailedLogs": true,
+  "num_deliveries": 20,
+  "model": "openai/gpt-4o",
+  "difficulty": "easy",
+  "paired_mode": true,
+  "repeat_ratio": 0.5,
+  "step_multiplier": 5.0,
+  "min_steps": 15,
+  "include_business": "random",
+  "configs": [
+    {
+      "name": "Filesystem (LLM Notes)",
+      "mode": "filesystem",
+      "memory_query_mode": "inject_once"
+    },
+    {
+      "name": "Hindsight Recall",
+      "mode": "recall",
+      "memory_query_mode": "inject_once"
+    },
+    {
+      "name": "Hindsight Reflect",
+      "mode": "reflect",
+      "memory_query_mode": "inject_once"
+    }
+  ]
+}
