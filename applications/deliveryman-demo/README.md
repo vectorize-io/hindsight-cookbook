@@ -1,6 +1,6 @@
 ---
 description: "Delivery agent simulation demonstrating learning through mental models"
-tags: { language: "Full-Stack", sdk: "Hindsight Client", topic: "Learning" }
+tags: { sdk: "hindsight-client", topic: "Learning" }
 ---
 
 # Deliveryman Demo

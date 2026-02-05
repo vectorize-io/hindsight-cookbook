@@ -1,6 +1,6 @@
 ---
 description: "Track political candidates' stances over time with automated web scraping"
-tags: { language: "Full-Stack", sdk: "Hindsight Client", topic: "Recommendation" }
+tags: { sdk: "hindsight-client", topic: "Recommendation" }
 ---
 
 # Stance Tracker

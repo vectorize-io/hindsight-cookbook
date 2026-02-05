@@ -1,6 +1,6 @@
 ---
 description: "Show how Hindsight helps LLMs learn which tool to use when names are ambiguous"
-tags: { language: "Python", sdk: "LiteLLM Integration", topic: "Learning" }
+tags: { sdk: "hindsight-litellm", topic: "Learning" }
 ---
 
 # Tool Learning Demo
