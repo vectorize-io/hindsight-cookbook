@@ -1,3 +1,8 @@
+---
+description: "Personal food assistant with AI SDK v6 showcasing recall, mental models, and directives"
+tags: ["Node.js", "Hindsight AI SDK", "Recommendation"]
+---
+
 # Hindsight AI SDK - Personal Chef
 
 A personal food assistant demonstrating three key Hindsight integrations using the [Vercel AI SDK v6](https://sdk.vercel.ai/docs).

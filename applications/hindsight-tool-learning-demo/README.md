@@ -1,3 +1,8 @@
+---
+description: "Show how Hindsight helps LLMs learn which tool to use when names are ambiguous"
+tags: ["Python", "LiteLLM Integration", "Learning"]
+---
+
 # Tool Learning Demo
 
 An interactive Streamlit demo showing how Hindsight helps LLMs learn which tool to use when tool names are ambiguous.

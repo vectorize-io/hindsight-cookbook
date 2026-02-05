@@ -1,3 +1,8 @@
+---
+description: "Track political candidates' stances over time with automated web scraping"
+tags: ["Full-Stack", "Hindsight Client", "Recommendation"]
+---
+
 # Stance Tracker
 
 An AI-powered application that tracks political candidates' stances on issues over time using Hindsight memory system and web scraping.

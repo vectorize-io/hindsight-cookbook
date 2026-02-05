@@ -1,3 +1,8 @@
+---
+description: "Sync Sanity CMS blog posts to Hindsight for semantic search and AI insights"
+tags: ["Node.js", "Hindsight Client", "Learning"]
+---
+
 # Sanity CMS Blog Memory
 
 A Hindsight cookbook recipe demonstrating how to sync blog posts from **Sanity CMS** to Hindsight agent memory, enabling semantic search, temporal queries, and AI-powered content insights.

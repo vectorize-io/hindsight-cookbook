@@ -1,3 +1,8 @@
+---
+description: "Interactive comparison of memory approaches: none, full history, and semantic retrieval"
+tags: ["Python", "LiteLLM Integration", "Quick Start"]
+---
+
 # Memory Approaches Comparison Demo
 
 Interactive Streamlit app comparing three memory approaches for LLM applications:

@@ -1,3 +1,8 @@
+---
+description: "Delivery agent simulation demonstrating learning through mental models"
+tags: ["Full-Stack", "Hindsight Client", "Learning"]
+---
+
 # Deliveryman Demo
 
 A delivery agent simulation that demonstrates Hindsight's long-term memory capabilities. An AI agent navigates a multi-building office complex to deliver packages, learning employee locations and optimal paths over time through mental models.

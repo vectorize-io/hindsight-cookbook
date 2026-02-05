@@ -1,3 +1,8 @@
+---
+description: "Real-time chat app with per-user memory using Groq and Hindsight"
+tags: ["Python", "Hindsight Client", "Chat"]
+---
+
 # Chat Memory App
 
 A demo chat application that uses Groq's `qwen/qwen3-32b` model with Hindsight for persistent per-user memory.

@@ -1,3 +1,8 @@
+---
+description: "Fitness coach using OpenAI Assistants with Hindsight as memory backend"
+tags: ["Python", "Hindsight Client", "Recommendation"]
+---
+
 # OpenAI Agent + Hindsight Memory Integration
 
 A fitness coach example demonstrating how to use **OpenAI Agents** with **Hindsight as a memory backend**.
