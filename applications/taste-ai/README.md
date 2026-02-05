@@ -1,55 +1,98 @@
 # Hindsight AI SDK - Personal Chef
 
-A personal food assistant that learns your tastes and dietary needs over time, built with the [Hindsight AI SDK](https://www.npmjs.com/package/@vectorize-io/hindsight-ai-sdk).
+A personal food assistant demonstrating three key Hindsight integrations using the [Vercel AI SDK v6](https://sdk.vercel.ai/docs).
 
-## What is Hindsight?
+## Architecture: Single Bank with User Tags
 
-**Hindsight** is an AI memory system that lets your applications remember user preferences, learn from interactions, and provide personalized experiences across conversations. Instead of starting fresh every time, the AI builds up a persistent understanding of each user.
-
-In this demo, Hindsight remembers:
-- Your food preferences and dietary restrictions
-- Meals you've eaten and enjoyed
-- Foods you dislike or want to avoid
-- Your health goals and eating patterns
-
-## How It Works
-
-1. **Set Your Preferences** - Tell the AI about your cuisine preferences, dietary restrictions, and health goals
-2. **Get Personalized Suggestions** - The AI generates recipes tailored to your tastes and needs
-3. **Log Your Meals** - Track what you ate, what you cooked, or what you'd never eat
-4. **Track Your Health** - The AI analyzes your eating patterns and provides a health score
-
-## Key Features
-
-This demo showcases three core Hindsight capabilities:
-
-- **`retain`** - Stores your preferences, meals, and dislikes in memory
-- **`recall`** - Searches your memory to personalize suggestions
-- **`reflect`** - Analyzes patterns in your eating habits to generate insights
-
-## Using Hindsight with AI SDK
-
-This demo uses the Hindsight AI SDK with [Vercel AI SDK v6](https://sdk.vercel.ai/docs):
+This demo uses a **single Hindsight bank** (`taste-ai`) for all users, with each user's data tagged using `user:${username}`.
 
 ```typescript
-import { createHindsightTools } from '@anthropic/hindsight-ai-sdk';
+// All users share the same bank
+const BANK_ID = 'taste-ai';
 
-// Create Hindsight tools
-const tools = createHindsightTools({ client: hindsightClient });
-
-// Use with AI SDK's generateText
-const result = await generateText({
-  model: llmModel,
-  tools: {
-    recall: tools.recall,
-    reflect: tools.reflect,
-  },
-  toolChoice: 'auto',
-  prompt: 'What recipes would you recommend based on my preferences?',
+// Each memory is tagged with the user
+await hindsightTools.retain.execute({
+  bankId: BANK_ID,
+  content: userData,
+  tags: [`user:${username}`],
 });
 ```
 
-The AI automatically uses Hindsight tools to remember your preferences and personalize responses.
+This architecture enables:
+- **Per-user queries**: Filter by `user:alice` to get personalized results
+- **Aggregated insights**: Query across all users to find popular recipes or common dietary patterns
+- **Simplified management**: One bank to maintain instead of per-user banks
+
+## Three Hindsight Integrations
+
+### 1. Meal Suggestions with Memory Recall & Reflection
+
+Uses `recall` and `reflect` tools with AI SDK's agent-based approach to gather personalized context.
+
+```typescript
+const contextResult = await generateText({
+  model: llmModel,
+  tools: {
+    recall: hindsightTools.recall,
+    reflect: hindsightTools.reflect,
+  },
+  toolChoice: 'auto',
+  prompt: `You are gathering context for personalized ${mealType} recipe suggestions.
+
+Use the recall tool to search for the user's food preferences, dislikes, and recent meals.
+Then use the reflect tool to analyze their dietary patterns and restrictions.
+
+After gathering context, summarize their preferences and recent eating patterns.`,
+});
+```
+
+The AI agent autonomously:
+- Searches memory for cuisine preferences and dietary restrictions
+- Analyzes recent protein consumption for variety
+- Identifies foods to avoid
+
+### 2. Goal Progress Tracking with Mental Models
+
+Uses mental models to automatically maintain updated insights about user progress.
+
+```typescript
+// Create a mental model that auto-refreshes after new meals
+await hindsightTools.createMentalModel.execute({
+  bankId: BANK_ID,
+  mentalModelId: getMentalModelId(username, 'goals'),
+  name: `${username}'s Goal Progress`,
+  sourceQuery: `Analyze ${username}'s dietary goals and eating patterns.
+    Describe their progress towards their stated goals (weight loss, muscle gain, etc.).`,
+  tags: [`user:${username}`],
+  autoRefresh: true, // Refreshes automatically after consolidation
+});
+
+// Query the mental model for current insights
+const result = await hindsightTools.queryMentalModel.execute({
+  bankId: BANK_ID,
+  mentalModelId: mentalModelId,
+});
+```
+
+Mental models automatically:
+- Track progress towards dietary goals
+- Update after each new meal is logged
+- Provide fresh insights without manual refresh
+
+### 3. Language Enforcement with Directives
+
+Uses directives to ensure all responses match user's language preference.
+
+```typescript
+await hindsightClient.createDirective(BANK_ID, {
+  name: `${username}'s Language Preference`,
+  content: `Always respond in ${language}. All suggestions must be in ${language}.`,
+  priority: 100,
+  tags: [`user:${username}`, 'directive:language'],
+});
+```
+
+Directives are automatically injected when mental models generate insights, ensuring consistent language across all interactions.
 
 ## Running the Demo
 
@@ -59,7 +102,7 @@ npm run dev
 ```
 
 **Requirements:**
-- A running Hindsight server at `http://localhost:8888` (or set `HINDSIGHT_URL` environment variable)
+- Hindsight server running at `http://localhost:8888` (or set `HINDSIGHT_URL`)
 - Node.js 18+
 
 ## Learn More
