@@ -1,6 +1,6 @@
 ---
 description: "Personal food assistant with AI SDK v6 showcasing recall, mental models, and directives"
-tags: ["Node.js", "Hindsight AI SDK", "Recommendation"]
+tags: { language: "Node.js", sdk: "Hindsight AI SDK", topic: "Recommendation" }
 ---
 
 # Hindsight AI SDK - Personal Chef

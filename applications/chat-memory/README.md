@@ -1,6 +1,6 @@
 ---
 description: "Real-time chat app with per-user memory using Groq and Hindsight"
-tags: ["Python", "Hindsight Client", "Chat"]
+tags: { language: "Python", sdk: "Hindsight Client", topic: "Chat" }
 ---
 
 # Chat Memory App

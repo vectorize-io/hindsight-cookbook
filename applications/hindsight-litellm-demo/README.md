@@ -1,6 +1,6 @@
 ---
 description: "Interactive comparison of memory approaches: none, full history, and semantic retrieval"
-tags: ["Python", "LiteLLM Integration", "Quick Start"]
+tags: { language: "Python", sdk: "LiteLLM Integration", topic: "Quick Start" }
 ---
 
 # Memory Approaches Comparison Demo

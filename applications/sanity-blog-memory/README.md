@@ -1,6 +1,6 @@
 ---
 description: "Sync Sanity CMS blog posts to Hindsight for semantic search and AI insights"
-tags: ["Node.js", "Hindsight Client", "Learning"]
+tags: { language: "Node.js", sdk: "Hindsight Client", topic: "Learning" }
 ---
 
 # Sanity CMS Blog Memory
