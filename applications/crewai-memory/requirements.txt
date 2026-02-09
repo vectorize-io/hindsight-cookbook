@@ -1,0 +1,2 @@
+crewai>=0.86.0
+hindsight-crewai @ git+https://github.com/vectorize-io/hindsight.git#subdirectory=hindsight-integrations/crewai

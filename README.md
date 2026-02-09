@@ -7,6 +7,7 @@ A collection of example applications and notebooks demonstrating how to integrat
 Full-featured example applications demonstrating Hindsight integration patterns:
 
 - **[chat-memory](./applications/chat-memory)** - Conversational AI with per-user memory
+- **[crewai-memory](./applications/crewai-memory)** - CrewAI agents with persistent long-term memory
 - **[deliveryman-demo](./applications/deliveryman-demo)** - Interactive delivery agent with memory-based navigation
 - **[hindsight-litellm-demo](./applications/hindsight-litellm-demo)** - Side-by-side comparison of memory approaches
 - **[hindsight-tool-learning-demo](./applications/hindsight-tool-learning-demo)** - Learning tool selection through memory
