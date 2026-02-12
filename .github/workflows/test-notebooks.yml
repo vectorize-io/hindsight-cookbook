@@ -29,13 +29,13 @@ jobs:
         working-directory: .
         run: |
           echo "Waiting for Hindsight API..."
-          for i in {1..30}; do
+          for i in {1..60}; do
             if curl -s http://localhost:8888/health > /dev/null 2>&1; then
               echo "Hindsight is ready!"
               exit 0
             fi
-            echo "Attempt $i/30 - waiting..."
-            sleep 2
+            echo "Attempt $i/60 - waiting..."
+            sleep 3
           done
           echo "Hindsight failed to start"
           docker logs hindsight

@@ -18,4 +18,4 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "--nbmake ../notebooks/ --ignore=../notebooks/colab -n auto"
+addopts = "--nbmake .. --ignore=../colab -n auto"
