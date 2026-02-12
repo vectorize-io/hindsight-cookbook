@@ -26,7 +26,7 @@ Interactive Jupyter notebooks demonstrating Hindsight features:
 - **[04-litellm-memory-demo.ipynb](./notebooks/04-litellm-memory-demo.ipynb)** - Automatic memory with LiteLLM callbacks
 - **[05-tool-learning-demo.ipynb](./notebooks/05-tool-learning-demo.ipynb)** - Learning tool selection through memory
 
-### Quick Demos
+### Quick Demos (Local)
 
 - **[fitness_tracker.ipynb](./notebooks/fitness_tracker.ipynb)** - Fitness coach with workout and diet memory
 - **[healthcare_assistant.ipynb](./notebooks/healthcare_assistant.ipynb)** - Health chatbot demo
@@ -34,6 +34,19 @@ Interactive Jupyter notebooks demonstrating Hindsight features:
 - **[personal_assistant.ipynb](./notebooks/personal_assistant.ipynb)** - General-purpose assistant with long-term memory
 - **[personalized_search.ipynb](./notebooks/personalized_search.ipynb)** - Context-aware search agent
 - **[study_buddy.ipynb](./notebooks/study_buddy.ipynb)** - Study assistant with spaced repetition
+
+### Quick Demos (Google Colab)
+
+Run in your browser with [Hindsight Cloud](https://ui.hindsight.vectorize.io) — no local setup required. Just an OpenAI key and a Hindsight API key.
+
+| Demo | Description | Open in Colab |
+|------|-------------|---------------|
+| Movie Recommendation | Personalized movie recommender | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vectorize-io/hindsight-cookbook/blob/main/notebooks/colab/movie_recommendation.ipynb) |
+| Fitness Tracker | Fitness coach with workout memory | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vectorize-io/hindsight-cookbook/blob/main/notebooks/colab/fitness_tracker.ipynb) |
+| Study Buddy | Study assistant with spaced repetition | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vectorize-io/hindsight-cookbook/blob/main/notebooks/colab/study_buddy.ipynb) |
+| Personal Assistant | General-purpose assistant | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vectorize-io/hindsight-cookbook/blob/main/notebooks/colab/personal_assistant.ipynb) |
+| Healthcare Assistant | Health chatbot (demo only) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vectorize-io/hindsight-cookbook/blob/main/notebooks/colab/healthcare_assistant.ipynb) |
+| Personalized Search | Context-aware search agent | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/vectorize-io/hindsight-cookbook/blob/main/notebooks/colab/personalized_search.ipynb) |
 
 ## Getting Started
 
