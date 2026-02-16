@@ -13,16 +13,17 @@ import (
 	hindsight "github.com/vectorize-io/hindsight-client-go"
 )
 
-var client *hindsight.Client
+var client *hindsight.APIClient
 
 func main() {
 	apiURL := envOr("HINDSIGHT_API_URL", "http://localhost:8888")
 
-	var err error
-	client, err = hindsight.New(apiURL)
-	if err != nil {
-		log.Fatal(err)
+	// Configure the client
+	cfg := hindsight.NewConfiguration()
+	cfg.Servers = hindsight.ServerConfigurations{
+		{URL: apiURL},
 	}
+	client = hindsight.NewAPIClient(cfg)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /ask", handleAsk)
@@ -79,19 +80,26 @@ func handleLearn(w http.ResponseWriter, r *http.Request) {
 	ensureBank(ctx, bankID, req.UserID)
 
 	// Store the memory
-	var opts []hindsight.RetainOption
+	item := hindsight.MemoryItem{
+		Content: req.Content,
+	}
 	if len(req.Tags) > 0 {
-		opts = append(opts, hindsight.WithTags(req.Tags))
+		item.Tags = req.Tags
 	}
 
-	resp, err := client.Retain(ctx, bankID, req.Content, opts...)
+	retainReq := hindsight.RetainRequest{
+		Items: []hindsight.MemoryItem{item},
+	}
+
+	resp, httpResp, err := client.MemoryAPI.RetainMemories(ctx, bankID).RetainRequest(retainReq).Execute()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer httpResp.Body.Close()
 
 	writeJSON(w, map[string]any{
-		"success": resp.Success,
+		"success": resp.GetSuccess(),
 		"bank_id": bankID,
 	})
 }
@@ -111,41 +119,54 @@ func handleAsk(w http.ResponseWriter, r *http.Request) {
 	ensureBank(ctx, bankID, req.UserID)
 
 	// Recall relevant facts
-	recallResp, err := client.Recall(ctx, bankID, req.Query,
-		hindsight.WithBudget(hindsight.BudgetMid),
-		hindsight.WithMaxTokens(2048),
-	)
+	recallReq := hindsight.RecallRequest{
+		Query:     req.Query,
+		Budget:    hindsight.MID.Ptr(),
+		MaxTokens: hindsight.PtrInt32(2048),
+	}
+
+	recallResp, httpResp, err := client.MemoryAPI.RecallMemories(ctx, bankID).RecallRequest(recallReq).Execute()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer httpResp.Body.Close()
 
 	var facts []string
 	for _, result := range recallResp.Results {
-		facts = append(facts, result.Text)
+		facts = append(facts, result.GetText())
 	}
 
 	// Reflect to generate an answer
-	reflectResp, err := client.Reflect(ctx, bankID, req.Query,
-		hindsight.WithReflectBudget(hindsight.BudgetMid),
-	)
+	reflectReq := hindsight.ReflectRequest{
+		Query:  req.Query,
+		Budget: hindsight.MID.Ptr(),
+	}
+
+	reflectResp, httpResp2, err := client.MemoryAPI.Reflect(ctx, bankID).ReflectRequest(reflectReq).Execute()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer httpResp2.Body.Close()
 
 	// Store this interaction as a new memory
-	interaction := fmt.Sprintf("User asked: %q\nAssistant answered: %s", req.Query, reflectResp.Text)
+	interaction := fmt.Sprintf("User asked: %q\nAssistant answered: %s", req.Query, reflectResp.GetText())
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		client.Retain(bgCtx, bankID, interaction,
-			hindsight.WithContext("Q&A interaction"),
-		)
+
+		retainReq := hindsight.RetainRequest{
+			Items: []hindsight.MemoryItem{{
+				Content: interaction,
+				Context: *hindsight.NewNullableString(hindsight.PtrString("Q&A interaction")),
+			}},
+		}
+		client.MemoryAPI.RetainMemories(bgCtx, bankID).RetainRequest(retainReq).Execute()
 	}()
 
 	writeJSON(w, AskResponse{
-		Answer: reflectResp.Text,
+		Answer: reflectResp.GetText(),
 		Facts:  facts,
 	})
 }
@@ -161,19 +182,27 @@ func handleRecall(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	bankID := bankFor(userID)
 
-	resp, err := client.Recall(ctx, bankID, query,
-		hindsight.WithBudget(hindsight.BudgetHigh),
-	)
+	recallReq := hindsight.RecallRequest{
+		Query:  query,
+		Budget: hindsight.HIGH.Ptr(),
+	}
+
+	resp, httpResp, err := client.MemoryAPI.RecallMemories(ctx, bankID).RecallRequest(recallReq).Execute()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer httpResp.Body.Close()
 
 	var results []RecallFact
 	for _, result := range resp.Results {
+		resultType := "unknown"
+		if t := result.GetType(); t != "" {
+			resultType = t
+		}
 		results = append(results, RecallFact{
-			Text: result.Text,
-			Type: result.Type.Or("unknown"),
+			Text: result.GetText(),
+			Type: resultType,
 		})
 	}
 
@@ -191,10 +220,19 @@ func bankFor(userID string) string {
 }
 
 func ensureBank(ctx context.Context, bankID, userID string) {
-	client.CreateBank(ctx, bankID,
-		hindsight.WithBankName(fmt.Sprintf("Memory for %s", userID)),
-		hindsight.WithMission("Developer knowledge assistant. Remember technologies, problems solved, and preferences."),
-	)
+	createReq := hindsight.CreateBankRequest{
+		Name:    *hindsight.NewNullableString(hindsight.PtrString(fmt.Sprintf("Memory for %s", userID))),
+		Mission: *hindsight.NewNullableString(hindsight.PtrString("Developer knowledge assistant. Remember technologies, problems solved, and preferences.")),
+	}
+
+	_, httpResp, err := client.BanksAPI.CreateOrUpdateBank(ctx, bankID).CreateBankRequest(createReq).Execute()
+	if err != nil {
+		// Bank might already exist, which is fine
+		return
+	}
+	if httpResp != nil {
+		defer httpResp.Body.Close()
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

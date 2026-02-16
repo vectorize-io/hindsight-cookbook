@@ -77,7 +77,14 @@ curl -s "localhost:8080/recall/alice?q=database" | jq .
 go func() {
     bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-    client.Retain(bgCtx, bankID, interaction)
+
+    retainReq := hindsight.RetainRequest{
+        Items: []hindsight.MemoryItem{{
+            Content: interaction,
+            Context: *hindsight.NewNullableString(hindsight.PtrString("Q&A interaction")),
+        }},
+    }
+    client.MemoryAPI.RetainMemories(bgCtx, bankID).RetainRequest(retainReq).Execute()
 }()
 ```
 
