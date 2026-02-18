@@ -1,6 +1,5 @@
-// @ts-nocheck - TypeScript has issues resolving tool types from local package
-import { generateText } from 'ai';
-import { hindsightTools, llmModel, getMealsDocument, BANK_ID } from '@/lib/hindsight';
+import { generateText, stepCountIs } from 'ai';
+import { hindsightTools, llmModel, getMealsDocument } from '@/lib/hindsight';
 
 interface Recipe {
   id: string;
@@ -100,21 +99,19 @@ export async function POST(req: Request) {
     const contextResult = await generateText({
       model: llmModel,
       tools: {
-        // Hindsight SDK tools for memory operations
         recall: hindsightTools.recall,
         reflect: hindsightTools.reflect,
       },
+      stopWhen: stepCountIs(5),
       toolChoice: 'auto',
       prompt: `You are gathering context for personalized ${mealType} recipe suggestions.
 
 Use the recall tool to search for the user's food preferences, dislikes, and recent protein consumption.
-Bank ID: "${BANK_ID}"
 
 Then use the reflect tool to analyze:
 1. What proteins has the user been eating recently? We need to rotate proteins for variety.
 2. What are their dietary preferences and restrictions?
 3. What foods do they dislike?
-Bank ID: "${BANK_ID}"
 
 After gathering context, summarize:
 - User preferences and dislikes

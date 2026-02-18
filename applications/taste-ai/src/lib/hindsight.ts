@@ -1,11 +1,13 @@
-// @ts-nocheck - TypeScript has issues resolving tool types from local package
-import { createHindsightTools, type HindsightClient } from '@vectorize-io/hindsight-ai-sdk';
+import { createHindsightTools, type HindsightClient, type Budget, type FactType } from '@vectorize-io/hindsight-ai-sdk';
 import { groq } from '@ai-sdk/groq';
 
 const HINDSIGHT_URL = process.env.HINDSIGHT_URL || 'http://localhost:8888';
 const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 
-// Simple HTTP client implementation
+export const BANK_ID = 'taste-ai'; // Shared bank for all taste-ai users
+
+// HTTP client that implements the HindsightClient interface for agent tools,
+// plus extra methods for direct API calls (createMentalModel, directives).
 class SimpleHindsightClient implements HindsightClient {
   constructor(private baseUrl: string) {}
 
@@ -33,8 +35,6 @@ class SimpleHindsightClient implements HindsightClient {
       async: options?.async,
     };
 
-    console.log('[Hindsight Client] Retain payload:', JSON.stringify(payload, null, 2));
-
     const response = await fetch(`${this.baseUrl}/v1/default/banks/${bankId}/memories`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -52,9 +52,9 @@ class SimpleHindsightClient implements HindsightClient {
     bankId: string,
     query: string,
     options?: {
-      types?: string[];
+      types?: FactType[];
       maxTokens?: number;
-      budget?: 'low' | 'mid' | 'high';
+      budget?: Budget;
       trace?: boolean;
       queryTimestamp?: string;
       includeEntities?: boolean;
@@ -92,7 +92,8 @@ class SimpleHindsightClient implements HindsightClient {
     query: string,
     options?: {
       context?: string;
-      budget?: 'low' | 'mid' | 'high';
+      budget?: Budget;
+      maxTokens?: number;
     }
   ) {
     const response = await fetch(`${this.baseUrl}/v1/default/banks/${bankId}/reflect`, {
@@ -102,6 +103,7 @@ class SimpleHindsightClient implements HindsightClient {
         query,
         context: options?.context,
         budget: options?.budget,
+        max_tokens: options?.maxTokens,
       }),
     });
 
@@ -111,6 +113,40 @@ class SimpleHindsightClient implements HindsightClient {
 
     return response.json();
   }
+
+  async getMentalModel(bankId: string, mentalModelId: string) {
+    const response = await fetch(`${this.baseUrl}/v1/default/banks/${bankId}/mental-models/${mentalModelId}`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return null;
+      }
+      throw new Error(`Get mental model failed: ${response.statusText}`);
+    }
+
+    return response.json();
+  }
+
+  async getDocument(bankId: string, documentId: string) {
+    const response = await fetch(`${this.baseUrl}/v1/default/banks/${bankId}/documents/${documentId}`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return null;
+      }
+      throw new Error(`Get document failed: ${response.statusText}`);
+    }
+
+    return response.json();
+  }
+
+  // Direct API calls — not exposed as agent tools
 
   async createMentalModel(
     bankId: string,
@@ -138,84 +174,6 @@ class SimpleHindsightClient implements HindsightClient {
 
     if (!response.ok) {
       throw new Error(`Create mental model failed: ${response.statusText}`);
-    }
-
-    return response.json();
-  }
-
-  async getMentalModel(bankId: string, mentalModelId: string) {
-    const response = await fetch(`${this.baseUrl}/v1/default/banks/${bankId}/mental-models/${mentalModelId}`, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        return null;
-      }
-      throw new Error(`Get mental model failed: ${response.statusText}`);
-    }
-
-    return response.json();
-  }
-
-  // Helper method for document operations
-  async getDocument(bankId: string, documentId: string) {
-    const response = await fetch(`${this.baseUrl}/v1/default/banks/${bankId}/documents/${documentId}`, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        return null;
-      }
-      throw new Error(`Get document failed: ${response.statusText}`);
-    }
-
-    return response.json();
-  }
-
-  async createDirective(
-    bankId: string,
-    options: {
-      name: string;
-      content: string;
-      priority?: number;
-      isActive?: boolean;
-      tags?: string[];
-    }
-  ) {
-    const response = await fetch(`${this.baseUrl}/v1/default/banks/${bankId}/directives`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: options.name,
-        content: options.content,
-        priority: options.priority ?? 0,
-        is_active: options.isActive ?? true,
-        tags: options.tags ?? [],
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Create directive failed: ${response.statusText}`);
-    }
-
-    return response.json();
-  }
-
-  async getDirective(bankId: string, directiveId: string) {
-    const response = await fetch(`${this.baseUrl}/v1/default/banks/${bankId}/directives/${directiveId}`, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        return null;
-      }
-      throw new Error(`Get directive failed: ${response.statusText}`);
     }
 
     return response.json();
@@ -262,22 +220,44 @@ class SimpleHindsightClient implements HindsightClient {
 
     return response.json();
   }
+
+  async createDirective(
+    bankId: string,
+    options: {
+      name: string;
+      content: string;
+      tags?: string[];
+    }
+  ) {
+    const response = await fetch(`${this.baseUrl}/v1/default/banks/${bankId}/directives`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: options.name,
+        content: options.content,
+        tags: options.tags ?? [],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Create directive failed: ${response.statusText}`);
+    }
+
+    return response.json();
+  }
 }
 
-const hindsightClient = new SimpleHindsightClient(HINDSIGHT_URL);
+export const hindsightClient = new SimpleHindsightClient(HINDSIGHT_URL);
 
 export const llmModel = groq(GROQ_MODEL);
 
-// AI SDK v6 tools for agent-based interactions
 export const hindsightTools = createHindsightTools({
   client: hindsightClient,
+  bankId: BANK_ID,
 });
 
 console.log(`[TasteAI] Connected to Hindsight at ${HINDSIGHT_URL}`);
 console.log(`[TasteAI] Using LLM model: ${GROQ_MODEL}`);
-
-// Document storage helpers
-export const BANK_ID = 'taste-ai'; // Shared bank for all taste-ai users
 
 // Helper to normalize username for document/tag IDs
 export function normalizeUsername(username?: string): string {
@@ -295,17 +275,13 @@ export function getMentalModelId(username: string, type: string = 'health'): str
   return `${normalizeUsername(username)}-${type}`;
 }
 
-// Ensure language directive exists for user
-// Directives with matching tags are automatically applied to mental models during refresh
-// Since mental models are tagged with user:${username}, this directive will be automatically
-// injected into the prompt when the mental model is refreshed
+// Ensure language directive exists for user.
+// Directives with matching tags are automatically applied to mental models during refresh.
 export async function ensureLanguageDirective(username: string, language: string): Promise<void> {
   const userTag = `user:${username}`;
   const directiveTag = 'directive:language';
 
   try {
-    // Check if language directive already exists for this user
-    const hindsightClient = new SimpleHindsightClient(HINDSIGHT_URL);
     const existing = await hindsightClient.listDirectives(BANK_ID, {
       tags: [userTag, directiveTag],
       tagsMatch: 'all',
@@ -321,15 +297,11 @@ export async function ensureLanguageDirective(username: string, language: string
     console.log('[TasteAI] No existing language directive found, creating one');
   }
 
-  // Create language directive - will be automatically used by mental models with matching tags
   try {
-    const hindsightClient = new SimpleHindsightClient(HINDSIGHT_URL);
     await hindsightClient.createDirective(BANK_ID, {
       name: `${username}'s Language Preference`,
       content: `Always respond in ${language}. All meal suggestions, recommendations, and responses must be in ${language}.`,
-      priority: 100, // High priority so it's injected first
-      isActive: true,
-      tags: [userTag, directiveTag], // Must include userTag to match mental model
+      tags: [userTag, directiveTag],
     });
 
     console.log(`[TasteAI] Created language directive for ${username}: ${language}`);
@@ -372,7 +344,7 @@ export interface UserPreferences {
 }
 
 export interface AppDocument {
-  username: string; // The user's nickname
+  username: string;
   meals: StoredMeal[];
   preferences: UserPreferences;
   updatedAt: string;
@@ -382,18 +354,14 @@ export async function getAppDocument(username: string): Promise<AppDocument> {
   const docId = getDocumentId(username);
 
   try {
-    // @ts-ignore - TS can't resolve tool types from local package
-    const response = await hindsightTools.getDocument.execute({
-      bankId: BANK_ID,
-      documentId: docId,
-    });
+    const response = await hindsightClient.getDocument(BANK_ID, docId);
 
-    if (response?.originalText) {
-      const doc = JSON.parse(response.originalText) as AppDocument;
+    if (response?.original_text) {
+      const doc = JSON.parse(response.original_text) as AppDocument;
 
       // Fix nested structure from old data (unwrap if needed)
-      if (doc.preferences?.preferences) {
-        doc.preferences = doc.preferences.preferences as UserPreferences;
+      if ((doc.preferences as any)?.preferences) {
+        doc.preferences = (doc.preferences as any).preferences as UserPreferences;
       }
 
       return doc;
@@ -417,10 +385,9 @@ export async function saveAppDocument(doc: AppDocument): Promise<void> {
 
   console.log(`[TasteAI] Saving app document for ${doc.username} with tag: ${userTag}`);
 
-  // Use AI SDK tools for all Hindsight operations
-  await hindsightTools.retain.execute({
-    bankId: BANK_ID,
-    content: jsonContent,
+  // Call the client directly so we can attach per-user tags.
+  // Tags are user-specific per call, so they can't be set at tool-creation time.
+  await hindsightClient.retain(BANK_ID, jsonContent, {
     documentId: docId,
     tags: [userTag],
   });
@@ -428,7 +395,7 @@ export async function saveAppDocument(doc: AppDocument): Promise<void> {
   console.log(`[TasteAI] Saved app document for ${doc.username} (${doc.meals.length} meals)`);
 }
 
-// Backwards compat alias
+// Backwards compat aliases
 export const getMealsDocument = getAppDocument;
 export const saveMealsDocument = saveAppDocument;
 
@@ -454,7 +421,7 @@ export async function updatePreferences(username: string, prefs: Partial<UserPre
   const doc = await getAppDocument(username);
 
   // Fix nested structure from old data (unwrap if needed)
-  const currentPrefs = doc.preferences?.preferences || doc.preferences || {};
+  const currentPrefs = (doc.preferences as any)?.preferences || doc.preferences || {};
   doc.preferences = { ...currentPrefs, ...prefs };
   doc.updatedAt = new Date().toISOString();
 

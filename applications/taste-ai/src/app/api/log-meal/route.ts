@@ -1,20 +1,11 @@
-// @ts-nocheck - TypeScript has issues resolving tool types from local package
-import { generateText } from 'ai';
-import { hindsightTools, llmModel, getAppDocument, saveAppDocument, addMealToDocument, BANK_ID, getMentalModelId } from '@/lib/hindsight';
+import { hindsightClient, getAppDocument, saveAppDocument, addMealToDocument, BANK_ID, getMentalModelId } from '@/lib/hindsight';
 
 // Ensure the goals mental model exists (one per user, tagged with user:username)
 async function ensureGoalsMentalModel(username: string): Promise<void> {
-  // Calculate deterministic mental model ID
   const mentalModelId = getMentalModelId(username, 'goals');
 
-  // Try to get the existing mental model
   try {
-    // @ts-ignore - TS can't resolve mental model tools from local package
-    const existing = await hindsightTools.queryMentalModel.execute({
-      bankId: BANK_ID,
-      mentalModelId: mentalModelId,
-    });
-
+    const existing = await hindsightClient.getMentalModel(BANK_ID, mentalModelId);
     if (existing) {
       console.log('[TasteAI] Using existing goals mental model:', mentalModelId);
       return;
@@ -23,20 +14,17 @@ async function ensureGoalsMentalModel(username: string): Promise<void> {
     // Mental model doesn't exist yet, create it below
   }
 
-  // Create a new mental model for this user with the calculated ID
   try {
-    // @ts-ignore - TS can't resolve mental model tools from local package
-    const result = (await hindsightTools.createMentalModel.execute({
-      bankId: BANK_ID,
-      mentalModelId: mentalModelId, // Pass the calculated ID
+    const result = await hindsightClient.createMentalModel(BANK_ID, {
+      id: mentalModelId,
       name: `${username}'s Goal Progress`,
       sourceQuery: `Analyze ${username}'s dietary goals and eating patterns. In exactly 2 sentences, describe their progress towards their stated goals (weight loss, muscle gain, healthy eating, etc.). Be specific, encouraging, and factual based on their recent meals.`,
       maxTokens: 512,
-      tags: [`user:${username}`], // Tag with user for filtering
-      autoRefresh: true, // Auto-refresh after new consolidations
-    })) as { mentalModelId: string; createdAt: string };
+      tags: [`user:${username}`],
+      trigger: { refresh_after_consolidation: true },
+    });
 
-    console.log('[TasteAI] Created goals mental model:', result.mentalModelId, 'for', username);
+    console.log('[TasteAI] Created goals mental model:', result.mental_model_id, 'for', username);
   } catch (e) {
     console.error('[TasteAI] Failed to create goals mental model:', e);
     throw e;
@@ -54,16 +42,13 @@ export async function POST(req: Request) {
     const today = new Date();
     const mealDate = today.toISOString().split('T')[0];
 
-    // Handle all actions - store meals in document only
     switch (action) {
       case 'ate_today':
       case 'ate_yesterday': {
-        // Just a note - we don't store "already ate" in document
         return Response.json({ success: true });
       }
 
       case 'never': {
-        // Store dislike in preferences
         const doc = await getAppDocument(username);
         const currentDislikes = doc.preferences.dislikes || [];
         if (!currentDislikes.includes(food.name)) {
@@ -74,7 +59,6 @@ export async function POST(req: Request) {
       }
 
       case 'cook': {
-        // Store meal in document
         const storedMeal = await addMealToDocument(username, {
           name: food.name,
           emoji: food.emoji || '🍽️',
