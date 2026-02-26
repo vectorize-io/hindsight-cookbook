@@ -1,6 +1,6 @@
 ---
 description: "Multi-platform chat bot with cross-platform memory using Vercel Chat SDK and Hindsight"
-tags: { sdk: "hindsight-client", topic: "Chat, Slack, Discord" }
+tags: { sdk: "@vectorize-io/hindsight-chat", topic: "Recommendation" }
 ---
 
 # Chat SDK Multi-Platform Bot
