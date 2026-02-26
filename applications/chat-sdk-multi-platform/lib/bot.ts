@@ -3,6 +3,7 @@ import { createSlackAdapter } from '@chat-adapter/slack';
 import { createDiscordAdapter } from '@chat-adapter/discord';
 import { createMemoryState } from '@chat-adapter/state-memory';
 import { withHindsightChat } from '@vectorize-io/hindsight-chat';
+import type { HindsightClient } from '@vectorize-io/hindsight-chat';
 import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { hindsight } from './hindsight';
@@ -12,9 +13,8 @@ const BANK_ID = process.env.HINDSIGHT_BANK_ID ?? 'hindsight-demo';
 const slack = createSlackAdapter();
 const discord = process.env.DISCORD_BOT_TOKEN ? createDiscordAdapter() : null;
 
-const adapters = discord
-  ? { slack, discord }
-  : { slack };
+const adapters: Record<string, any> = { slack };
+if (discord) adapters.discord = discord;
 
 export const bot = new Chat({
   userName: 'memory-bot',
@@ -22,16 +22,22 @@ export const bot = new Chat({
   state: createMemoryState(),
 });
 
+// Cast to the HindsightClient interface expected by hindsight-chat
+const client = hindsight as unknown as HindsightClient;
+
 // Ensure the memory bank exists on startup
 hindsight.createBank(BANK_ID, {}).catch(() => {
   // Bank may already exist, that's fine
 });
 
 // --- @mention handler: recall memories, respond with LLM ---
+// Note: withHindsightChat uses its own ChatMessage type which is structurally
+// compatible with Chat SDK's Message at runtime. The `as any` cast bridges
+// the minor type differences between the two packages.
 bot.onNewMention(
   withHindsightChat(
     {
-      client: hindsight,
+      client,
       bankId: () => BANK_ID,
       retain: { enabled: true, tags: ['chat'] },
     },
@@ -60,14 +66,14 @@ bot.onNewMention(
         `User: ${message.text}\nAssistant: ${text}`
       );
     }
-  )
+  ) as any
 );
 
 // --- Subscribed thread handler: retain follow-ups, respond with LLM ---
 bot.onSubscribedMessage(
   withHindsightChat(
     {
-      client: hindsight,
+      client,
       bankId: () => BANK_ID,
     },
     async (thread, message, ctx) => {
@@ -94,5 +100,5 @@ bot.onSubscribedMessage(
         `User (follow-up): ${message.text}\nAssistant: ${text}`
       );
     }
-  )
+  ) as any
 );
