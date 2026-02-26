@@ -12,7 +12,7 @@
     "@chat-adapter/discord": "^4.0.0",
     "@chat-adapter/slack": "^4.0.0",
     "@chat-adapter/state-memory": "^4.14.0",
-    "@vectorize-io/hindsight-chat": "^0.1.0",
+    "@vectorize-io/hindsight-chat": "^0.4.14",
     "@vectorize-io/hindsight-client": "^0.4.13",
     "ai": "^4.0.0",
     "chat": "^4.0.0",
