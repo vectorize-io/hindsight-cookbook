@@ -12,6 +12,7 @@ Full-featured example applications demonstrating Hindsight integration patterns:
 - **[hindsight-tool-learning-demo](./applications/hindsight-tool-learning-demo)** - Learning tool selection through memory
 - **[openai-fitness-coach](./applications/openai-fitness-coach)** - Fitness coach with OpenAI Agents and Hindsight memory
 - **[sanity-blog-memory](./applications/sanity-blog-memory)** - Syncing Sanity CMS content to Hindsight
+- **[chat-sdk-multi-platform](./applications/chat-sdk-multi-platform)** - Cross-platform Slack + Discord bot with shared memory (Vercel Chat SDK)
 - **[stancetracker](./applications/stancetracker)** - Track political stances using AI-powered memory
 
 ## Notebooks
