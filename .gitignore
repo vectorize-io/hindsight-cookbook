@@ -71,3 +71,5 @@ htmlcov/
 # yarn.lock
 # pnpm-lock.yaml
 # uv.lock
+
+myenv
