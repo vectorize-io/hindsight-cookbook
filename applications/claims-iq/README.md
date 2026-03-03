@@ -1,6 +1,6 @@
 ---
 description: "Insurance claims triage agent that learns adjudication rules via Hindsight"
-tags: { sdk: "hindsight-litellm", topic: "Agent" }
+tags: { sdk: "hindsight-litellm", topic: "Agents" }
 ---
 
 # ClaimsIQ — Insurance Claims Triage Agent Demo
