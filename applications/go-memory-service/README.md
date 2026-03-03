@@ -1,6 +1,6 @@
 ---
 description: "Go HTTP microservice with per-user memory banks for a developer knowledge assistant"
-tags: { sdk: "hindsight-go", topic: "Learning" }
+tags: { sdk: "hindsight-client-go", topic: "Learning" }
 ---
 
 # Go Memory-Augmented API

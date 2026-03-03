@@ -1,6 +1,6 @@
 ---
 description: "Fitness coach using OpenAI Assistants with Hindsight as memory backend"
-tags: { sdk: "hindsight-client", topic: "Recommendation" }
+tags: { sdk: "hindsight-api", topic: "Recommendation" }
 ---
 
 # OpenAI Agent + Hindsight Memory Integration

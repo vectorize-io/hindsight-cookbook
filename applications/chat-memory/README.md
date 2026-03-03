@@ -1,6 +1,6 @@
 ---
 description: "Real-time chat app with per-user memory using Groq and Hindsight"
-tags: { sdk: "hindsight-client", topic: "Chat" }
+tags: { sdk: "@vectorize-io/hindsight-client", topic: "Chat" }
 ---
 
 # Chat Memory App

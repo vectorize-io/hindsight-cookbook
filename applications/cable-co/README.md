@@ -1,3 +1,8 @@
+---
+description: "AI customer service copilot that learns from CSR feedback via Hindsight"
+tags: { sdk: "hindsight-client", topic: "Customer Service" }
+---
+
 # CableConnect — AI Customer Service Copilot Demo
 
 An AI copilot that assists a customer service representative (CSR) by suggesting responses and actions for simulated customer scenarios. The CSR approves or rejects each suggestion with feedback. The copilot learns from corrections via [Hindsight](https://hindsight.vectorize.io) and stops repeating mistakes.

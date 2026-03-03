@@ -1,6 +1,6 @@
 ---
 description: "Delivery agent simulation demonstrating learning through mental models"
-tags: { sdk: "hindsight-client", topic: "Learning" }
+tags: { sdk: "hindsight-litellm", topic: "Learning" }
 ---
 
 # Deliveryman Demo

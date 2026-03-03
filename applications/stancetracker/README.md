@@ -1,6 +1,6 @@
 ---
 description: "Track political candidates' stances over time with automated web scraping"
-tags: { sdk: "hindsight-client", topic: "Recommendation" }
+tags: { sdk: "@vectorize-io/hindsight-client", topic: "Recommendation" }
 ---
 
 # Stance Tracker

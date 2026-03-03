@@ -1,6 +1,6 @@
 ---
 description: "Sync Sanity CMS blog posts to Hindsight for semantic search and AI insights"
-tags: { sdk: "hindsight-client", topic: "Learning" }
+tags: { sdk: "@vectorize-io/hindsight-client", topic: "Learning" }
 ---
 
 # Sanity CMS Blog Memory

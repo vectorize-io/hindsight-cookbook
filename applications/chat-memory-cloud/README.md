@@ -1,3 +1,8 @@
+---
+description: "Real-time chat app with per-user memory powered by Hindsight Cloud"
+tags: { sdk: "@vectorize-io/hindsight-client", topic: "Chat" }
+---
+
 # Chat Memory App (Hindsight Cloud)
 
 A demo chat application with persistent per-user memory powered by [Hindsight Cloud](https://hindsight.vectorize.io). Supports OpenAI or Groq as the LLM provider. No local Hindsight server required.

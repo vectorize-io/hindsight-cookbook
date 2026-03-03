@@ -1,3 +1,8 @@
+---
+description: "Insurance claims triage agent that learns adjudication rules via Hindsight"
+tags: { sdk: "hindsight-litellm", topic: "Agent" }
+---
+
 # ClaimsIQ — Insurance Claims Triage Agent Demo
 
 An AI agent that processes insurance claims through a multi-step workflow. The agent starts as a "confused rookie" and becomes a "seasoned expert" as [Hindsight](https://github.com/anthropics/hindsight) memories accumulate.
