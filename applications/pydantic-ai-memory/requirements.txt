@@ -1,0 +1,2 @@
+pydantic-ai>=1.0.0
+hindsight-pydantic-ai>=0.4.15
