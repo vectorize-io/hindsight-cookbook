@@ -1,2 +1,2 @@
 pydantic-ai>=1.0.0
-hindsight-pydantic-ai @ git+https://github.com/vectorize-io/hindsight.git#subdirectory=hindsight-integrations/pydantic-ai
+hindsight-pydantic-ai>=0.4.15

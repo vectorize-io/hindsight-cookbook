@@ -21,15 +21,16 @@ Prerequisites:
 """
 
 import asyncio
+import os
 import sys
 
 from hindsight_client import Hindsight
 from hindsight_pydantic_ai import create_hindsight_tools, memory_instructions
 from pydantic_ai import Agent
 
-BANK_ID = "personal-assistant"
-HINDSIGHT_URL = "http://localhost:8888"
-MODEL = "openai:gpt-4o-mini"
+BANK_ID = os.environ.get("BANK_ID", "personal-assistant")
+HINDSIGHT_URL = os.environ.get("HINDSIGHT_URL", "http://localhost:8888")
+MODEL = os.environ.get("MODEL", "openai:gpt-4o-mini")
 
 
 def build_agent() -> tuple[Agent, Hindsight]:

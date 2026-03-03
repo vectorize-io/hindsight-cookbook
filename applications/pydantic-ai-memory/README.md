@@ -59,9 +59,6 @@ Session 2:
    pip install -r requirements.txt
    ```
 
-   > **Note:** `hindsight-pydantic-ai` is not yet on PyPI — it is installed directly from the
-   > [Hindsight repo](https://github.com/vectorize-io/hindsight/tree/main/hindsight-integrations/pydantic-ai) via git.
-
 ## Quick Start
 
 ### Interactive Chat
