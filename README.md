@@ -8,6 +8,7 @@ Full-featured example applications demonstrating Hindsight integration patterns:
 
 - **[chat-memory](./applications/chat-memory)** - Conversational AI with per-user memory
 - **[crewai-memory](./applications/crewai-memory)** - CrewAI agents with persistent long-term memory
+- **[hermes-memory](./applications/hermes-memory)** - Hermes Agent with persistent long-term memory via plugin
 - **[pydantic-ai-memory](./applications/pydantic-ai-memory)** - Pydantic AI agent with persistent long-term memory
 - **[deliveryman-demo](./applications/deliveryman-demo)** - Interactive delivery agent with memory-based navigation
 - **[hindsight-litellm-demo](./applications/hindsight-litellm-demo)** - Side-by-side comparison of memory approaches

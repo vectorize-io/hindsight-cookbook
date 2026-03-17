@@ -1,0 +1,2 @@
+hindsight-hermes @ git+https://github.com/vectorize-io/hindsight.git#subdirectory=hindsight-integrations/hermes
+hermes-agent>=0.3.0
