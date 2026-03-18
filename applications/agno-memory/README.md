@@ -1,3 +1,8 @@
+---
+description: "Personal assistant built with Agno that remembers across sessions using Hindsight for persistent long-term memory"
+tags: { sdk: "hindsight-agno", topic: "Agents" }
+---
+
 # Agno + Hindsight Memory
 
 A personal assistant built with [Agno](https://github.com/agno-agi/agno) that remembers what you tell it across sessions using [Hindsight](https://github.com/vectorize-io/hindsight) for persistent long-term memory.
