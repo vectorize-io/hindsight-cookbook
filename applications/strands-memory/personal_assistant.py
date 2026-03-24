@@ -30,12 +30,16 @@ from strands.models.openai import OpenAIModel
 
 BANK_ID = os.environ.get("BANK_ID", "personal-assistant")
 HINDSIGHT_URL = os.environ.get("HINDSIGHT_URL", "http://localhost:8888")
+HINDSIGHT_API_KEY = os.environ.get("HINDSIGHT_API_KEY")
 MODEL = os.environ.get("MODEL", "gpt-4o-mini")
 
 
 def build_agent() -> Agent:
     """Build a Strands agent with Hindsight memory tools."""
-    client = Hindsight(base_url=HINDSIGHT_URL, timeout=30.0)
+    client_kwargs: dict = {"base_url": HINDSIGHT_URL, "timeout": 30.0}
+    if HINDSIGHT_API_KEY:
+        client_kwargs["api_key"] = HINDSIGHT_API_KEY
+    client = Hindsight(**client_kwargs)
 
     prior_memories = memory_instructions(
         client=client,
@@ -66,7 +70,10 @@ def build_agent() -> Agent:
 
 def reset_memory() -> None:
     """Delete the memory bank."""
-    client = Hindsight(base_url=HINDSIGHT_URL, timeout=30.0)
+    client_kwargs: dict = {"base_url": HINDSIGHT_URL, "timeout": 30.0}
+    if HINDSIGHT_API_KEY:
+        client_kwargs["api_key"] = HINDSIGHT_API_KEY
+    client = Hindsight(**client_kwargs)
     client.delete_bank(bank_id=BANK_ID)
     print(f"Memory bank '{BANK_ID}' has been reset.")
 
