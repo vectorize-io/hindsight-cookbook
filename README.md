@@ -28,6 +28,7 @@ Interactive Jupyter notebooks demonstrating Hindsight features:
 - **[03-support-agent-shared-knowledge.ipynb](./notebooks/03-support-agent-shared-knowledge.ipynb)** - Multi-bank architecture for support agents
 - **[04-litellm-memory-demo.ipynb](./notebooks/04-litellm-memory-demo.ipynb)** - Automatic memory with LiteLLM callbacks
 - **[05-tool-learning-demo.ipynb](./notebooks/05-tool-learning-demo.ipynb)** - Learning tool selection through memory
+- **[08-llamaindex-react-agent.ipynb](./notebooks/08-llamaindex-react-agent.ipynb)** - LlamaIndex ReAct agent with long-term memory
 
 ### Quick Demos
 
