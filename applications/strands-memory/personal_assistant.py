@@ -34,15 +34,20 @@ HINDSIGHT_API_KEY = os.environ.get("HINDSIGHT_API_KEY")
 MODEL = os.environ.get("MODEL", "gpt-4o-mini")
 
 
+def _make_client() -> Hindsight:
+    """Create a fresh Hindsight client."""
+    kwargs: dict = {"base_url": HINDSIGHT_URL, "timeout": 30.0}
+    if HINDSIGHT_API_KEY:
+        kwargs["api_key"] = HINDSIGHT_API_KEY
+    return Hindsight(**kwargs)
+
+
 def build_agent() -> Agent:
     """Build a Strands agent with Hindsight memory tools."""
-    client_kwargs: dict = {"base_url": HINDSIGHT_URL, "timeout": 30.0}
-    if HINDSIGHT_API_KEY:
-        client_kwargs["api_key"] = HINDSIGHT_API_KEY
-    client = Hindsight(**client_kwargs)
-
+    # Use separate clients for memory_instructions and the tools to avoid
+    # sharing an aiohttp session across different asyncio event loops.
     prior_memories = memory_instructions(
-        client=client,
+        client=_make_client(),
         bank_id=BANK_ID,
         query="important context about the user",
         max_results=5,
@@ -63,8 +68,9 @@ def build_agent() -> Agent:
 
     return Agent(
         model=model,
-        tools=create_hindsight_tools(client=client, bank_id=BANK_ID),
+        tools=create_hindsight_tools(client=_make_client(), bank_id=BANK_ID),
         system_prompt=system_prompt,
+        callback_handler=None,
     )
 
 
