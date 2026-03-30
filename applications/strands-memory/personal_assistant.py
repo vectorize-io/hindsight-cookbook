@@ -1,0 +1,131 @@
+"""
+Personal assistant with persistent memory via Hindsight + Strands Agents.
+
+A conversational agent that remembers what you tell it across sessions.
+Run it multiple times — the agent builds on what it learned before.
+
+Usage:
+    # Chat with the assistant (interactive mode)
+    python personal_assistant.py
+
+    # Single query
+    python personal_assistant.py "What do you know about me?"
+
+    # Reset memory and start fresh
+    python personal_assistant.py --reset
+
+Prerequisites:
+    - Hindsight running on localhost:8888 (see README)
+    - OpenAI key: export OPENAI_API_KEY=sk-...
+    - pip install -r requirements.txt
+"""
+
+import os
+import sys
+
+from hindsight_client import Hindsight
+from hindsight_strands import create_hindsight_tools, memory_instructions
+from strands import Agent
+from strands.models.openai import OpenAIModel
+
+BANK_ID = os.environ.get("BANK_ID", "personal-assistant")
+HINDSIGHT_URL = os.environ.get("HINDSIGHT_URL", "http://localhost:8888")
+HINDSIGHT_API_KEY = os.environ.get("HINDSIGHT_API_KEY")
+MODEL = os.environ.get("MODEL", "gpt-4o-mini")
+
+
+def _make_client() -> Hindsight:
+    """Create a fresh Hindsight client."""
+    kwargs: dict = {"base_url": HINDSIGHT_URL, "timeout": 30.0}
+    if HINDSIGHT_API_KEY:
+        kwargs["api_key"] = HINDSIGHT_API_KEY
+    return Hindsight(**kwargs)
+
+
+def build_agent() -> Agent:
+    """Build a Strands agent with Hindsight memory tools."""
+    # Use separate clients for memory_instructions and the tools to avoid
+    # sharing an aiohttp session across different asyncio event loops.
+    prior_memories = memory_instructions(
+        client=_make_client(),
+        bank_id=BANK_ID,
+        query="important context about the user",
+        max_results=5,
+    )
+
+    system_prompt = (
+        "You are a helpful personal assistant with long-term memory. "
+        "When the user tells you something about themselves, store it "
+        "using hindsight_retain. When they ask you a question, first "
+        "check your memory with hindsight_recall or hindsight_reflect. "
+        "Always be upfront about what you remember vs what you don't."
+    )
+
+    if prior_memories:
+        system_prompt += f"\n\n{prior_memories}"
+
+    model = OpenAIModel(model_id=MODEL)
+
+    return Agent(
+        model=model,
+        tools=create_hindsight_tools(client=_make_client(), bank_id=BANK_ID),
+        system_prompt=system_prompt,
+        callback_handler=None,
+    )
+
+
+def reset_memory() -> None:
+    """Delete the memory bank."""
+    client_kwargs: dict = {"base_url": HINDSIGHT_URL, "timeout": 30.0}
+    if HINDSIGHT_API_KEY:
+        client_kwargs["api_key"] = HINDSIGHT_API_KEY
+    client = Hindsight(**client_kwargs)
+    client.delete_bank(bank_id=BANK_ID)
+    print(f"Memory bank '{BANK_ID}' has been reset.")
+
+
+def single_query(query: str) -> None:
+    """Run a single query and print the result."""
+    agent = build_agent()
+    print(str(agent(query)))
+
+
+def interactive() -> None:
+    """Run an interactive chat loop."""
+    agent = build_agent()
+
+    print(f"Personal assistant ready (bank: {BANK_ID})")
+    print("Type 'quit' or 'exit' to stop.\n")
+
+    while True:
+        try:
+            user_input = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye!")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("quit", "exit"):
+            print("Goodbye!")
+            break
+
+        response = agent(user_input)
+        print(f"Assistant: {response}\n")
+
+
+def main() -> None:
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+
+    if "--reset" in sys.argv:
+        reset_memory()
+        return
+
+    if args:
+        single_query(" ".join(args))
+    else:
+        interactive()
+
+
+if __name__ == "__main__":
+    main()
