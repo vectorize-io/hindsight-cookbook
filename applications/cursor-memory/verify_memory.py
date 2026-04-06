@@ -1,4 +1,8 @@
-"""Verify the Cursor memory demo by recalling a known preference from Hindsight."""
+"""Verify the Cursor memory demo by recalling a known preference from Hindsight.
+
+Retries automatically if memories are not yet available (retain may still be
+processing after seeding).
+"""
 
 import asyncio
 import os
@@ -9,6 +13,9 @@ BANK_ID = os.environ.get("BANK_ID", "cursor")
 HINDSIGHT_URL = os.environ.get("HINDSIGHT_URL", "http://localhost:8888")
 HINDSIGHT_API_KEY = os.environ.get("HINDSIGHT_API_KEY")
 
+MAX_RETRIES = 5
+RETRY_DELAY_SECS = 3
+
 
 async def main() -> None:
     client_kwargs = {"base_url": HINDSIGHT_URL, "timeout": 30.0}
@@ -17,14 +24,21 @@ async def main() -> None:
 
     client = Hindsight(**client_kwargs)
     try:
-        result = await client.arecall(
-            bank_id=BANK_ID,
-            query="What testing frameworks and coding preferences does the user have?",
-            max_tokens=512,
-            budget="mid",
-        )
+        items = []
+        for attempt in range(1, MAX_RETRIES + 1):
+            result = await client.arecall(
+                bank_id=BANK_ID,
+                query="What testing frameworks and coding preferences does the user have?",
+                max_tokens=512,
+                budget="mid",
+            )
+            items = result.results
+            if items:
+                break
+            if attempt < MAX_RETRIES:
+                print(f"No memories yet (attempt {attempt}/{MAX_RETRIES}), retrying in {RETRY_DELAY_SECS}s...")
+                await asyncio.sleep(RETRY_DELAY_SECS)
 
-        items = result.results
         print(f"Recalled {len(items)} memories from '{BANK_ID}'")
         for item in items[:5]:
             text = item.text.strip()
