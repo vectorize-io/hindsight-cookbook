@@ -18,7 +18,7 @@ Give [Cursor](https://cursor.com) persistent memory across sessions using the Hi
 ## Prerequisites
 
 1. **Cursor 3** with plugin support enabled
-2. **Python 3.9+**
+2. **Python 3.9+** with `uv` or `pip` to run the demo scripts
    ```bash
    python3 --version
    ```
@@ -31,8 +31,16 @@ Give [Cursor](https://cursor.com) persistent memory across sessions using the Hi
 ### 1. Install the Cursor plugin into a test project
 
 ```bash
-mkdir -p /path/to/your-project/.cursor-plugin
-cp -r /path/to/hindsight/hindsight-integrations/cursor /path/to/your-project/.cursor-plugin/hindsight-memory
+pip install hindsight-cursor
+cd /path/to/your-project
+hindsight-cursor init
+```
+
+Or with uvx (no install needed):
+
+```bash
+cd /path/to/your-project
+uvx hindsight-cursor init
 ```
 
 > If Cursor is already open, **fully quit and reopen it** after adding the plugin. Plugins load at startup.
@@ -69,6 +77,12 @@ While testing, it helps to retain every task:
   "retainEveryNTurns": 1
 }
 ```
+
+> **If using Hindsight Cloud**, export your connection details before running the seed/verify scripts:
+> ```bash
+> export HINDSIGHT_URL=https://api.hindsight.vectorize.io
+> export HINDSIGHT_API_KEY=YOUR_HINDSIGHT_API_TOKEN
+> ```
 
 ### 3. Seed the demo bank
 

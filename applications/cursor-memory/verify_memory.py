@@ -39,6 +39,10 @@ async def main() -> None:
                 print(f"No memories yet (attempt {attempt}/{MAX_RETRIES}), retrying in {RETRY_DELAY_SECS}s...")
                 await asyncio.sleep(RETRY_DELAY_SECS)
 
+        if not items:
+            print(f"Warning: No memories found after {MAX_RETRIES} attempts. The seed data may still be processing.")
+            print("  Try running again in a few seconds, or check that the Hindsight server is running.")
+
         print(f"Recalled {len(items)} memories from '{BANK_ID}'")
         for item in items[:5]:
             text = item.text.strip()
