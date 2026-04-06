@@ -28,83 +28,47 @@ Give [Cursor](https://cursor.com) persistent memory across sessions using the Hi
 
 ## Quick Start
 
-### 1. Install the Cursor plugin into a test project
+### 1. Install the Cursor plugin
 
 ```bash
 pip install hindsight-cursor
 cd /path/to/your-project
-hindsight-cursor init
+hindsight-cursor init --api-url http://localhost:8888
 ```
 
-Or with uvx (no install needed):
+**Using Hindsight Cloud instead?** [Sign up](https://ui.hindsight.vectorize.io/signup) and create an API key under **Settings > API Keys**, then:
 
 ```bash
-cd /path/to/your-project
-uvx hindsight-cursor init
+hindsight-cursor init --api-url https://api.hindsight.vectorize.io --api-token YOUR_HINDSIGHT_API_TOKEN
 ```
 
 > If Cursor is already open, **fully quit and reopen it** after adding the plugin. Plugins load at startup.
 
-### 2. Configure Hindsight
+### 2. Seed the demo bank
 
-Create `~/.hindsight/cursor.json`:
-
-**Option A — Hindsight Cloud** (no local server needed):
-```json
-{
-  "hindsightApiUrl": "https://api.hindsight.vectorize.io",
-  "hindsightApiToken": "YOUR_HINDSIGHT_API_TOKEN",
-  "bankId": "cursor"
-}
-```
-
-Sign up at [Hindsight Cloud](https://ui.hindsight.vectorize.io/signup) to get a token.
-
-**Option B — Local server:**
-```json
-{
-  "hindsightApiUrl": "http://localhost:8888",
-  "bankId": "cursor"
-}
-```
-
-While testing, it helps to retain every task:
-
-```json
-{
-  "hindsightApiUrl": "http://localhost:8888",
-  "bankId": "cursor",
-  "retainEveryNTurns": 1
-}
-```
-
-> **If using Hindsight Cloud**, export your connection details before running the seed/verify scripts:
-> ```bash
-> export HINDSIGHT_URL=https://api.hindsight.vectorize.io
-> export HINDSIGHT_API_KEY=YOUR_HINDSIGHT_API_TOKEN
-> ```
-
-### 3. Seed the demo bank
+For local Hindsight:
 
 ```bash
 uv run --with hindsight-client python seed_memory.py --reset
 ```
 
-### 4. Verify the seed data
+For Hindsight Cloud, export your connection details first:
+
+```bash
+export HINDSIGHT_URL=https://api.hindsight.vectorize.io
+export HINDSIGHT_API_KEY=YOUR_HINDSIGHT_API_TOKEN
+uv run --with hindsight-client python seed_memory.py --reset
+```
+
+### 3. Verify the seed data
 
 ```bash
 uv run --with hindsight-client python verify_memory.py
 ```
 
-### 5. Open Cursor 3
+### 4. Open Cursor 3
 
-Open the target project in Cursor, then run:
-
-```text
-Cmd+Shift+P -> Agents Window
-```
-
-Ask Cursor questions like:
+Open the target project in Cursor and start a conversation. Ask questions like:
 
 - `What testing framework do I prefer for Python work?`
 - `What stack is this project using?`
