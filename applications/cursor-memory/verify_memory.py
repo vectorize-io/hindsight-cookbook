@@ -1,0 +1,38 @@
+"""Verify the Cursor memory demo by recalling a known preference from Hindsight."""
+
+import asyncio
+import os
+
+from hindsight_client import Hindsight
+
+BANK_ID = os.environ.get("BANK_ID", "cursor")
+HINDSIGHT_URL = os.environ.get("HINDSIGHT_URL", "http://localhost:8888")
+HINDSIGHT_API_KEY = os.environ.get("HINDSIGHT_API_KEY")
+
+
+async def main() -> None:
+    client_kwargs = {"base_url": HINDSIGHT_URL, "timeout": 30.0}
+    if HINDSIGHT_API_KEY:
+        client_kwargs["api_key"] = HINDSIGHT_API_KEY
+
+    client = Hindsight(**client_kwargs)
+    try:
+        result = await client.arecall(
+            bank_id=BANK_ID,
+            query="What testing frameworks and coding preferences does the user have?",
+            max_tokens=512,
+            budget="mid",
+        )
+
+        items = result.results
+        print(f"Recalled {len(items)} memories from '{BANK_ID}'")
+        for item in items[:5]:
+            text = item.text.strip()
+            memory_type = item.type or "unknown"
+            print(f"- [{memory_type}] {text}")
+    finally:
+        await client.aclose()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
