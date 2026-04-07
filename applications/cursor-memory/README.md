@@ -5,11 +5,12 @@ tags: { sdk: "hindsight-cursor", topic: "Agents" }
 
 # Cursor Memory
 
-Give [Cursor](https://cursor.com) persistent memory across sessions using the Hindsight Cursor plugin. The plugin recalls relevant context before each prompt and retains conversation transcripts after each task, so Cursor 3 agents can pick up where they left off.
+Give [Cursor](https://cursor.com) persistent memory across sessions using the Hindsight Cursor plugin. The plugin recalls relevant project context at session start and retains conversation transcripts after each task, so Cursor 3 agents can pick up where they left off.
 
 ## What This Demonstrates
 
-- **Automatic recall** — Hindsight injects relevant memories before each Cursor prompt via `beforeSubmitPrompt`
+- **Session recall** — Hindsight injects relevant project memories at the start of each Cursor session via the `sessionStart` hook
+- **On-demand MCP tools** — the agent can use `recall`, `retain`, and `reflect` tools mid-session for deeper memory lookups
 - **Automatic retain** — Cursor task transcripts are stored to Hindsight after each task via `stop`
 - **Cross-session continuity** — Cursor remembers project context, preferences, and decisions across separate chats
 - **Cursor 3 workflow fit** — works with the new Agents Window, rules, and skills model
@@ -74,7 +75,7 @@ Open the target project in Cursor and start a conversation. Ask questions like:
 - `What stack is this project using?`
 - `What coding style do I usually prefer?`
 
-The plugin injects the matching memories before the prompt reaches the model.
+The plugin injects matching memories at session start, and the agent can use MCP tools for deeper lookups mid-session.
 
 ## Files
 
@@ -88,4 +89,4 @@ The plugin injects the matching memories before the prompt reaches the model.
 
 - Use `dynamicBankId: true` with `["agent", "project"]` to isolate memory per repository.
 - Use `["session"]` if you want one bank per Cursor conversation.
-- Cursor also supports Hindsight via MCP in `.cursor/mcp.json`, but the plugin path is the most automatic workflow.
+- The `init` command also sets up `.cursor/mcp.json` for on-demand MCP tools (`recall`, `retain`, `reflect`). Use `--no-mcp` to skip this.
