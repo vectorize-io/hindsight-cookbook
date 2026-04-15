@@ -1,0 +1,22 @@
+{
+  "_note": "Self-hosted Hindsight API mode — connects to a running Hindsight server (e.g. Docker on localhost:8888). Copy the 'plugins' block into your ~/.openclaw/openclaw.json. Set hindsightApiToken only if your server has auth enabled. This config also shows a shared-bank pattern (dynamicBankId: false) useful for team bots.",
+  "plugins": {
+    "entries": {
+      "hindsight-openclaw": {
+        "enabled": true,
+        "config": {
+          "hindsightApiUrl": "http://localhost:8888",
+
+          "autoRecall": true,
+          "autoRetain": true,
+          "recallBudget": "mid",
+          "recallMaxTokens": 1024,
+          "recallInjectionPosition": "prepend",
+
+          "dynamicBankId": false,
+          "bankId": "openclaw-shared"
+        }
+      }
+    }
+  }
+}

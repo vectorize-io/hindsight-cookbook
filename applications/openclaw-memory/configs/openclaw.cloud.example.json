@@ -1,0 +1,23 @@
+{
+  "_note": "Hindsight Cloud mode — memory is managed by Hindsight Cloud, no local daemon or LLM API key needed. Copy the 'plugins' block into your ~/.openclaw/openclaw.json. Replace YOUR_CLOUD_TOKEN_HERE with the hsk_... token from https://ui.hindsight.vectorize.io/signup.",
+  "plugins": {
+    "entries": {
+      "hindsight-openclaw": {
+        "enabled": true,
+        "config": {
+          "hindsightApiUrl": "https://api.hindsight.vectorize.io",
+          "hindsightApiToken": "YOUR_CLOUD_TOKEN_HERE",
+
+          "autoRecall": true,
+          "autoRetain": true,
+          "recallBudget": "mid",
+          "recallMaxTokens": 1024,
+          "recallInjectionPosition": "prepend",
+
+          "dynamicBankId": true,
+          "dynamicBankGranularity": ["agent", "channel", "user"]
+        }
+      }
+    }
+  }
+}
