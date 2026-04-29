@@ -1,0 +1,2 @@
+hindsight-pipecat>=0.1.0
+pipecat-ai>=0.0.100
