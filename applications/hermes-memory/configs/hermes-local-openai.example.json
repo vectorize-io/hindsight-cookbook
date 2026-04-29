@@ -1,0 +1,13 @@
+{
+  "_note": "Local embedded daemon mode with OpenAI. Copy to ~/.hermes/hindsight/config.json. Replace YOUR_OPENAI_KEY_HERE with your actual key.",
+  "mode": "local",
+  "llm_provider": "openai",
+  "llm_api_key": "YOUR_OPENAI_KEY_HERE",
+  "llm_model": "gpt-4o-mini",
+  "bank_id": "hermes",
+  "memory_mode": "hybrid",
+  "prefetch_method": "recall",
+  "autoRecall": true,
+  "autoRetain": true,
+  "recallBudget": "mid"
+}

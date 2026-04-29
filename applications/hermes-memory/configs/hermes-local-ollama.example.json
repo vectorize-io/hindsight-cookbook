@@ -1,0 +1,11 @@
+{
+  "_note": "Fully local mode: Hermes + Hindsight + Ollama. No API keys needed. Copy to ~/.hermes/hindsight/config.json. Requires Ollama to be running (ollama serve) on the same machine.",
+  "mode": "local",
+  "llm_provider": "ollama",
+  "llm_model": "gemma3:12b",
+  "bank_id": "hermes",
+  "memory_mode": "hybrid",
+  "prefetch_method": "recall",
+  "autoRecall": true,
+  "autoRetain": true
+}
