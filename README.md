@@ -12,6 +12,7 @@ Full-featured example applications demonstrating Hindsight integration patterns:
 - **[deliveryman-demo](./applications/deliveryman-demo)** - Interactive delivery agent with memory-based navigation
 - **[hindsight-litellm-demo](./applications/hindsight-litellm-demo)** - Side-by-side comparison of memory approaches
 - **[hindsight-tool-learning-demo](./applications/hindsight-tool-learning-demo)** - Learning tool selection through memory
+- **[hermes-memory](./applications/hermes-memory)** - Hermes agent with persistent long-term memory via Hindsight
 - **[openai-fitness-coach](./applications/openai-fitness-coach)** - Fitness coach with OpenAI Agents and Hindsight memory
 - **[sanity-blog-memory](./applications/sanity-blog-memory)** - Syncing Sanity CMS content to Hindsight
 - **[chat-sdk-multi-platform](./applications/chat-sdk-multi-platform)** - Cross-platform Slack + Discord bot with shared memory (Vercel Chat SDK)

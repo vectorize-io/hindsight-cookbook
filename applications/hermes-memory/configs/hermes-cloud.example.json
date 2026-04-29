@@ -1,0 +1,13 @@
+{
+  "_note": "Hindsight Cloud mode. Copy this to ~/.hermes/hindsight/config.json and fill in YOUR_CLOUD_TOKEN_HERE with your hsk_... token from https://ui.hindsight.vectorize.io/signup.",
+  "mode": "cloud",
+  "api_url": "https://api.hindsight.vectorize.io",
+  "api_key": "YOUR_CLOUD_TOKEN_HERE",
+  "bank_id": "hermes",
+  "memory_mode": "hybrid",
+  "prefetch_method": "recall",
+  "autoRecall": true,
+  "autoRetain": true,
+  "recallBudget": "mid",
+  "recallMaxTokens": 4096
+}
