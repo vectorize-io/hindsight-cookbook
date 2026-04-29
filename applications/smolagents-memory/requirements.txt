@@ -1,0 +1,2 @@
+smolagents[litellm]>=1.0.0
+hindsight-smolagents>=0.1.0
