@@ -17,6 +17,7 @@ Full-featured example applications demonstrating Hindsight integration patterns:
 - **[sanity-blog-memory](./applications/sanity-blog-memory)** - Syncing Sanity CMS content to Hindsight
 - **[chat-sdk-multi-platform](./applications/chat-sdk-multi-platform)** - Cross-platform Slack + Discord bot with shared memory (Vercel Chat SDK)
 - **[stancetracker](./applications/stancetracker)** - Track political stances using AI-powered memory
+- **[cursor-memory](./applications/cursor-memory)** - Persistent cross-session memory for Cursor using the Hindsight plugin
 
 ## Notebooks
 
