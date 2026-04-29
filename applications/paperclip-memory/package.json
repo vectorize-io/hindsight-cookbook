@@ -1,0 +1,12 @@
+{
+  "name": "paperclip-memory",
+  "version": "1.0.0",
+  "description": "Seed and inspect Hindsight memory used by the @vectorize-io/hindsight-paperclip plugin",
+  "type": "module",
+  "scripts": {
+    "seed": "node seed-memory.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
