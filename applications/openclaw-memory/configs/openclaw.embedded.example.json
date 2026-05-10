@@ -1,0 +1,24 @@
+{
+  "_note": "Embedded daemon mode — Hindsight runs locally on this machine. Copy the 'plugins' block into your ~/.openclaw/openclaw.json (merge with existing content). Replace YOUR_OPENAI_KEY_HERE with your actual key, or use 'openclaw config set' with --ref-source env to avoid storing it in plaintext.",
+  "plugins": {
+    "entries": {
+      "hindsight-openclaw": {
+        "enabled": true,
+        "config": {
+          "llmProvider": "openai",
+          "llmApiKey": "YOUR_OPENAI_KEY_HERE",
+          "llmModel": "gpt-4o-mini",
+
+          "autoRecall": true,
+          "autoRetain": true,
+          "recallBudget": "mid",
+          "recallMaxTokens": 1024,
+          "recallInjectionPosition": "prepend",
+
+          "dynamicBankId": true,
+          "dynamicBankGranularity": ["agent", "channel", "user"]
+        }
+      }
+    }
+  }
+}
