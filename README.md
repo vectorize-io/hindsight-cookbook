@@ -30,6 +30,7 @@ Interactive Jupyter notebooks demonstrating Hindsight features:
 - **[04-litellm-memory-demo.ipynb](./notebooks/04-litellm-memory-demo.ipynb)** - Automatic memory with LiteLLM callbacks
 - **[05-tool-learning-demo.ipynb](./notebooks/05-tool-learning-demo.ipynb)** - Learning tool selection through memory
 - **[08-llamaindex-react-agent.ipynb](./notebooks/08-llamaindex-react-agent.ipynb)** - LlamaIndex ReAct agent with long-term memory
+- **[11-superagent-safety.ipynb](./notebooks/11-superagent-safety.ipynb)** - Safety middleware: Superagent Guard (prompt-injection) + Redact (PII) wrapping every memory op
 
 ### Quick Demos
 
